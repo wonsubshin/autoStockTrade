@@ -22,11 +22,13 @@ FRONTEND_PORT="${FRONTEND_PORT:-9900}"
 mkdir -p logs data
 
 echo "========================================================"
-echo "🚀 한국투자증권(KIS) AI 퀀트 자동매매 시스템 구동 시작"
+echo "🚀 키움(시세) ⨉ 토스(매매) AI 퀀트 자동매매 시스템 구동 시작"
 echo "========================================================"
-echo "• 백엔드 포트   : $BACKEND_PORT"
+echo "• 시세/조회 엔진 : 키움증권 Open API"
+echo "• 주문/매매 엔진 : 토스증권 Open API"
+echo "• 백엔드 포트    : $BACKEND_PORT"
 echo "• 프론트엔드 포트 : $FRONTEND_PORT"
-echo "• 저장소 경로   : $PROJECT_ROOT"
+echo "• 저장소 경로    : $PROJECT_ROOT"
 echo "========================================================"
 
 # 기존 구동 중인 프로세스 정리
@@ -73,7 +75,7 @@ LAN_IP=$(hostname -I 2>/dev/null | awk '{print $1}' || echo "127.0.0.1")
 echo ""
 if [ "$BACKEND_OK" -eq 1 ] && [ "$FRONTEND_OK" -eq 1 ]; then
     echo "========================================================"
-    echo "✅ KIS AI Quant 자동매매 시스템이 성공적으로 가동되었습니다!"
+    echo "✅ 키움(시세) ⨉ 토스(매매) AI 퀀트 시스템이 가동되었습니다!"
     echo "========================================================"
     echo "• 로컬 웹 접속      : http://127.0.0.1:$FRONTEND_PORT"
     echo "• 사내 LAN 웹 접속  : http://$LAN_IP:$FRONTEND_PORT"

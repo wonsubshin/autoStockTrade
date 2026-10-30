@@ -1,18 +1,23 @@
-# 🇰🇷 한국투자증권(KIS) Open API 기반 다중 전략 국내주식 자동매매 & 가상매매(Paper Trading) AI 퀀트 시스템
+# 🇰🇷 키움증권(시세조회) ⨉ 토스증권(주문체결) 기반 다중 전략 국내주식 자동매매 & 가상매매 AI 퀀트 시스템
 
-> 한국투자증권(KIS) Open API를 연동한 로컬 및 외부 웹 기반 국내주식 실전/가상 자동매매 & 실시간 AI 증시 뉴스 인텔리전스 시스템 (Backend + Frontend + Dual DB + Virtual Paper Trading Engine + AI Streaming + Network Tunnel)
+> **국내주식 시세 및 호가 조회는 키움증권 Open API**, **실전 주문 및 잔고 관리는 토스증권 Open API**를 연동한 하이브리드 고성능 국내주식 실전/가상 자동매매 & 실시간 AI 증시 인텔리전스 시스템 (Backend + Frontend + Dual DB + Virtual Paper Trading Engine + AI Streaming + Network Tunnel)
 
 ---
 
 ## 1. 주요 특징 및 핵심 아키텍처
 
+- **하이브리드 증권사 분리 연동 아키텍처 (Kiwoom Quotes ⨉ Toss Trading)**
+  - **시세/호가 조회 (키움증권)**: `backend/common/kiwoom_client.mjs`
+    - 키움증권 Open API를 통해 국내주식 실시간 현재가, 1호가(매도 1호가/매수 1호가), 체결량, 시장 체제(KOSPI/KOSDAQ 지수 및 20/60 MA) 수집
+    - 한국거래소(KRX) 가격대별 호가단위(Tick Size) 자동 보정
+    - API 초당 호출 제한 방어를 위한 250ms Rate Limiter
+  - **주문/매매 체결 (토스증권)**: `backend/common/toss_client.mjs`
+    - 토스증권 Open API를 통해 실전 주문(매수/매도)을 직접 집행하고 계좌 예수금 및 보유 주식 잔고 실시간 동기화
 - **고성능 경량 백엔드 (Node.js v20+ / ES Module)**
   - `node:http`와 Node.js 내장 `node:sqlite` (DatabaseSync, WAL 모드) 기반 초경량·고신뢰성 아키텍처 (Port `8100`)
   - 정규장(09:00~15:30) / 시간외 동시호가 자동 감지 및 비동기 봇 스케줄러 (7초 주기)
-  - 한국투자증권 OAuth 토큰 자동 24시간 갱신 캐시 & KRX 호가단위(Tick Size) 자동 보정
-  - KIS 초당 호출 제한 방어를 위한 250ms Rate Limiter
 - **정밀 가상 매매(Paper Trading) 체결 엔진 (`virtual_engine.mjs`)**
-  - 실시간 매도 1호가(매수 시) 및 매수 1호가(매도 시) 체결 슬리피지 반영
+  - 키움증권 실시간 매도 1호가(매수 시) 및 매수 1호가(매도 시) 체결 슬리피지 반영
   - 위탁수수료(0.015%) 및 증권거래세(0.18%)를 정확히 차감한 순실현손익 계산
   - 누적 수익률, 승률, 손익비(Profit Factor), 최대 낙폭(MDD), 샤프 지수(Sharpe Ratio) 실시간 산출
   - **⚡ 30영업일 고속 시뮬레이션(Fast Replay Test)**: 야간/주말에도 알고리즘 성능 즉시 검증
@@ -45,17 +50,18 @@
 ## 3. 디렉토리 구조
 
 ```text
-autoStockTrade/
+autoStockTrader/
 ├── backend/
 │   ├── node_server.mjs          # 백엔드 코어 HTTP 서버, SQLite 초기화, REST API, SSE 스트리밍
 │   └── common/
-│       ├── kis_client.mjs       # 한국투자증권 Open API 토큰/시세/주문 관리 및 KRX 호가보정
+│       ├── kiwoom_client.mjs    # 키움증권 Open API (시세/호가/지수 조회, KRX 호가 보정)
+│       ├── toss_client.mjs      # 토스증권 Open API (주문 발송, 잔고/예수금 조회)
 │       ├── virtual_engine.mjs   # 정밀 가상매매 체결, 30일 시뮬레이션, 성과지표(MDD/샤프) 계산
 │       ├── news_service.mjs     # 네이버금융/한경/매경/공시 RSS 수집, 감성 분석, 태그 추출
 │       └── pg_sync.mjs          # PostgreSQL 16 실시간 데이터 동기화 매니저
 ├── config/
-│   ├── kis_config.json          # KIS API(실전/모의) 및 Gemini API 키 설정 파일 (Git 제외)
-│   └── kis_config.example.json  # 설정 파일 템플릿
+│   ├── broker_config.json       # 키움증권/토스증권 API 및 Gemini 설정 파일 (Git 제외)
+│   └── broker_config.example.json # 설정 파일 템플릿
 ├── data/
 │   └── auto_stock_trade.db      # 로컬 SQLite 데이터베이스 (WAL 모드)
 ├── frontend/
@@ -111,6 +117,6 @@ cloudflared tunnel --url http://127.0.0.1:9900
 
 ## 5. 형상 관리 (Git) 및 보안 규칙
 
-- 한국투자증권 실전/모의 App Key, App Secret, 계좌번호 및 Gemini API 키 등 모든 민감 정보는 `.env` 및 `config/kis_config.json`에만 저장되며 Git 추적에서 제외됩니다.
+- 키움증권 및 토스증권 API Key, Secret, 계좌번호 및 Gemini API 키 등 모든 민감 정보는 `.env` 및 `config/broker_config.json`에만 저장되며 Git 추적에서 제외됩니다.
 - 원격 저장소: `https://github.com/wonsubshin/autoStockTrade.git`
 - 커밋 메시지에는 개인정보나 계좌/키 정보가 일절 포함되지 않습니다.

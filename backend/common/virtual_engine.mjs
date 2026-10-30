@@ -1,16 +1,16 @@
-import { adjustKRXTickSize, TOP_KR_STOCKS } from './kis_client.mjs';
+import { adjustKRXTickSize, TOP_KR_STOCKS } from './kiwoom_client.mjs';
 
 // Fee & Tax Constants (국내주식 표준)
 export const BROKERAGE_FEE_RATE = 0.00015; // 0.015% (매수/매도 각각)
 export const SECURITIES_TAX_RATE = 0.0018; // 0.18% (매도 시 증권거래세)
 
 export class VirtualPaperTradingEngine {
-  constructor(getDb, kisClient) {
+  constructor(getDb, kiwoomClient) {
     this.getDb = getDb;
-    this.kisClient = kisClient;
+    this.kiwoomClient = kiwoomClient;
   }
 
-  // 가상 매수 체결
+  // 가상 매수 체결 (키움증권 시세의 매도 1호가 기준)
   async executeVirtualBuy({ botId, stockCode, stockName, requestedBudget }) {
     const db = this.getDb();
     if (!db) throw new Error('데이터베이스가 준비되지 않았습니다.');
@@ -20,7 +20,7 @@ export class VirtualPaperTradingEngine {
     if (!bot) throw new Error(`봇 [${botId}]을 찾을 수 없습니다.`);
 
     const virtualKrw = bot.virtual_krw || 0;
-    const priceInfo = await this.kisClient.getCurrentPrice(stockCode, bot.trade_mode);
+    const priceInfo = await this.kiwoomClient.getCurrentPrice(stockCode);
     const executionPrice = priceInfo.askPrice1 || priceInfo.currentPrice; // 매수 시 매도 1호가로 체결
 
     // 1주 매수 최소 필요금액 (수수료 포함)
@@ -107,7 +107,7 @@ export class VirtualPaperTradingEngine {
     const newBalance = virtualKrw - totalDeduction;
     updateBotBalance.run(
       totalDeduction,
-      `[매수체결] ${stockName || priceInfo.stockName} ${qty}주 @ ${executionPrice.toLocaleString()}원`,
+      `[키움시세 가상매수] ${stockName || priceInfo.stockName} ${qty}주 @ ${executionPrice.toLocaleString()}원`,
       nowIso,
       botId
     );
@@ -126,7 +126,7 @@ export class VirtualPaperTradingEngine {
     };
   }
 
-  // 가상 매도 체결
+  // 가상 매도 체결 (키움증권 시세의 매수 1호가 기준)
   async executeVirtualSell({ positionId, botId, reason = '전략 신호' }) {
     const db = this.getDb();
     if (!db) throw new Error('데이터베이스가 준비되지 않았습니다.');
@@ -144,7 +144,7 @@ export class VirtualPaperTradingEngine {
     }
 
     const bot = db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(pos.bot_id);
-    const priceInfo = await this.kisClient.getCurrentPrice(pos.stock_code, pos.trade_mode);
+    const priceInfo = await this.kiwoomClient.getCurrentPrice(pos.stock_code);
     const executionPrice = priceInfo.bidPrice1 || priceInfo.currentPrice; // 매도 시 매수 1호가로 체결
 
     const sellQty = pos.qty;
@@ -202,7 +202,7 @@ export class VirtualPaperTradingEngine {
       WHERE bot_id = ?
     `).run(
       netProceeds,
-      `[매도체결] ${pos.stock_name} ${sellQty}주 @ ${executionPrice.toLocaleString()}원 (${profitPct >= 0 ? '+' : ''}${profitPct}%, 이유: ${reason})`,
+      `[키움시세 가상매도] ${pos.stock_name} ${sellQty}주 @ ${executionPrice.toLocaleString()}원 (${profitPct >= 0 ? '+' : ''}${profitPct}%, 이유: ${reason})`,
       nowIso,
       pos.bot_id
     );

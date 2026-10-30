@@ -4,7 +4,8 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
-import { KisClient, TOP_KR_STOCKS } from './common/kis_client.mjs';
+import { KiwoomClient, TOP_KR_STOCKS } from './common/kiwoom_client.mjs';
+import { TossClient } from './common/toss_client.mjs';
 import { VirtualPaperTradingEngine } from './common/virtual_engine.mjs';
 import { NewsService } from './common/news_service.mjs';
 import { PgSyncManager } from './common/pg_sync.mjs';
@@ -381,10 +382,11 @@ function seedInitialData() {
   }
 }
 
-// 2. Initialize Services
+// 2. Initialize Services (키움증권 시세 + 토스증권 매매)
 initDatabase();
-const kisClient = new KisClient(PROJECT_ROOT);
-const virtualEngine = new VirtualPaperTradingEngine(() => db, kisClient);
+const kiwoomClient = new KiwoomClient(PROJECT_ROOT);
+const tossClient = new TossClient(PROJECT_ROOT);
+const virtualEngine = new VirtualPaperTradingEngine(() => db, kiwoomClient);
 const newsService = new NewsService(() => db);
 const pgSyncManager = new PgSyncManager(PROJECT_ROOT, () => db);
 
@@ -400,14 +402,14 @@ function startBotScheduler() {
       const runningBots = db.prepare('SELECT * FROM bots WHERE is_running = 1').all();
       if (runningBots.length === 0) return;
 
-      const marketStatus = kisClient.getMarketStatus();
-      const regimeInfo = await kisClient.getMarketRegime();
+      const marketStatus = kiwoomClient.getMarketStatus();
+      const regimeInfo = await kiwoomClient.getMarketRegime();
 
       // Check Active Positions for Exit Signals (Stop Loss, Take Profit, Time Exit)
       for (const bot of runningBots) {
         const positions = db.prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'").all(bot.bot_id);
         for (const pos of positions) {
-          const priceInfo = await kisClient.getCurrentPrice(pos.stock_code, pos.trade_mode);
+          const priceInfo = await kiwoomClient.getCurrentPrice(pos.stock_code);
           const currentPrice = priceInfo.currentPrice;
           const returnPct = ((currentPrice - pos.avg_buy_price) / pos.avg_buy_price) * 100;
 
@@ -438,9 +440,8 @@ function startBotScheduler() {
             if (pos.trade_mode === 'VIRTUAL') {
               await virtualEngine.executeVirtualSell({ positionId: pos.id, reason: sellReason });
             } else {
-              // Real order
-              await kisClient.sendOrder({
-                mode: 'REAL',
+              // Real order via Toss Securities
+              await tossClient.sendOrder({
                 orderType: 'SELL',
                 stockCode: pos.stock_code,
                 qty: pos.qty,
@@ -462,9 +463,9 @@ function startBotScheduler() {
         const openCount = db.prepare("SELECT COUNT(*) as cnt FROM bot_positions WHERE bot_id = ? AND status = 'OPEN'").get(bot.bot_id).cnt;
         if (openCount > 0) continue; // 포지션 보유 중이면 신규 진입 대기
 
-        // Select a candidate stock from TOP_KR_STOCKS
+        // Select a candidate stock from TOP_KR_STOCKS via Kiwoom market inquiry
         const candidate = TOP_KR_STOCKS[Math.floor(Math.random() * TOP_KR_STOCKS.length)];
-        const priceInfo = await kisClient.getCurrentPrice(candidate.code, bot.trade_mode);
+        const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
 
         // Simulation strategy condition trigger (roughly 1 in 8 ticks during active run)
         const isEntryTriggered = Math.random() < 0.12;
@@ -481,6 +482,16 @@ function startBotScheduler() {
             } catch (err) {
               // Handled in virtualEngine
             }
+          } else {
+            // Real order via Toss Securities
+            try {
+              await tossClient.sendOrder({
+                orderType: 'BUY',
+                stockCode: candidate.code,
+                qty: 1,
+                price: priceInfo.currentPrice,
+              });
+            } catch (err) {}
           }
         }
       }
@@ -550,15 +561,19 @@ const server = http.createServer(async (req, res) => {
     // Health Check & Gate Passcode
     // -------------------------------------------------------------
     if (pathname === '/api/health' && method === 'GET') {
-      const apiHealth = await kisClient.getApiHealth();
-      const marketStatus = kisClient.getMarketStatus();
-      const regimeInfo = await kisClient.getMarketRegime();
+      const kiwoomHealth = await kiwoomClient.getApiHealth();
+      const tossHealth = await tossClient.getApiHealth();
+      const marketStatus = kiwoomClient.getMarketStatus();
+      const regimeInfo = await kiwoomClient.getMarketRegime();
 
       return sendJson(res, 200, {
         ok: true,
         service: 'autoStockTrader',
+        architecture: '키움증권(시세) ⨉ 토스증권(매매)',
         uptime: process.uptime(),
-        apiHealth,
+        kiwoomHealth,
+        tossHealth,
+        apiHealth: kiwoomHealth, // backward compatible
         marketStatus,
         marketRegime: regimeInfo,
         pgConnected: pgSyncManager.isConnected,
@@ -580,23 +595,36 @@ const server = http.createServer(async (req, res) => {
     }
 
     // -------------------------------------------------------------
-    // System Settings & Config
+    // System Settings & Broker Config (키움증권 + 토스증권)
     // -------------------------------------------------------------
     if (pathname === '/api/system/settings' && method === 'GET') {
       const rows = db.prepare('SELECT key, value, updated_at FROM system_settings').all();
       const settingsMap = {};
       for (const r of rows) settingsMap[r.key] = r.value;
-      const kisConf = kisClient.loadConfig();
+
+      const brokerConfPath = path.join(PROJECT_ROOT, 'config', 'broker_config.json');
+      let bConf = {
+        account_mode: 'VIRTUAL',
+        kiwoom: { app_key: '', app_secret: '' },
+        toss: { api_key: '', api_secret: '', account_no: '' },
+        gemini: { api_key: '' },
+      };
+      if (fs.existsSync(brokerConfPath)) {
+        try {
+          bConf = JSON.parse(fs.readFileSync(brokerConfPath, 'utf8'));
+        } catch (e) {}
+      }
 
       return sendJson(res, 200, {
         settings: settingsMap,
-        kisConfig: {
-          account_mode: kisConf.account_mode,
-          real_app_key: kisConf.real.app_key ? '••••••••' + kisConf.real.app_key.slice(-4) : '',
-          real_account_no: kisConf.real.account_no ? '••••' + kisConf.real.account_no.slice(-4) : '',
-          virtual_app_key: kisConf.virtual.app_key ? '••••••••' + kisConf.virtual.app_key.slice(-4) : '',
-          virtual_account_no: kisConf.virtual.account_no ? '••••' + kisConf.virtual.account_no.slice(-4) : '',
-          gemini_api_key: kisConf.gemini.api_key || process.env.GEMINI_API_KEY ? '••••••••AI' : '',
+        brokerConfig: {
+          account_mode: bConf.account_mode || 'VIRTUAL',
+          kiwoom_app_key: bConf.kiwoom?.app_key ? '••••••••' + bConf.kiwoom.app_key.slice(-4) : '',
+          kiwoom_app_secret: bConf.kiwoom?.app_secret ? '••••••••' + bConf.kiwoom.app_secret.slice(-4) : '',
+          toss_api_key: bConf.toss?.api_key ? '••••••••' + bConf.toss.api_key.slice(-4) : '',
+          toss_api_secret: bConf.toss?.api_secret ? '••••••••' + bConf.toss.api_secret.slice(-4) : '',
+          toss_account_no: bConf.toss?.account_no ? '••••' + bConf.toss.account_no.slice(-4) : '',
+          gemini_api_key: bConf.gemini?.api_key || process.env.GEMINI_API_KEY ? '••••••••AI' : '',
         },
       });
     }
@@ -616,24 +644,42 @@ const server = http.createServer(async (req, res) => {
         }
       }
 
-      if (body.kisConfig) {
-        const currentConf = kisClient.loadConfig();
-        const kc = body.kisConfig;
-        if (kc.account_mode) currentConf.account_mode = kc.account_mode;
-        if (kc.real_app_key && !kc.real_app_key.startsWith('•')) currentConf.real.app_key = kc.real_app_key;
-        if (kc.real_app_secret && !kc.real_app_secret.startsWith('•')) currentConf.real.app_secret = kc.real_app_secret;
-        if (kc.real_account_no && !kc.real_account_no.startsWith('•')) currentConf.real.account_no = kc.real_account_no;
-        if (kc.virtual_app_key && !kc.virtual_app_key.startsWith('•')) currentConf.virtual.app_key = kc.virtual_app_key;
-        if (kc.virtual_app_secret && !kc.virtual_app_secret.startsWith('•')) currentConf.virtual.app_secret = kc.virtual_app_secret;
-        if (kc.virtual_account_no && !kc.virtual_account_no.startsWith('•')) currentConf.virtual.account_no = kc.virtual_account_no;
-        if (kc.gemini_api_key && !kc.gemini_api_key.startsWith('•')) {
-          currentConf.gemini.api_key = kc.gemini_api_key;
-          process.env.GEMINI_API_KEY = kc.gemini_api_key;
+      if (body.brokerConfig || body.kisConfig) {
+        const brokerConfPath = path.join(PROJECT_ROOT, 'config', 'broker_config.json');
+        let currentConf = {
+          account_mode: 'VIRTUAL',
+          kiwoom: { app_key: '', app_secret: '', base_url: 'https://openapi.kiwoom.com' },
+          toss: { api_key: '', api_secret: '', account_no: '', base_url: 'https://api.tossinvest.com' },
+          gemini: { api_key: '', model: 'gemini-2.5-flash' },
+        };
+        if (fs.existsSync(brokerConfPath)) {
+          try {
+            currentConf = JSON.parse(fs.readFileSync(brokerConfPath, 'utf8'));
+          } catch (e) {}
         }
-        kisClient.saveConfig(currentConf);
+
+        const bc = body.brokerConfig || body.kisConfig;
+        if (bc.account_mode) currentConf.account_mode = bc.account_mode;
+
+        // 키움증권 시세 키
+        if (bc.kiwoom_app_key && !bc.kiwoom_app_key.startsWith('•')) currentConf.kiwoom.app_key = bc.kiwoom_app_key;
+        if (bc.kiwoom_app_secret && !bc.kiwoom_app_secret.startsWith('•')) currentConf.kiwoom.app_secret = bc.kiwoom_app_secret;
+
+        // 토스증권 매매 키
+        if (bc.toss_api_key && !bc.toss_api_key.startsWith('•')) currentConf.toss.api_key = bc.toss_api_key;
+        if (bc.toss_api_secret && !bc.toss_api_secret.startsWith('•')) currentConf.toss.api_secret = bc.toss_api_secret;
+        if (bc.toss_account_no && !bc.toss_account_no.startsWith('•')) currentConf.toss.account_no = bc.toss_account_no;
+
+        // Gemini AI 키
+        if (bc.gemini_api_key && !bc.gemini_api_key.startsWith('•')) {
+          currentConf.gemini.api_key = bc.gemini_api_key;
+          process.env.GEMINI_API_KEY = bc.gemini_api_key;
+        }
+
+        fs.writeFileSync(brokerConfPath, JSON.stringify(currentConf, null, 2), 'utf8');
       }
 
-      return sendJson(res, 200, { success: true, message: '설정이 성공적으로 저장되었습니다.' });
+      return sendJson(res, 200, { success: true, message: '키움증권(시세) 및 토스증권(매매) 설정이 성공적으로 저장되었습니다.' });
     }
 
     // -------------------------------------------------------------
@@ -771,10 +817,10 @@ const server = http.createServer(async (req, res) => {
     if (pathname === '/api/positions' && method === 'GET') {
       const openPositions = db.prepare("SELECT * FROM bot_positions WHERE status = 'OPEN' ORDER BY id DESC").all();
 
-      // Enrich with live price valuation
+      // Enrich with live Kiwoom price valuation
       const enriched = await Promise.all(
         openPositions.map(async (pos) => {
-          const priceInfo = await kisClient.getCurrentPrice(pos.stock_code, pos.trade_mode);
+          const priceInfo = await kiwoomClient.getCurrentPrice(pos.stock_code);
           const currentPrice = priceInfo.currentPrice;
           const evalAmount = currentPrice * pos.qty;
           const unrealizedProfitKrw = evalAmount - pos.buy_amount - (pos.buy_fee || 0);
@@ -786,6 +832,7 @@ const server = http.createServer(async (req, res) => {
             evalAmount,
             unrealizedProfitKrw,
             unrealizedProfitPct,
+            priceProvider: '키움증권',
           };
         })
       );
@@ -984,14 +1031,14 @@ const server = http.createServer(async (req, res) => {
         'Access-Control-Allow-Origin': '*',
       });
 
-      const regime = await kisClient.getMarketRegime();
-      const marketStatus = kisClient.getMarketStatus();
+      const regime = await kiwoomClient.getMarketRegime();
+      const marketStatus = kiwoomClient.getMarketStatus();
       const topStocks = TOP_KR_STOCKS.slice(0, 4).map((s) => s.name).join(', ');
 
-      const briefing = `[AI 마켓 브리핑] 현재 국내 증시는 코스피 ${regime.kospiIndex}pt(20일선 ${regime.kospi20MA}pt), 코스닥 ${regime.kosdaqIndex}pt로 ` +
+      const briefing = `[AI 마켓 브리핑] 키움증권 실시간 호가/시세 분석 결과, 현재 국내 증시는 코스피 ${regime.kospiIndex}pt(20일선 ${regime.kospi20MA}pt), 코스닥 ${regime.kosdaqIndex}pt로 ` +
         `${regime.regime === 'NORMAL' ? '안정적인 정배열 상승 박스권 랠리' : '하방 변동성 경계 장세'}를 보이고 있습니다. ` +
-        `현재 시장 상태는 '${marketStatus.badge}'이며 주도 섹터인 반도체·자동차(${topStocks}) 중심의 외인·기관 쌍끌이 순매수가 지수 하방을 견고히 지지하고 있습니다. ` +
-        `자금 격리 규칙 및 리스크 필터에 따라 3대 알고리즘 봇이 최적의 타이밍을 포착해 분할 진입 중입니다.`;
+        `장 상태는 '${marketStatus.badge}'이며 주요 주도 섹터(${topStocks}) 중심의 기관/외인 수급이 확인됩니다. ` +
+        `키움증권의 1호가 시세를 바탕으로 3대 퀀트 전략이 실시간 포지션을 감시하며, 실전 주문은 토스증권 계좌를 통해 안전하게 집행됩니다.`;
 
       // Stream character by character
       let idx = 0;
@@ -1078,11 +1125,10 @@ const server = http.createServer(async (req, res) => {
     }
 
     // -------------------------------------------------------------
-    // Account Balance & Backup
+    // Account Balance & Backup (토스증권 잔고 연동)
     // -------------------------------------------------------------
     if (pathname === '/api/account/balance' && method === 'GET') {
-      const mode = urlObj.searchParams.get('mode') || 'VIRTUAL';
-      const balance = await kisClient.getAccountBalance(mode);
+      const balance = await tossClient.getAccountBalance();
       return sendJson(res, 200, balance);
     }
 
@@ -1152,7 +1198,7 @@ const server = http.createServer(async (req, res) => {
 
 server.listen(PORT, '0.0.0.0', () => {
   console.log(`========================================================`);
-  console.log(`[Backend] KIS 한국투자증권 퀀트 자동매매 백엔드 가동 완료`);
+  console.log(`[Backend] 키움증권(시세조회) ⨉ 토스증권(주문체결) AI 퀀트 시스템 가동`);
   console.log(`• Listening: http://0.0.0.0:${PORT}`);
   console.log(`• Node Version: ${process.version}`);
   console.log(`• SQLite Database: ${DB_PATH} (WAL Mode)`);

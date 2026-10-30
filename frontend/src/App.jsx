@@ -52,12 +52,13 @@ export default function App() {
 
   // Settings (Menu 5) State
   const [systemSettings, setSystemSettings] = useState({});
-  const [kisConfig, setKisConfig] = useState({
+  const [brokerConfig, setBrokerConfig] = useState({
     account_mode: 'VIRTUAL',
-    real_app_key: '',
-    real_account_no: '',
-    virtual_app_key: '',
-    virtual_account_no: '',
+    kiwoom_app_key: '',
+    kiwoom_app_secret: '',
+    toss_api_key: '',
+    toss_api_secret: '',
+    toss_account_no: '',
     gemini_api_key: '',
   });
   const [accountBalance, setAccountBalance] = useState(null);
@@ -182,7 +183,8 @@ export default function App() {
       if (respS.ok) {
         const dataS = await respS.json();
         setSystemSettings(dataS.settings || {});
-        if (dataS.kisConfig) setKisConfig(dataS.kisConfig);
+        if (dataS.brokerConfig) setBrokerConfig(dataS.brokerConfig);
+        else if (dataS.kisConfig) setBrokerConfig((prev) => ({ ...prev, ...dataS.kisConfig }));
       }
       if (respB.ok) {
         const dataB = await respB.json();
@@ -405,9 +407,9 @@ export default function App() {
       <div className="gate-screen">
         <div className="gate-card">
           <div className="gate-icon">📈</div>
-          <h1 className="gate-title">한국투자증권 AI 퀀트 시스템</h1>
+          <h1 className="gate-title">키움(시세) ⨉ 토스(매매) AI 퀀트 시스템</h1>
           <p className="gate-desc">
-            본 시스템은 허가된 전용 보안 게이트입니다.<br />
+            본 시스템은 키움증권 시세 조회 및 토스증권 매매 연동 전용 게이트입니다.<br />
             개인 입장 코드를 입력하고 접속하세요.
           </p>
           <form onSubmit={handleGateSubmit} className="gate-form">
@@ -444,17 +446,23 @@ export default function App() {
         <div className="brand">
           <div className="brand-icon">📈</div>
           <div>
-            <div className="brand-title">KIS AI Quant</div>
-            <div className="brand-subtitle">Korean Stock Trader</div>
+            <div className="brand-title">Kiwoom ⨉ Toss</div>
+            <div className="brand-subtitle">AI Quant Trader</div>
           </div>
         </div>
 
         {/* Real-time Status Panel */}
         <div className="status-panel">
           <div className="status-row">
-            <span className="status-label">KIS 서버</span>
-            <span className={`status-pill ${apiHealth?.status || 'gray'}`}>
-              ● {apiHealth?.status === 'green' ? '정상연결' : apiHealth?.status === 'yellow' ? '가상대기' : '미연결'}
+            <span className="status-label">키움 시세</span>
+            <span className={`status-pill ${healthData?.kiwoomHealth?.status || 'gray'}`}>
+              ● {healthData?.kiwoomHealth?.status === 'green' ? '정상연결' : healthData?.kiwoomHealth?.status === 'yellow' ? '가상대기' : '미연결'}
+            </span>
+          </div>
+          <div className="status-row">
+            <span className="status-label">토스 매매</span>
+            <span className={`status-pill ${healthData?.tossHealth?.status || 'gray'}`}>
+              ● {healthData?.tossHealth?.status === 'green' ? '정상연결' : healthData?.tossHealth?.status === 'yellow' ? '가상대기' : '미연결'}
             </span>
           </div>
           <div className="status-row">
@@ -535,7 +543,7 @@ export default function App() {
           <div>
             {/* Top Market AI Streaming Marquee Box */}
             <div className="top-briefing-box">
-              <span className="briefing-badge">Gemini AI 마켓 브리핑</span>
+              <span className="briefing-badge">Gemini AI 증시 브리핑 (키움 시세 & 토스 매매)</span>
               <div className="briefing-text">
                 {aiBriefingText}
                 {isBriefingStreaming && <span className="cursor-blink">|</span>}
@@ -1300,23 +1308,23 @@ export default function App() {
         )}
 
         {/* ========================================================
-            MENU 5: 설정
+            MENU 5: 설정 (키움증권 시세 & 토스증권 매매)
             ======================================================== */}
         {activeMenu === 'SETTINGS' && (
           <div>
             <div className="section-header">
-              <div className="section-title">⚙️ 시스템 및 한국투자증권 Open API 설정</div>
+              <div className="section-title">⚙️ 키움증권(시세) ⨉ 토스증권(매매) API 및 시스템 설정</div>
             </div>
 
-            {/* KIS Account Assets Read-Only Check */}
+            {/* Toss Securities Account Assets Read-Only Check */}
             <div className="board-card">
               <div className="card-title-row">
-                <div className="card-title">💼 KIS 계좌 자산 현황 (읽기 전용)</div>
+                <div className="card-title">💼 토스증권 계좌 자산 현황 (실전 매매 잔고)</div>
                 <button className="btn-action" onClick={fetchSettingsAndBalance}>🔄 잔고 갱신</button>
               </div>
               <div className="metrics-grid">
                 <div className="metric-card">
-                  <div className="metric-title">주문 가능 예수금</div>
+                  <div className="metric-title">주문 가능 예수금 (토스)</div>
                   <div className="metric-value">{(accountBalance?.availableCash || 0).toLocaleString()}원</div>
                 </div>
                 <div className="metric-card">
@@ -1336,10 +1344,10 @@ export default function App() {
               </div>
             </div>
 
-            {/* API Keys Configuration */}
+            {/* Broker API Keys Configuration */}
             <div className="board-card">
               <div className="card-title-row">
-                <div className="card-title">🔑 KIS Open API 및 Gemini API 키 관리</div>
+                <div className="card-title">🔑 키움증권(시세) & 토스증권(매매) Open API 키 관리</div>
                 <button className="btn-action" onClick={() => setShowApiKeys(!showApiKeys)}>
                   {showApiKeys ? '🔒 마스킹 적용' : '👁 키 확인'}
                 </button>
@@ -1350,67 +1358,87 @@ export default function App() {
                   <label className="form-label">매매 운영 모드</label>
                   <select
                     className="input-field"
-                    value={kisConfig.account_mode}
-                    onChange={(e) => setKisConfig({ ...kisConfig, account_mode: e.target.value })}
+                    value={brokerConfig.account_mode}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, account_mode: e.target.value })}
                   >
-                    <option value="VIRTUAL">가상매매 (VIRTUAL / Paper Trading)</option>
-                    <option value="REAL">실전매매 (REAL / Live Trading)</option>
+                    <option value="VIRTUAL">🧪 가상매매 (키움 시세 기반 Paper Trading)</option>
+                    <option value="REAL">💰 실전매매 (토스증권 실주문 체결)</option>
                   </select>
                 </div>
                 <div className="form-group">
-                  <label className="form-label">Gemini API 키 (실시간 SSE 마켓 분석)</label>
+                  <label className="form-label">Gemini API 키 (실시간 SSE 시황 AI 분석)</label>
                   <input
                     type={showApiKeys ? 'text' : 'password'}
                     className="input-field"
                     placeholder="AIzaSy..."
-                    value={kisConfig.gemini_api_key}
-                    onChange={(e) => setKisConfig({ ...kisConfig, gemini_api_key: e.target.value })}
+                    value={brokerConfig.gemini_api_key}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, gemini_api_key: e.target.value })}
                   />
                 </div>
               </div>
 
+              {/* Kiwoom Section */}
+              <div style={{ marginTop: '16px', marginBottom: '8px', fontWeight: 700, color: '#60a5fa', fontSize: '14px' }}>
+                🔍 [시세 조회] 키움증권 Open API 설정
+              </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label className="form-label">모의투자 KIS App Key</label>
+                  <label className="form-label">키움증권 App Key</label>
                   <input
                     type={showApiKeys ? 'text' : 'password'}
                     className="input-field"
-                    placeholder="모의투자 App Key"
-                    value={kisConfig.virtual_app_key}
-                    onChange={(e) => setKisConfig({ ...kisConfig, virtual_app_key: e.target.value })}
+                    placeholder="키움증권 App Key"
+                    value={brokerConfig.kiwoom_app_key}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, kiwoom_app_key: e.target.value })}
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">모의투자 계좌번호 (8자리)</label>
+                  <label className="form-label">키움증권 Secret Key</label>
                   <input
-                    type="text"
+                    type={showApiKeys ? 'text' : 'password'}
                     className="input-field"
-                    placeholder="50012345"
-                    value={kisConfig.virtual_account_no}
-                    onChange={(e) => setKisConfig({ ...kisConfig, virtual_account_no: e.target.value })}
+                    placeholder="키움증권 Secret Key"
+                    value={brokerConfig.kiwoom_app_secret}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, kiwoom_app_secret: e.target.value })}
                   />
                 </div>
               </div>
 
+              {/* Toss Section */}
+              <div style={{ marginTop: '16px', marginBottom: '8px', fontWeight: 700, color: '#34d399', fontSize: '14px' }}>
+                ⚡ [주문 매매] 토스증권 Open API 설정
+              </div>
               <div className="form-row">
                 <div className="form-group">
-                  <label className="form-label">실전투자 KIS App Key</label>
+                  <label className="form-label">토스증권 API Key</label>
                   <input
                     type={showApiKeys ? 'text' : 'password'}
                     className="input-field"
-                    placeholder="실전투자 App Key"
-                    value={kisConfig.real_app_key}
-                    onChange={(e) => setKisConfig({ ...kisConfig, real_app_key: e.target.value })}
+                    placeholder="토스증권 API Key"
+                    value={brokerConfig.toss_api_key}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, toss_api_key: e.target.value })}
                   />
                 </div>
                 <div className="form-group">
-                  <label className="form-label">실전투자 계좌번호 (8자리)</label>
+                  <label className="form-label">토스증권 Secret Key</label>
+                  <input
+                    type={showApiKeys ? 'text' : 'password'}
+                    className="input-field"
+                    placeholder="토스증권 Secret Key"
+                    value={brokerConfig.toss_api_secret}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, toss_api_secret: e.target.value })}
+                  />
+                </div>
+              </div>
+              <div className="form-row">
+                <div className="form-group">
+                  <label className="form-label">토스증권 계좌번호</label>
                   <input
                     type="text"
                     className="input-field"
                     placeholder="12345678"
-                    value={kisConfig.real_account_no}
-                    onChange={(e) => setKisConfig({ ...kisConfig, real_account_no: e.target.value })}
+                    value={brokerConfig.toss_account_no}
+                    onChange={(e) => setBrokerConfig({ ...brokerConfig, toss_account_no: e.target.value })}
                   />
                 </div>
               </div>
@@ -1422,18 +1450,18 @@ export default function App() {
                     const resp = await fetch(`${API_BASE}/api/system/settings`, {
                       method: 'POST',
                       headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ kisConfig }),
+                      body: JSON.stringify({ brokerConfig }),
                     });
                     const d = await resp.json();
                     if (resp.ok) {
-                      setModalInfo({ title: '설정 저장', message: d.message, type: 'success' });
+                      setModalInfo({ title: '설정 저장 완료', message: d.message, type: 'success' });
                     }
                   } catch (e) {
                     setModalInfo({ title: '오류', message: e.message, type: 'error' });
                   }
                 }}
               >
-                💾 API 키 및 설정 저장
+                💾 키움 & 토스 API 키 설정 저장
               </button>
             </div>
 
@@ -1500,3 +1528,4 @@ export default function App() {
     </div>
   );
 }
+

@@ -1,0 +1,20 @@
+{
+  "account_mode": "VIRTUAL",
+  "kiwoom": {
+    "description": "키움증권 Open API (국내주식 실시간 시세, 호가 및 종목 조회)",
+    "app_key": "YOUR_KIWOOM_APP_KEY",
+    "app_secret": "YOUR_KIWOOM_APP_SECRET",
+    "base_url": "https://openapi.kiwoom.com"
+  },
+  "toss": {
+    "description": "토스증권 Open API (실전 주문 체결 및 계좌 예수금/잔고 조회)",
+    "api_key": "YOUR_TOSS_API_KEY",
+    "api_secret": "YOUR_TOSS_API_SECRET",
+    "account_no": "12345678",
+    "base_url": "https://api.tossinvest.com"
+  },
+  "gemini": {
+    "api_key": "YOUR_GEMINI_API_KEY",
+    "model": "gemini-2.5-flash"
+  }
+}
