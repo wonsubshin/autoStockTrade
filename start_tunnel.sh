@@ -67,3 +67,4 @@ else
     echo "⚠️ 공개 도메인 주소 파싱 중입니다. 잠시 후 logs/tunnel.log를 확인해주세요:"
     echo "tail -n 20 logs/tunnel.log"
 fi
+

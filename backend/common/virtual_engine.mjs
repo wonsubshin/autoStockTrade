@@ -41,8 +41,18 @@ export class VirtualPaperTradingEngine {
       throw new Error(`가상 예수금이 부족하여 주문할 수 없습니다. (보유: ${virtualKrw.toLocaleString()}원, 필요: ${minRequired.toLocaleString()}원)`);
     }
 
-    // 2. 가용 예산 내 1주 단위 정수 수량 산출
-    const maxBudget = Math.min(virtualKrw, requestedBudget || virtualKrw);
+    // 2. 봇별 할당 예산 한도 검증 및 가용 예산 산출
+    const openPosRow = db.prepare("SELECT COALESCE(SUM(buy_amount), 0) as used FROM bot_positions WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'").get(botId);
+    const usedBudget = openPosRow ? openPosRow.used : 0;
+    const allocatedBudget = bot.allocated_capital || bot.virtual_krw || 10000000;
+    const remainingBudget = Math.max(0, allocatedBudget - usedBudget);
+
+    if (remainingBudget < minRequired) {
+      throw new Error(`봇 [${bot.nickname || bot.name}]에 할당된 예산 한도(${allocatedBudget.toLocaleString()}원)에 도달하였습니다. (현재 보유: ${usedBudget.toLocaleString()}원)`);
+    }
+
+    // 3. 가용 예산 내 1주 단위 정수 수량 산출 (할당 예산 및 보유 잔고 범위 내)
+    const maxBudget = Math.min(virtualKrw, requestedBudget || virtualKrw, remainingBudget);
     const qty = Math.floor(maxBudget / (executionPrice * (1 + BROKERAGE_FEE_RATE)));
     if (qty <= 0) {
       throw new Error('주문 가능 수량이 0주입니다.');
@@ -244,6 +254,73 @@ export class VirtualPaperTradingEngine {
     `).run(seedCapital, seedCapital, nowIso, botId);
 
     return { botId, seedCapital };
+  }
+
+  // 가상 계좌 전체 자산 요약
+  async getVirtualAccountSummary() {
+    const db = this.getDb();
+    if (!db) {
+      return {
+        availableCash: 30000000,
+        stockEvalAmount: 0,
+        totalAssetAmount: 30000000,
+        totalProfitKrw: 0,
+        profitRate: 0.0,
+        holdings: [],
+        provider: '가상체결엔진 (키움 시세)',
+      };
+    }
+
+    const cashRow = db.prepare('SELECT COALESCE(SUM(virtual_krw), 0) as totalCash FROM bots').get();
+    const availableCash = cashRow ? cashRow.totalCash : 0;
+
+    const openPositions = db.prepare("SELECT * FROM bot_positions WHERE status = 'OPEN' AND trade_mode = 'VIRTUAL'").all();
+    let stockEvalAmount = 0;
+    let totalBuyAmount = 0;
+    const holdings = [];
+
+    for (const pos of openPositions) {
+      try {
+        const priceInfo = await this.kiwoomClient.getCurrentPrice(pos.stock_code);
+        const currentPrice = priceInfo.currentPrice || pos.avg_buy_price;
+        const evalAmt = currentPrice * pos.qty;
+        stockEvalAmount += evalAmt;
+        totalBuyAmount += pos.buy_amount;
+        holdings.push({
+          stockCode: pos.stock_code,
+          stockName: pos.stock_name,
+          qty: pos.qty,
+          avgBuyPrice: pos.avg_buy_price,
+          currentPrice,
+          evalAmount: evalAmt,
+          unrealizedProfitKrw: evalAmt - pos.buy_amount - (pos.buy_fee || 0),
+          unrealizedProfitPct: parseFloat((((evalAmt - pos.buy_amount) / pos.buy_amount) * 100).toFixed(2)),
+        });
+      } catch (e) {
+        stockEvalAmount += pos.buy_amount;
+        totalBuyAmount += pos.buy_amount;
+      }
+    }
+
+    const realizedRow = db.prepare("SELECT COALESCE(SUM(profit_krw), 0) as totalRealized FROM trades WHERE status = 'CLOSED' AND trade_mode = 'VIRTUAL'").get();
+    const realizedProfit = realizedRow ? realizedRow.totalRealized : 0;
+    const unrealizedProfit = stockEvalAmount - totalBuyAmount;
+    const totalProfitKrw = realizedProfit + unrealizedProfit;
+    const totalAssetAmount = availableCash + stockEvalAmount;
+
+    const seedSetting = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
+    const initialSeed = seedSetting ? parseInt(seedSetting.value, 10) : 30000000;
+    const profitRate = initialSeed > 0 ? parseFloat(((totalProfitKrw / initialSeed) * 100).toFixed(2)) : 0.0;
+
+    return {
+      availableCash,
+      stockEvalAmount,
+      totalAssetAmount,
+      totalProfitKrw,
+      profitRate,
+      holdings,
+      provider: '가상체결엔진 (키움 시세)',
+    };
   }
 
   // 봇별 성능 검증 지표 자동 산출 (누적 수익률, 승률, 손익비, MDD, 샤프 지수)

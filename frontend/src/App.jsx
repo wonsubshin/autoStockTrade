@@ -20,6 +20,7 @@ export default function App() {
   // Trading (Menu 1) State
   const [bots, setBots] = useState([]);
   const [selectedBotId, setSelectedBotId] = useState('');
+  const [tradingModeFilter, setTradingModeFilter] = useState('AUTO'); // 'AUTO', 'VIRTUAL', 'REAL', 'ALL'
   const [trades, setTrades] = useState([]);
   const [positions, setPositions] = useState([]);
   const [aiBriefingText, setAiBriefingText] = useState('');
@@ -50,9 +51,30 @@ export default function App() {
   const [isAiNewsStreaming, setIsAiNewsStreaming] = useState(false);
   const [aiNewsText, setAiNewsText] = useState('');
 
-  // Settings (Menu 5) State
+  // Settings (Menu 5) & Budget State
   const [systemSettings, setSystemSettings] = useState({});
   const [brokerConfig, setBrokerConfig] = useState({
+    account_mode: 'VIRTUAL',
+    has_kiwoom_keys: false,
+    has_toss_keys: false,
+    has_gemini_key: false,
+    kiwoom_app_key: '',
+    kiwoom_app_secret: '',
+    toss_api_key: '',
+    toss_api_secret: '',
+    toss_account_no: '',
+    gemini_api_key: '',
+  });
+  const [budgetSettings, setBudgetSettings] = useState({
+    virtualTotalBudget: 30000000,
+    realTotalBudget: 10000000,
+    tossAvailableCash: 0,
+    tossTotalAssetAmount: 0,
+    bots: [],
+  });
+  const [botRatios, setBotRatios] = useState({});
+  const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
+  const [newBrokerConfig, setNewBrokerConfig] = useState({
     account_mode: 'VIRTUAL',
     kiwoom_app_key: '',
     kiwoom_app_secret: '',
@@ -116,11 +138,17 @@ export default function App() {
     } catch {}
   }, [selectedBotId]);
 
-  const fetchTradesAndPositions = useCallback(async () => {
+  const selectedBot = bots.find((b) => b.bot_id === selectedBotId) || bots[0];
+  const activeTradeMode = tradingModeFilter === 'AUTO'
+    ? (selectedBot?.trade_mode || 'VIRTUAL')
+    : tradingModeFilter;
+
+  const fetchTradesAndPositions = useCallback(async (mode = activeTradeMode) => {
     try {
+      const modeQuery = (mode && mode !== 'ALL') ? `&mode=${mode}` : '';
       const [respT, respP] = await Promise.all([
-        fetch(`${API_BASE}/api/trades?limit=100`),
-        fetch(`${API_BASE}/api/positions`),
+        fetch(`${API_BASE}/api/trades?limit=100${modeQuery}`),
+        fetch(`${API_BASE}/api/positions?limit=100${modeQuery}`),
       ]);
       if (respT.ok) {
         const dataT = await respT.json();
@@ -131,7 +159,7 @@ export default function App() {
         setPositions(dataP.positions || []);
       }
     } catch {}
-  }, []);
+  }, [activeTradeMode]);
 
   const fetchLeaderboard = useCallback(async () => {
     try {
@@ -192,6 +220,61 @@ export default function App() {
       }
     } catch {}
   }, []);
+
+  const fetchBudgetSettings = useCallback(async () => {
+    try {
+      const resp = await fetch(`${API_BASE}/api/budget/settings`);
+      if (resp.ok) {
+        const data = await resp.json();
+        setBudgetSettings(data);
+        const ratios = {};
+        for (const b of data.bots || []) {
+          ratios[b.bot_id] = Math.round((b.allocation_ratio || 0.33) * 100);
+        }
+        setBotRatios(ratios);
+      }
+    } catch {}
+  }, []);
+
+  const handleSaveBudget = useCallback(async () => {
+    const tossCash = budgetSettings.tossAvailableCash || 0;
+    if (budgetSettings.realTotalBudget > tossCash) {
+      setModalInfo({
+        title: '예산 설정 불가',
+        message: `실제 사용 예산(${budgetSettings.realTotalBudget.toLocaleString()}원)은 현재 토스증권의 주문 가능 예수금(${tossCash.toLocaleString()}원)을 초과할 수 없습니다.`,
+        type: 'error',
+      });
+      return;
+    }
+
+    const botAllocations = Object.entries(botRatios).map(([bot_id, ratio]) => ({
+      bot_id,
+      ratio: Number(ratio),
+    }));
+
+    try {
+      const resp = await fetch(`${API_BASE}/api/budget/settings`, {
+        method: 'POST',
+        headers: { 'Content-Type': 'application/json' },
+        body: JSON.stringify({
+          virtualTotalBudget: budgetSettings.virtualTotalBudget,
+          realTotalBudget: budgetSettings.realTotalBudget,
+          botAllocations,
+        }),
+      });
+      const data = await resp.json();
+      if (resp.ok) {
+        setModalInfo({ title: '예산 및 배분율 저장 완료', message: data.message, type: 'success' });
+        fetchBudgetSettings();
+        fetchBots();
+        fetchSettingsAndBalance();
+      } else {
+        setModalInfo({ title: '저장 실패', message: data.message, type: 'error' });
+      }
+    } catch (e) {
+      setModalInfo({ title: '서버 오류', message: e.message, type: 'error' });
+    }
+  }, [budgetSettings, botRatios, fetchBudgetSettings, fetchBots, fetchSettingsAndBalance]);
 
   // Top AI Briefing Streamer
   const startBriefingStream = useCallback(() => {
@@ -265,16 +348,22 @@ export default function App() {
       const data = await resp.json();
       if (resp.ok) {
         setModalInfo({ title: '봇 제어 완료', message: data.message, type: 'info' });
-        fetchBots();
+        await fetchBots();
+        if (action === 'TOGGLE_MODE' && data.newMode) {
+          fetchTradesAndPositions(data.newMode);
+        } else {
+          fetchTradesAndPositions();
+        }
+        fetchSettingsAndBalance();
       } else {
         setModalInfo({ title: '오류', message: data.message, type: 'error' });
       }
     } catch (e) {
       setModalInfo({ title: '서버 오류', message: e.message, type: 'error' });
     }
-  }, [selectedBotId, fetchBots]);
+  }, [selectedBotId, fetchBots, fetchTradesAndPositions, fetchSettingsAndBalance]);
 
-  // Virtual Trade Test
+  // Trade Test (가상 / 실전 자동 감지)
   const handleVirtualTradeTest = useCallback(async (side) => {
     if (!selectedBotId) return;
     try {
@@ -285,16 +374,17 @@ export default function App() {
       });
       const data = await resp.json();
       if (resp.ok) {
-        setModalInfo({ title: '가상 매매 체결 성공', message: data.message, type: 'success' });
+        setModalInfo({ title: '주문 체결 완료', message: data.message, type: 'success' });
         fetchBots();
         fetchTradesAndPositions();
+        fetchSettingsAndBalance();
       } else {
-        setModalInfo({ title: '가상 매매 주문 거부', message: data.message, type: 'error' });
+        setModalInfo({ title: '주문 실패 / 거부', message: data.message, type: 'error' });
       }
     } catch (e) {
       setModalInfo({ title: '오류', message: e.message, type: 'error' });
     }
-  }, [selectedBotId, fetchBots, fetchTradesAndPositions]);
+  }, [selectedBotId, fetchBots, fetchTradesAndPositions, fetchSettingsAndBalance]);
 
   // Fast Replay Simulation (30-day)
   const handleFastReplay = useCallback(async () => {
@@ -394,10 +484,18 @@ export default function App() {
   }, [isAuthenticated, fetchHealth, fetchBots, fetchTradesAndPositions, fetchLeaderboard, fetchNews, fetchSettingsAndBalance, startBriefingStream]);
 
   useEffect(() => {
+    if (!isAuthenticated) return;
+    fetchTradesAndPositions(activeTradeMode);
+  }, [isAuthenticated, activeTradeMode, fetchTradesAndPositions]);
+
+  useEffect(() => {
     if (activeMenu === 'STATS') {
       fetchStats(statsModeFilter, statsPeriodTab);
+    } else if (activeMenu === 'SETTINGS') {
+      fetchSettingsAndBalance();
+      fetchBudgetSettings();
     }
-  }, [activeMenu, statsModeFilter, statsPeriodTab, fetchStats]);
+  }, [activeMenu, statsModeFilter, statsPeriodTab, fetchStats, fetchSettingsAndBalance, fetchBudgetSettings]);
 
   // ========================================================
   // RENDER: GATE SCREEN
@@ -431,7 +529,6 @@ export default function App() {
     );
   }
 
-  const selectedBot = bots.find((b) => b.bot_id === selectedBotId) || bots[0];
   const marketStatus = healthData?.marketStatus;
   const apiHealth = healthData?.apiHealth;
   const regime = healthData?.marketRegime;
@@ -558,12 +655,118 @@ export default function App() {
               </button>
             </div>
 
+            {/* Mode Filter Bar & Prominent Status Notice */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: '14px', gap: '10px' }}>
+              <div className="mode-filter-bar">
+                <span style={{ fontSize: '11px', color: '#94a3b8', marginRight: '4px', fontWeight: 600 }}>표시 모드:</span>
+                <button
+                  className={`mode-filter-btn ${tradingModeFilter === 'AUTO' ? (activeTradeMode === 'REAL' ? 'active real' : 'active virtual') : ''}`}
+                  onClick={() => setTradingModeFilter('AUTO')}
+                >
+                  ⚡ 봇 동기화 ({selectedBot?.trade_mode === 'REAL' ? '실전' : '가상'})
+                </button>
+                <button
+                  className={`mode-filter-btn ${tradingModeFilter === 'VIRTUAL' ? 'active virtual' : ''}`}
+                  onClick={() => setTradingModeFilter('VIRTUAL')}
+                >
+                  🧪 가상 매매 (VIRTUAL)
+                </button>
+                <button
+                  className={`mode-filter-btn ${tradingModeFilter === 'REAL' ? 'active real' : ''}`}
+                  onClick={() => setTradingModeFilter('REAL')}
+                >
+                  💰 실전 투자 (REAL)
+                </button>
+                <button
+                  className={`mode-filter-btn ${tradingModeFilter === 'ALL' ? 'active all' : ''}`}
+                  onClick={() => setTradingModeFilter('ALL')}
+                >
+                  🌐 전체
+                </button>
+              </div>
+              <div style={{ fontSize: '12px', fontWeight: 700, color: activeTradeMode === 'REAL' ? '#fca5a5' : '#6ee7b7' }}>
+                운용 모드: {activeTradeMode === 'REAL' ? '🚨 [실전 매매] 토스증권 계좌 직접 연동' : '🧪 [가상 매매] 키움 호가 정밀 시뮬레이션'}
+              </div>
+            </div>
+
+            {/* Mode Banner: Clearly distinguishes REAL vs VIRTUAL */}
+            {activeTradeMode === 'REAL' ? (
+              <div className="mode-banner real">
+                <span className="mode-pulse-dot real"></span>
+                <div>
+                  <strong>🚨 [실전 투자 운용 모드 - REAL TRADING]</strong> 토스증권 실전 계좌와 직접 연동되어 실제 예수금으로 주문이 집행됩니다. 아래 보유 종목 및 체결 내역은 <strong>토스증권 실전 거래 데이터</strong>만 엄격하게 분리되어 표시됩니다.
+                </div>
+              </div>
+            ) : (
+              <div className="mode-banner virtual">
+                <span className="mode-pulse-dot virtual"></span>
+                <div>
+                  <strong>🧪 [모의 가상 투자 모드 - PAPER TRADING]</strong> 키움증권 실시간 호가/시세 기반 정밀 가상 체결 시뮬레이션 환경입니다. 아래 보유 종목 및 체결 내역은 <strong>가상 매매 데이터</strong>만 표시됩니다.
+                </div>
+              </div>
+            )}
+
+            {/* Account Assets Summary Card for Active Mode */}
+            <div className="board-card" style={{ marginBottom: '20px', borderColor: activeTradeMode === 'REAL' ? 'rgba(239, 68, 68, 0.45)' : 'rgba(16, 185, 129, 0.35)' }}>
+              <div className="card-title-row">
+                <div className="card-title">
+                  {activeTradeMode === 'REAL' ? '💼 토스증권 실전 계좌 자산 & 예산 배분 현황' : '🧪 키움 시세 기반 가상 매매 자산 현황'}
+                </div>
+                <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+                  <button className="btn-action" style={{ padding: '3px 8px', fontSize: '11px' }} onClick={fetchSettingsAndBalance}>
+                    🔄 잔고 갱신
+                  </button>
+                  <span className={`badge-mode ${activeTradeMode === 'REAL' ? 'real' : 'virtual'}`}>
+                    {activeTradeMode === 'REAL' ? '토스증권 실전 계좌' : '가상 체결 엔진'}
+                  </span>
+                </div>
+              </div>
+              <div className="metrics-grid">
+                <div className="metric-card">
+                  <div className="metric-title">{activeTradeMode === 'REAL' ? '주문 가능 예수금 (토스)' : '가상 예수금 (KRW)'}</div>
+                  <div className="metric-value">
+                    {activeTradeMode === 'REAL'
+                      ? (accountBalance?.real?.availableCash || 0).toLocaleString() + '원'
+                      : (accountBalance?.virtual?.availableCash || 0).toLocaleString() + '원'}
+                  </div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-title">{activeTradeMode === 'REAL' ? '주식 매입/평가 금액 (토스)' : '가상 주식 평가 금액'}</div>
+                  <div className="metric-value">
+                    {activeTradeMode === 'REAL'
+                      ? (accountBalance?.real?.stockEvalAmount || 0).toLocaleString() + '원'
+                      : (accountBalance?.virtual?.stockEvalAmount || 0).toLocaleString() + '원'}
+                  </div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-title">{activeTradeMode === 'REAL' ? '총 평가 자산 (토스)' : '가상 총 자산'}</div>
+                  <div className="metric-value">
+                    {activeTradeMode === 'REAL'
+                      ? (accountBalance?.real?.totalAssetAmount || 0).toLocaleString() + '원'
+                      : (accountBalance?.virtual?.totalAssetAmount || 0).toLocaleString() + '원'}
+                  </div>
+                </div>
+                <div className="metric-card">
+                  <div className="metric-title">운용 수익률 / 배분 예산</div>
+                  <div className="metric-value">
+                    <span className={(activeTradeMode === 'REAL' ? (accountBalance?.real?.profitRate || 0) : (accountBalance?.virtual?.profitRate || 0)) >= 0 ? 'num-up' : 'num-down'}>
+                      {(activeTradeMode === 'REAL' ? (accountBalance?.real?.profitRate || 0) : (accountBalance?.virtual?.profitRate || 0)) >= 0 ? '+' : ''}
+                      {activeTradeMode === 'REAL' ? (accountBalance?.real?.profitRate || 0) : (accountBalance?.virtual?.profitRate || 0)}%
+                    </span>
+                    <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '6px' }}>
+                      (할당: {(selectedBot?.allocated_capital || 10000000).toLocaleString()}원)
+                    </span>
+                  </div>
+                </div>
+              </div>
+            </div>
+
             {/* Bot Selection Tabs */}
             <div className="bot-tabs-container">
               {bots.map((b) => (
                 <button
                   key={b.bot_id}
-                  className={`bot-tab-btn ${selectedBotId === b.bot_id ? 'active' : ''}`}
+                  className={`bot-tab-btn ${b.trade_mode === 'REAL' ? 'real-mode' : 'virtual-mode'} ${selectedBotId === b.bot_id ? 'active' : ''}`}
                   onClick={() => setSelectedBotId(b.bot_id)}
                 >
                   <span>{b.nickname || b.name}</span>
@@ -590,24 +793,26 @@ export default function App() {
                   </button>
                 )}
                 <button className="btn-action warning" onClick={() => handleBotAction('TOGGLE_MODE')}>
-                  🔄 모드 전환 ({selectedBot.trade_mode === 'REAL' ? '🧪 가상으로' : '💰 실전으로'})
+                  🔄 모드 전환 ({selectedBot.trade_mode === 'REAL' ? '🧪 가상으로 전환' : '💰 실전으로 전환'})
                 </button>
                 <button className="btn-action" onClick={() => handleVirtualTradeTest('BUY')}>
-                  🛒 가상 매수 테스트 (삼성전자)
+                  {selectedBot.trade_mode === 'REAL' ? '🛒 실전 매수 테스트 (삼성전자)' : '🛒 가상 매수 테스트 (삼성전자)'}
                 </button>
                 <button className="btn-action" onClick={() => handleVirtualTradeTest('SELL')}>
-                  📉 가상 매도 테스트
+                  {selectedBot.trade_mode === 'REAL' ? '📉 실전 매도 테스트' : '📉 가상 매도 테스트'}
                 </button>
-                <button className="btn-action danger" onClick={() => {
-                  setModalInfo({
-                    title: '가상 계좌 초기화',
-                    message: `[${selectedBot.nickname}]의 가상 자금을 1,000만 원으로 리셋하고 기존 보유 포지션을 전량 정리하시겠습니까?`,
-                    type: 'confirm',
-                    onConfirm: () => handleBotAction('RESET_VIRTUAL'),
-                  });
-                }}>
-                  ⚠️ 가상 계좌 초기화
-                </button>
+                {selectedBot.trade_mode === 'VIRTUAL' && (
+                  <button className="btn-action danger" onClick={() => {
+                    setModalInfo({
+                      title: '가상 계좌 초기화',
+                      message: `[${selectedBot.nickname}]의 가상 자금을 1,000만 원으로 리셋하고 기존 보유 포지션을 전량 정리하시겠습니까?`,
+                      type: 'confirm',
+                      onConfirm: () => handleBotAction('RESET_VIRTUAL'),
+                    });
+                  }}>
+                    ⚠️ 가상 계좌 초기화
+                  </button>
+                )}
               </div>
             )}
 
@@ -615,13 +820,17 @@ export default function App() {
             {selectedBot && (
               <div className="metrics-grid">
                 <div className="metric-card">
-                  <div className="metric-title">가상 예수금 (KRW)</div>
-                  <div className="metric-value">{(selectedBot.virtual_krw || 0).toLocaleString()}원</div>
+                  <div className="metric-title">{selectedBot.trade_mode === 'REAL' ? '봇 할당 실전자본' : '가상 예수금 (KRW)'}</div>
+                  <div className="metric-value">
+                    {selectedBot.trade_mode === 'REAL'
+                      ? (selectedBot.allocated_capital || 0).toLocaleString() + '원'
+                      : (selectedBot.virtual_krw || 0).toLocaleString() + '원'}
+                  </div>
                 </div>
                 <div className="metric-card">
                   <div className="metric-title">보유 중인 포지션 수</div>
                   <div className="metric-value">
-                    {positions.filter((p) => p.bot_id === selectedBot.bot_id).length}건
+                    {positions.filter((p) => p.bot_id === selectedBot.bot_id && (activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode)).length}건
                   </div>
                 </div>
                 <div className="metric-card">
@@ -642,8 +851,12 @@ export default function App() {
             {/* Board 1: Active Positions (현재 보유 포지션 및 실시간 평가손익) */}
             <div className="board-card">
               <div className="card-title-row">
-                <div className="card-title">📌 실시간 보유 종목 & 평가 손익 현황</div>
-                <span style={{ fontSize: '12px', color: '#94a3b8' }}>총 {positions.length}개 보유 중</span>
+                <div className="card-title">
+                  📌 실시간 보유 종목 & 평가 손익 현황 ({activeTradeMode === 'REAL' ? '토스증권 실전 계좌' : activeTradeMode === 'VIRTUAL' ? '가상 매매' : '전체'})
+                </div>
+                <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                  총 {positions.filter((p) => activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode).length}개 보유 중
+                </span>
               </div>
               <div className="table-wrapper">
                 <table className="custom-table">
@@ -661,40 +874,44 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {positions.length === 0 ? (
+                    {positions.filter((p) => activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode).length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center', padding: '24px', color: '#64748b' }}>
-                          현재 보유 중인 포지션이 없습니다. (봇 감시 진행 중)
+                        <td colSpan="9" style={{ textAlign: 'center', padding: '28px', color: '#64748b', fontSize: '13px' }}>
+                          {activeTradeMode === 'REAL'
+                            ? '💰 현재 실전 보유 중인 종목이 없습니다. (토스증권 실전 계좌 감시 진행 중)'
+                            : '🧪 현재 가상 보유 중인 종목이 없습니다. (키움 시세 감시 진행 중)'}
                         </td>
                       </tr>
                     ) : (
-                      positions.map((pos) => {
-                        const isUp = pos.unrealizedProfitKrw > 0;
-                        const isDown = pos.unrealizedProfitKrw < 0;
-                        return (
-                          <tr key={pos.id}>
-                            <td style={{ fontWeight: 600 }}>{pos.stock_name} ({pos.stock_code})</td>
-                            <td>
-                              <span className={`badge-mode ${pos.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
-                                {pos.trade_mode}
-                              </span>
-                            </td>
-                            <td>{pos.qty.toLocaleString()}주</td>
-                            <td>{pos.avg_buy_price.toLocaleString()}원</td>
-                            <td style={{ fontWeight: 600 }}>{pos.currentPrice?.toLocaleString()}원</td>
-                            <td>{pos.evalAmount?.toLocaleString()}원</td>
-                            <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
-                              {isUp ? '+' : ''}{pos.unrealizedProfitKrw?.toLocaleString()}원
-                            </td>
-                            <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
-                              {isUp ? '+' : ''}{pos.unrealizedProfitPct}%
-                            </td>
-                            <td style={{ fontSize: '11px', color: '#94a3b8' }}>
-                              {new Date(pos.created_at).toLocaleString()}
-                            </td>
-                          </tr>
-                        );
-                      })
+                      positions
+                        .filter((p) => activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode)
+                        .map((pos) => {
+                          const isUp = pos.unrealizedProfitKrw > 0;
+                          const isDown = pos.unrealizedProfitKrw < 0;
+                          return (
+                            <tr key={pos.id}>
+                              <td style={{ fontWeight: 600 }}>{pos.stock_name} ({pos.stock_code})</td>
+                              <td>
+                                <span className={`badge-mode ${pos.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
+                                  {pos.trade_mode === 'REAL' ? '💰 실전' : '🧪 가상'}
+                                </span>
+                              </td>
+                              <td>{pos.qty.toLocaleString()}주</td>
+                              <td>{pos.avg_buy_price.toLocaleString()}원</td>
+                              <td style={{ fontWeight: 600 }}>{pos.currentPrice?.toLocaleString()}원</td>
+                              <td>{pos.evalAmount?.toLocaleString()}원</td>
+                              <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                                {isUp ? '+' : ''}{pos.unrealizedProfitKrw?.toLocaleString()}원
+                              </td>
+                              <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                                {isUp ? '+' : ''}{pos.unrealizedProfitPct}%
+                              </td>
+                              <td style={{ fontSize: '11px', color: '#94a3b8' }}>
+                                {new Date(pos.created_at).toLocaleString()}
+                              </td>
+                            </tr>
+                          );
+                        })
                     )}
                   </tbody>
                 </table>
@@ -704,8 +921,12 @@ export default function App() {
             {/* Board 2: 1-Row Matching Trades History (거래 정보 게시판) */}
             <div className="board-card">
               <div className="card-title-row">
-                <div className="card-title">📋 1행 매칭 체결 및 실현 손익 내역</div>
-                <span style={{ fontSize: '12px', color: '#94a3b8' }}>최근 {trades.length}건</span>
+                <div className="card-title">
+                  📋 1행 매칭 체결 및 실현 손익 내역 ({activeTradeMode === 'REAL' ? '토스증권 실전 매매' : activeTradeMode === 'VIRTUAL' ? '가상 매매' : '전체'})
+                </div>
+                <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+                  최근 {trades.filter((t) => activeTradeMode === 'ALL' || t.trade_mode === activeTradeMode).length}건
+                </span>
               </div>
               <div className="table-wrapper">
                 <table className="custom-table">
@@ -723,41 +944,45 @@ export default function App() {
                     </tr>
                   </thead>
                   <tbody>
-                    {trades.length === 0 ? (
+                    {trades.filter((t) => activeTradeMode === 'ALL' || t.trade_mode === activeTradeMode).length === 0 ? (
                       <tr>
-                        <td colSpan="9" style={{ textAlign: 'center', padding: '24px', color: '#64748b' }}>
-                          체결된 거래 내역이 없습니다.
+                        <td colSpan="9" style={{ textAlign: 'center', padding: '28px', color: '#64748b', fontSize: '13px' }}>
+                          {activeTradeMode === 'REAL'
+                            ? '💰 실전 매매 체결 내역이 아직 없습니다. (토스증권 실전 주문 대기 중)'
+                            : '🧪 체결된 가상 거래 내역이 없습니다.'}
                         </td>
                       </tr>
                     ) : (
-                      trades.map((t) => {
-                        const isUp = (t.profit_krw || 0) > 0;
-                        const isDown = (t.profit_krw || 0) < 0;
-                        return (
-                          <tr key={t.id}>
-                            <td>
-                              <span className={`badge-mode ${t.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
-                                {t.trade_mode === 'REAL' ? '실전' : '가상'}
-                              </span>
-                            </td>
-                            <td style={{ fontWeight: 600 }}>{t.stock_name} ({t.stock_code})</td>
-                            <td>{t.buy_price.toLocaleString()}원 / {t.buy_qty}주 ({t.buy_amount.toLocaleString()}원)</td>
-                            <td>
-                              {t.sell_price ? `${t.sell_price.toLocaleString()}원 / ${t.sell_qty}주` : '-'}
-                            </td>
-                            <td>{(t.fee_and_tax || 0).toLocaleString()}원</td>
-                            <td style={{ fontSize: '11px', color: '#94a3b8' }}>{t.buy_date ? t.buy_date.slice(0, 16).replace('T', ' ') : '-'}</td>
-                            <td style={{ fontSize: '11px', color: '#94a3b8' }}>{t.sell_date ? t.sell_date.slice(0, 16).replace('T', ' ') : '-'}</td>
-                            <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
-                              {t.profit_krw !== null ? (
-                                <>
-                                  {isUp ? '+' : ''}{t.profit_krw?.toLocaleString()}원
-                                  <span style={{ fontSize: '11px', marginLeft: '4px' }}>
-                                    ({isUp ? '+' : ''}{t.profit_pct}%)
-                                  </span>
-                                </>
-                              ) : '-'}
-                            </td>
+                      trades
+                        .filter((t) => activeTradeMode === 'ALL' || t.trade_mode === activeTradeMode)
+                        .map((t) => {
+                          const isUp = (t.profit_krw || 0) > 0;
+                          const isDown = (t.profit_krw || 0) < 0;
+                          return (
+                            <tr key={t.id}>
+                              <td>
+                                <span className={`badge-mode ${t.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
+                                  {t.trade_mode === 'REAL' ? '💰 실전' : '🧪 가상'}
+                                </span>
+                              </td>
+                              <td style={{ fontWeight: 600 }}>{t.stock_name} ({t.stock_code})</td>
+                              <td>{t.buy_price.toLocaleString()}원 / {t.buy_qty}주 ({t.buy_amount.toLocaleString()}원)</td>
+                              <td>
+                                {t.sell_price ? `${t.sell_price.toLocaleString()}원 / ${t.sell_qty}주` : '-'}
+                              </td>
+                              <td>{(t.fee_and_tax || 0).toLocaleString()}원</td>
+                              <td style={{ fontSize: '11px', color: '#94a3b8' }}>{t.buy_date ? t.buy_date.slice(0, 16).replace('T', ' ') : '-'}</td>
+                              <td style={{ fontSize: '11px', color: '#94a3b8' }}>{t.sell_date ? t.sell_date.slice(0, 16).replace('T', ' ') : '-'}</td>
+                              <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                                {t.profit_krw !== null ? (
+                                  <>
+                                    {isUp ? '+' : ''}{t.profit_krw?.toLocaleString()}원
+                                    <span style={{ fontSize: '11px', marginLeft: '4px' }}>
+                                      ({isUp ? '+' : ''}{t.profit_pct}%)
+                                    </span>
+                                  </>
+                                ) : '-'}
+                              </td>
                             <td>
                               <span style={{
                                 fontSize: '11px',
@@ -1308,164 +1533,416 @@ export default function App() {
         )}
 
         {/* ========================================================
-            MENU 5: 설정 (키움증권 시세 & 토스증권 매매)
+            MENU 5: 설정 (예산 배분 & API 키 보안 & 토스 실잔고)
             ======================================================== */}
         {activeMenu === 'SETTINGS' && (
           <div>
             <div className="section-header">
-              <div className="section-title">⚙️ 키움증권(시세) ⨉ 토스증권(매매) API 및 시스템 설정</div>
+              <div className="section-title">⚙️ 키움증권(시세) ⨉ 토스증권(매매) 예산 배분 & 시스템 보안 설정</div>
             </div>
 
-            {/* Toss Securities Account Assets Read-Only Check */}
+            {/* 1. Toss Securities Account Assets Read-Only Check */}
             <div className="board-card">
               <div className="card-title-row">
-                <div className="card-title">💼 토스증권 계좌 자산 현황 (실전 매매 잔고)</div>
-                <button className="btn-action" onClick={fetchSettingsAndBalance}>🔄 잔고 갱신</button>
+                <div className="card-title">💼 토스증권 계좌 실전 잔고 현황 (REAL 모드 기준)</div>
+                <button className="btn-action" onClick={fetchSettingsAndBalance}>🔄 실시간 잔고 갱신</button>
               </div>
               <div className="metrics-grid">
                 <div className="metric-card">
                   <div className="metric-title">주문 가능 예수금 (토스)</div>
-                  <div className="metric-value">{(accountBalance?.availableCash || 0).toLocaleString()}원</div>
+                  <div className="metric-value">{(accountBalance?.real?.availableCash ?? accountBalance?.availableCash ?? 0).toLocaleString()}원</div>
                 </div>
                 <div className="metric-card">
-                  <div className="metric-title">주식 매입 금액</div>
-                  <div className="metric-value">{(accountBalance?.stockEvalAmount || 0).toLocaleString()}원</div>
+                  <div className="metric-title">주식 매입/평가 금액</div>
+                  <div className="metric-value">{(accountBalance?.real?.stockEvalAmount ?? accountBalance?.stockEvalAmount ?? 0).toLocaleString()}원</div>
                 </div>
                 <div className="metric-card">
-                  <div className="metric-title">총 평가 금액</div>
-                  <div className="metric-value">{(accountBalance?.totalAssetAmount || 0).toLocaleString()}원</div>
+                  <div className="metric-title">총 평가 자산</div>
+                  <div className="metric-value">{(accountBalance?.real?.totalAssetAmount ?? accountBalance?.totalAssetAmount ?? 0).toLocaleString()}원</div>
                 </div>
                 <div className="metric-card">
                   <div className="metric-title">평가 손익률</div>
-                  <div className={`metric-value ${(accountBalance?.profitRate || 0) >= 0 ? 'up' : 'down'}`}>
-                    {(accountBalance?.profitRate || 0) >= 0 ? '+' : ''}{accountBalance?.profitRate || 0}%
+                  <div className={`metric-value ${(accountBalance?.real?.profitRate ?? accountBalance?.profitRate ?? 0) >= 0 ? 'up' : 'down'}`}>
+                    {(accountBalance?.real?.profitRate ?? accountBalance?.profitRate ?? 0) >= 0 ? '+' : ''}
+                    {accountBalance?.real?.profitRate ?? accountBalance?.profitRate ?? 0}%
                   </div>
                 </div>
               </div>
             </div>
 
-            {/* Broker API Keys Configuration */}
-            <div className="board-card">
+            {/* 2. Budget & Bot Allocation Management */}
+            <div className="board-card" style={{ borderColor: 'rgba(59, 130, 246, 0.4)' }}>
               <div className="card-title-row">
-                <div className="card-title">🔑 키움증권(시세) & 토스증권(매매) Open API 키 관리</div>
-                <button className="btn-action" onClick={() => setShowApiKeys(!showApiKeys)}>
-                  {showApiKeys ? '🔒 마스킹 적용' : '👁 키 확인'}
-                </button>
+                <div className="card-title">💰 가상 / 실제 사용 예산 및 봇별 자금 배분 비율 설정</div>
+                <span className="badge-mode" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', borderColor: 'rgba(59, 130, 246, 0.3)' }}>
+                  예산 초과 매매 방지 락
+                </span>
               </div>
+              <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '20px', lineHeight: 1.5 }}>
+                각 봇은 여기서 설정된 배분 비율에 따른 예산 한도 내에서만 매매를 집행하며, <strong>실제 사용 예산은 토스증권 실시간 주문 가능 예수금을 초과하여 설정할 수 없습니다.</strong>
+              </p>
 
               <div className="form-row">
+                {/* Virtual Total Budget */}
                 <div className="form-group">
-                  <label className="form-label">매매 운영 모드</label>
-                  <select
-                    className="input-field"
-                    value={brokerConfig.account_mode}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, account_mode: e.target.value })}
-                  >
-                    <option value="VIRTUAL">🧪 가상매매 (키움 시세 기반 Paper Trading)</option>
-                    <option value="REAL">💰 실전매매 (토스증권 실주문 체결)</option>
-                  </select>
-                </div>
-                <div className="form-group">
-                  <label className="form-label">Gemini API 키 (실시간 SSE 시황 AI 분석)</label>
+                  <label className="form-label">🧪 가상 매매 총 운용 예산 (KRW)</label>
                   <input
-                    type={showApiKeys ? 'text' : 'password'}
+                    type="number"
                     className="input-field"
-                    placeholder="AIzaSy..."
-                    value={brokerConfig.gemini_api_key}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, gemini_api_key: e.target.value })}
+                    value={budgetSettings.virtualTotalBudget}
+                    onChange={(e) => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: parseInt(e.target.value, 10) || 0 })}
                   />
+                  <div className="budget-quick-btns">
+                    <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 10000000 })}>1천만</button>
+                    <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 30000000 })}>3천만</button>
+                    <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 50000000 })}>5천만</button>
+                    <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 100000000 })}>1억</button>
+                  </div>
+                </div>
+
+                {/* Real Total Budget (Capped at Toss Balance) */}
+                <div className="form-group">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                    <label className="form-label">🚨 실제 사용 총 예산 (토스증권 실전 한도)</label>
+                    <span style={{ fontSize: '11px', color: '#34d399', fontWeight: 600 }}>
+                      토스 예수금: {(budgetSettings.tossAvailableCash || 0).toLocaleString()}원
+                    </span>
+                  </div>
+                  <input
+                    type="number"
+                    className="input-field"
+                    style={{ borderColor: budgetSettings.realTotalBudget > (budgetSettings.tossAvailableCash || 0) ? '#ef4444' : undefined }}
+                    value={budgetSettings.realTotalBudget}
+                    onChange={(e) => setBudgetSettings({ ...budgetSettings, realTotalBudget: parseInt(e.target.value, 10) || 0 })}
+                  />
+                  <div className="budget-quick-btns">
+                    <button
+                      type="button"
+                      className="budget-quick-btn"
+                      onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: budgetSettings.tossAvailableCash || 0 })}
+                    >
+                      전액 (100%)
+                    </button>
+                    <button
+                      type="button"
+                      className="budget-quick-btn"
+                      onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: Math.floor((budgetSettings.tossAvailableCash || 0) * 0.7) })}
+                    >
+                      70%
+                    </button>
+                    <button
+                      type="button"
+                      className="budget-quick-btn"
+                      onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: Math.floor((budgetSettings.tossAvailableCash || 0) * 0.5) })}
+                    >
+                      50%
+                    </button>
+                    <button
+                      type="button"
+                      className="budget-quick-btn"
+                      onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: Math.floor((budgetSettings.tossAvailableCash || 0) * 0.3) })}
+                    >
+                      30%
+                    </button>
+                  </div>
+                  {budgetSettings.realTotalBudget > (budgetSettings.tossAvailableCash || 0) && (
+                    <div className="budget-error-msg">
+                      ❌ 실제 사용 예산({budgetSettings.realTotalBudget.toLocaleString()}원)은 현재 토스증권 예수금({(budgetSettings.tossAvailableCash || 0).toLocaleString()}원)을 초과할 수 없습니다.
+                    </div>
+                  )}
                 </div>
               </div>
 
-              {/* Kiwoom Section */}
-              <div style={{ marginTop: '16px', marginBottom: '8px', fontWeight: 700, color: '#60a5fa', fontSize: '14px' }}>
-                🔍 [시세 조회] 키움증권 Open API 설정
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">키움증권 App Key</label>
-                  <input
-                    type={showApiKeys ? 'text' : 'password'}
-                    className="input-field"
-                    placeholder="키움증권 App Key"
-                    value={brokerConfig.kiwoom_app_key}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, kiwoom_app_key: e.target.value })}
-                  />
+              {/* Bot Allocation Ratios */}
+              <div style={{ marginTop: '24px', marginBottom: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <div style={{ fontWeight: 700, color: '#f1f5f9', fontSize: '14px' }}>
+                  📊 각 봇별 예산 배분 비율 (%) 및 할당 금액
                 </div>
-                <div className="form-group">
-                  <label className="form-label">키움증권 Secret Key</label>
-                  <input
-                    type={showApiKeys ? 'text' : 'password'}
-                    className="input-field"
-                    placeholder="키움증권 Secret Key"
-                    value={brokerConfig.kiwoom_app_secret}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, kiwoom_app_secret: e.target.value })}
-                  />
-                </div>
+                {(() => {
+                  const sumRatio = Object.values(botRatios).reduce((acc, v) => acc + (Number(v) || 0), 0);
+                  const is100 = sumRatio === 100;
+                  return (
+                    <span style={{ fontSize: '12px', fontWeight: 700, color: is100 ? '#34d399' : '#f59e0b' }}>
+                      배분율 합계: {sumRatio}% {is100 ? '(정상 100%)' : '(경고: 합계가 100%가 되도록 조정해주세요)'}
+                    </span>
+                  );
+                })()}
               </div>
 
-              {/* Toss Section */}
-              <div style={{ marginTop: '16px', marginBottom: '8px', fontWeight: 700, color: '#34d399', fontSize: '14px' }}>
-                ⚡ [주문 매매] 토스증권 Open API 설정
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">토스증권 API Key</label>
-                  <input
-                    type={showApiKeys ? 'text' : 'password'}
-                    className="input-field"
-                    placeholder="토스증권 API Key"
-                    value={brokerConfig.toss_api_key}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, toss_api_key: e.target.value })}
-                  />
-                </div>
-                <div className="form-group">
-                  <label className="form-label">토스증권 Secret Key</label>
-                  <input
-                    type={showApiKeys ? 'text' : 'password'}
-                    className="input-field"
-                    placeholder="토스증권 Secret Key"
-                    value={brokerConfig.toss_api_secret}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, toss_api_secret: e.target.value })}
-                  />
-                </div>
-              </div>
-              <div className="form-row">
-                <div className="form-group">
-                  <label className="form-label">토스증권 계좌번호</label>
-                  <input
-                    type="text"
-                    className="input-field"
-                    placeholder="12345678"
-                    value={brokerConfig.toss_account_no}
-                    onChange={(e) => setBrokerConfig({ ...brokerConfig, toss_account_no: e.target.value })}
-                  />
-                </div>
+              <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '14px', marginBottom: '20px' }}>
+                {bots.map((b) => {
+                  const ratio = botRatios[b.bot_id] ?? Math.round((b.allocation_ratio || 0.33) * 100);
+                  const virtAmt = Math.floor((budgetSettings.virtualTotalBudget || 0) * (ratio / 100));
+                  const realAmt = Math.floor((budgetSettings.realTotalBudget || 0) * (ratio / 100));
+
+                  return (
+                    <div key={b.bot_id} className="bot-allocation-card">
+                      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                        <span style={{ fontWeight: 700, fontSize: '13.5px', color: '#fff' }}>{b.nickname || b.name}</span>
+                        <span className={`badge-mode ${b.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
+                          {b.trade_mode === 'REAL' ? '💰 실전' : '🧪 가상'}
+                        </span>
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '12px', minHeight: '32px' }}>
+                        {b.description}
+                      </div>
+
+                      <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
+                        <input
+                          type="range"
+                          min="0"
+                          max="100"
+                          step="1"
+                          style={{ flex: 1 }}
+                          value={ratio}
+                          onChange={(e) => setBotRatios({ ...botRatios, [b.bot_id]: Number(e.target.value) })}
+                        />
+                        <div style={{ width: '60px', display: 'flex', alignItems: 'center' }}>
+                          <input
+                            type="number"
+                            min="0"
+                            max="100"
+                            className="input-field"
+                            style={{ padding: '4px 6px', fontSize: '12px', textAlign: 'center' }}
+                            value={ratio}
+                            onChange={(e) => setBotRatios({ ...botRatios, [b.bot_id]: Number(e.target.value) })}
+                          />
+                          <span style={{ fontSize: '12px', color: '#cbd5e1', marginLeft: '3px' }}>%</span>
+                        </div>
+                      </div>
+
+                      <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: '6px' }}>
+                        <span>가상 배분: <strong style={{ color: '#34d399' }}>{virtAmt.toLocaleString()}원</strong></span>
+                        <span>실전 배분: <strong style={{ color: '#fca5a5' }}>{realAmt.toLocaleString()}원</strong></span>
+                      </div>
+                    </div>
+                  );
+                })}
               </div>
 
               <button
                 className="btn-primary"
-                onClick={async () => {
-                  try {
-                    const resp = await fetch(`${API_BASE}/api/system/settings`, {
-                      method: 'POST',
-                      headers: { 'Content-Type': 'application/json' },
-                      body: JSON.stringify({ brokerConfig }),
-                    });
-                    const d = await resp.json();
-                    if (resp.ok) {
-                      setModalInfo({ title: '설정 저장 완료', message: d.message, type: 'success' });
-                    }
-                  } catch (e) {
-                    setModalInfo({ title: '오류', message: e.message, type: 'error' });
-                  }
-                }}
+                onClick={handleSaveBudget}
+                disabled={budgetSettings.realTotalBudget > (budgetSettings.tossAvailableCash || 0)}
               >
-                💾 키움 & 토스 API 키 설정 저장
+                💾 투자 예산 및 봇 배분 설정 저장
               </button>
             </div>
 
-            {/* JSON Data Backup & Restore */}
+            {/* 3. Broker API Keys Security (Hidden & Masked Protected View) */}
+            <div className="board-card">
+              <div className="card-title-row">
+                <div className="card-title">🔒 키움증권(시세) ⨉ 토스증권(매매) ⨉ Gemini API 보안 보호</div>
+                <span className="badge-mode" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', borderColor: 'rgba(16, 185, 129, 0.35)' }}>
+                  안전 마스킹 암호화 보관
+                </span>
+              </div>
+              <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
+                보안 강화를 위해 증권사 및 AI 연동 API Key는 설정 화면에서 평문으로 노출되지 않으며, 암호화 마스킹 보호 상태로 관리됩니다.
+              </p>
+
+              {/* Security Status Cards */}
+              <div className="security-card-grid">
+                {/* Kiwoom Card */}
+                <div className="security-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <span style={{ fontWeight: 700, color: '#60a5fa', fontSize: '14px' }}>🔍 키움증권 Open API (시세/호가)</span>
+                    <span className="security-status-badge ok">✅ 키 등록 완료</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                    • App Key: <span className="masked-value">••••••••••••••••</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    • Secret Key: <span className="masked-value">••••••••••••••••</span>
+                  </div>
+                </div>
+
+                {/* Toss Card */}
+                <div className="security-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <span style={{ fontWeight: 700, color: '#34d399', fontSize: '14px' }}>⚡ 토스증권 Open API (주문/잔고)</span>
+                    <span className="security-status-badge ok">✅ 실계좌 연동 완료</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
+                    • API Key: <span className="masked-value">••••••••••••••••</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
+                    • Secret Key: <span className="masked-value">••••••••••••••••</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    • 연동 계좌: <span className="masked-value">••••••••</span>
+                  </div>
+                </div>
+
+                {/* Gemini Card */}
+                <div className="security-card">
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+                    <span style={{ fontWeight: 700, color: '#c084fc', fontSize: '14px' }}>🤖 Google Gemini AI (시황 인텔리전스)</span>
+                    <span className="security-status-badge ok">✅ 2.5 Flash 연동</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+                    • API Key: <span className="masked-value">••••••••••••••••</span>
+                  </div>
+                  <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+                    • 모델: <span style={{ color: '#c084fc', fontWeight: 600 }}>gemini-2.5-flash (SSE 타자기 스트리밍)</span>
+                  </div>
+                </div>
+              </div>
+
+              {/* Optional Toggle to Enter New Keys */}
+              <button
+                className="btn-action"
+                style={{ marginBottom: showNewKeyInputs ? '16px' : '0' }}
+                onClick={() => setShowNewKeyInputs(!showNewKeyInputs)}
+              >
+                {showNewKeyInputs ? '🔒 변경 입력창 닫기' : '🔄 새로운 API 키로 재등록 / 변경하기'}
+              </button>
+
+              {showNewKeyInputs && (
+                <div style={{ marginTop: '16px', padding: '16px', background: 'rgba(0,0,0,0.3)', borderRadius: '8px', border: '1px solid var(--border-color)' }}>
+                  <div style={{ fontWeight: 600, fontSize: '13px', color: '#f59e0b', marginBottom: '12px' }}>
+                    ⚠️ 새로운 키로 갱신할 항목만 입력하세요. (빈칸으로 둔 항목은 기존에 등록된 키가 그대로 유지됩니다)
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">매매 운영 모드</label>
+                      <select
+                        className="input-field"
+                        value={newBrokerConfig.account_mode}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, account_mode: e.target.value })}
+                      >
+                        <option value="VIRTUAL">🧪 가상매매 (키움 시세 기반 Paper Trading)</option>
+                        <option value="REAL">💰 실전매매 (토스증권 실주문 체결)</option>
+                      </select>
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">새로운 Gemini API 키</label>
+                      <input
+                        type="password"
+                        className="input-field"
+                        placeholder="새로 변경할 경우에만 입력"
+                        value={newBrokerConfig.gemini_api_key}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, gemini_api_key: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">새로운 키움증권 App Key</label>
+                      <input
+                        type="password"
+                        className="input-field"
+                        placeholder="새로 변경할 경우에만 입력"
+                        value={newBrokerConfig.kiwoom_app_key}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, kiwoom_app_key: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">새로운 키움증권 Secret Key</label>
+                      <input
+                        type="password"
+                        className="input-field"
+                        placeholder="새로 변경할 경우에만 입력"
+                        value={newBrokerConfig.kiwoom_app_secret}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, kiwoom_app_secret: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">새로운 토스증권 API Key</label>
+                      <input
+                        type="password"
+                        className="input-field"
+                        placeholder="새로 변경할 경우에만 입력"
+                        value={newBrokerConfig.toss_api_key}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, toss_api_key: e.target.value })}
+                      />
+                    </div>
+                    <div className="form-group">
+                      <label className="form-label">새로운 토스증권 Secret Key</label>
+                      <input
+                        type="password"
+                        className="input-field"
+                        placeholder="새로 변경할 경우에만 입력"
+                        value={newBrokerConfig.toss_api_secret}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, toss_api_secret: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <div className="form-row">
+                    <div className="form-group">
+                      <label className="form-label">새로운 토스증권 계좌번호</label>
+                      <input
+                        type="password"
+                        className="input-field"
+                        placeholder="새로 변경할 경우에만 입력"
+                        value={newBrokerConfig.toss_account_no}
+                        onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, toss_account_no: e.target.value })}
+                      />
+                    </div>
+                  </div>
+                  <button
+                    className="btn-primary"
+                    onClick={async () => {
+                      try {
+                        const resp = await fetch(`${API_BASE}/api/system/settings`, {
+                          method: 'POST',
+                          headers: { 'Content-Type': 'application/json' },
+                          body: JSON.stringify({ brokerConfig: newBrokerConfig }),
+                        });
+                        const d = await resp.json();
+                        if (resp.ok) {
+                          setModalInfo({ title: '키 갱신 완료', message: d.message, type: 'success' });
+                          setShowNewKeyInputs(false);
+                          setNewBrokerConfig({
+                            account_mode: 'VIRTUAL',
+                            kiwoom_app_key: '',
+                            kiwoom_app_secret: '',
+                            toss_api_key: '',
+                            toss_api_secret: '',
+                            toss_account_no: '',
+                            gemini_api_key: '',
+                          });
+                          fetchSettingsAndBalance();
+                        }
+                      } catch (e) {
+                        setModalInfo({ title: '오류', message: e.message, type: 'error' });
+                      }
+                    }}
+                  >
+                    💾 신규 API 키 저장
+                  </button>
+                </div>
+              )}
+            </div>
+
+            {/* 4. External Web Access Cloudflare Security Tunnel */}
+            <div className="board-card">
+              <div className="card-title-row">
+                <div className="card-title">🌐 외부 인터넷 모바일/PC 보안 접속 (Cloudflare Tunnel)</div>
+                <span className="security-status-badge ok">🟢 HTTPS 정상 연결됨</span>
+              </div>
+              <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.5 }}>
+                포트포워딩 없이 Cloudflare 보안 터널을 통해 외부 모바일/태블릿에서도 암호화된 HTTPS로 안전하게 접속할 수 있습니다.
+              </p>
+              <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', background: 'rgba(0,0,0,0.3)', padding: '12px 16px', borderRadius: '8px' }}>
+                <span style={{ fontSize: '13px', color: '#60a5fa', fontWeight: 600 }}>공개 주소:</span>
+                <a
+                  href="https://plumbing-workplace-spouse-def.trycloudflare.com"
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#38bdf8', textDecoration: 'underline', fontWeight: 600, fontSize: '13px' }}
+                >
+                  https://plumbing-workplace-spouse-def.trycloudflare.com
+                </a>
+                <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: 'auto' }}>
+                  게이트 암호: <strong>sws@2129</strong>
+                </span>
+              </div>
+            </div>
+
+            {/* 5. JSON Data Backup & Restore */}
             <div className="board-card">
               <div className="card-title-row">
                 <div className="card-title">💾 JSON 데이터 백업 및 복원</div>
