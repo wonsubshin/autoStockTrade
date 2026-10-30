@@ -77,6 +77,8 @@ autoStockTrader/
 │   └── migrate_sqlite_to_pg.py  # SQLite -> PostgreSQL 전체 8개 테이블 마이그레이션 스크립트
 ├── start_services.sh            # 백엔드(8100) 및 프론트엔드(9900) 백그라운드 원클릭 실행 스크립트
 ├── stop_services.sh             # 실행 중인 서비스 정상 종료 스크립트
+├── start_tunnel.sh              # Cloudflare 외부 인터넷 접속 보안 터널 실행 스크립트
+├── stop_tunnel.sh               # Cloudflare 보안 터널 종료 스크립트
 ├── .env                         # LOCATION=local|outer, PostgreSQL 접속 정보, Gemini API 키
 └── prompt.md                    # 전체 시스템 요구사항 및 기획서
 ```
@@ -109,9 +111,14 @@ python3 ./scripts/migrate_sqlite_to_pg.py
 
 ### 4) 외부 접속 (Cloudflare Quick Tunnel)
 ```bash
-cloudflared tunnel --url http://127.0.0.1:9900
+# 터널 시작
+./start_tunnel.sh
+
+# 터널 종료
+./stop_tunnel.sh
 ```
-생성된 `https://*.trycloudflare.com` 주소로 외부 모바일/태블릿 어디서나 안전하게 접속할 수 있습니다.
+- 발급된 보안 HTTPS 주소(`https://*.trycloudflare.com`)를 통해 외부 모바일, 태블릿, 외부 PC 어디서나 포트포워딩 없이 안전하게 접속할 수 있습니다.
+- 백엔드 API (`/api/*`)와 게이트 보안(`sws@2129`)이 그대로 연동됩니다.
 
 ---
 
