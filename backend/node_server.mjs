@@ -4,11 +4,13 @@ import path from 'node:path';
 import { fileURLToPath } from 'node:url';
 import { DatabaseSync } from 'node:sqlite';
 
-import { KiwoomClient, TOP_KR_STOCKS } from './common/kiwoom_client.mjs';
+import { KiwoomClient, TOP_KR_STOCKS, TOP_US_STOCKS, ALL_CANDIDATE_STOCKS } from './common/kiwoom_client.mjs';
 import { TossClient } from './common/toss_client.mjs';
 import { VirtualPaperTradingEngine } from './common/virtual_engine.mjs';
 import { NewsService } from './common/news_service.mjs';
 import { PgSyncManager } from './common/pg_sync.mjs';
+import { PythonExecutorBridge } from './common/python_executor_bridge.mjs';
+import { LLMDecisionService } from './common/llm_decision_service.mjs';
 
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
@@ -171,6 +173,23 @@ function initDatabase() {
       briefing_text TEXT,
       created_at TEXT
     );
+
+    CREATE TABLE IF NOT EXISTS ai_trade_decisions (
+      id INTEGER PRIMARY KEY AUTOINCREMENT,
+      symbol TEXT NOT NULL,
+      stock_name TEXT NOT NULL,
+      market TEXT NOT NULL,
+      action TEXT NOT NULL,
+      confidence INTEGER NOT NULL,
+      sentiment_score REAL NOT NULL,
+      reasoning TEXT NOT NULL,
+      suggested_order_type TEXT,
+      executed_by TEXT,
+      execution_status TEXT,
+      order_no TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
   `);
 
   // Initial Seed Data
@@ -384,10 +403,12 @@ function seedInitialData() {
   }
 }
 
-// 2. Initialize Services (키움증권 시세 + 토스증권 매매)
+// 2. Initialize Services (키움증권 시세 + 토스증권 매매 + Python Core Executor + LLM Decision Service)
 initDatabase();
 const kiwoomClient = new KiwoomClient(PROJECT_ROOT);
 const tossClient = new TossClient(PROJECT_ROOT);
+const pythonBridge = new PythonExecutorBridge(PROJECT_ROOT);
+const llmDecisionService = new LLMDecisionService(PROJECT_ROOT, () => db);
 const virtualEngine = new VirtualPaperTradingEngine(() => db, kiwoomClient);
 const newsService = new NewsService(() => db);
 const pgSyncManager = new PgSyncManager(PROJECT_ROOT, () => db);
@@ -442,16 +463,20 @@ function startBotScheduler() {
             if (pos.trade_mode === 'VIRTUAL') {
               await virtualEngine.executeVirtualSell({ positionId: pos.id, reason: sellReason });
             } else {
-              // Real order via Toss Securities
+              // Real order via Python Executor
               try {
-                const orderRes = await tossClient.sendOrder({
-                  orderType: 'SELL',
-                  stockCode: pos.stock_code,
-                  qty: pos.qty,
-                  price: 0, // 시장가
+                const isKr = /^[0-9]/.test(pos.stock_code);
+                const orderRes = await pythonBridge.executeOrder({
+                  symbol: pos.stock_code,
+                  side: 'SELL',
+                  orderType: 'MARKET',
+                  market: isKr ? 'KR' : 'US',
+                  quantity: pos.qty,
+                  price: 0,
+                  reason: sellReason,
                 });
                 const executionPrice = currentPrice;
-                const sellAmount = executionPrice * pos.qty;
+                const sellAmount = Math.round(executionPrice * pos.qty);
                 const feeAndTax = Math.round(sellAmount * (0.00015 + 0.0018)) + (pos.buy_fee || 0);
                 const profitKrw = (sellAmount - pos.buy_amount) - feeAndTax;
                 const profitPct = parseFloat(((profitKrw / pos.buy_amount) * 100).toFixed(2));
@@ -472,7 +497,7 @@ function startBotScheduler() {
                         status = 'CLOSED'
                     WHERE id = ?
                   `).run(
-                    orderRes.orderNo || `TORD_S_${Date.now()}`,
+                    orderRes.orderId || `TORD_S_${Date.now()}`,
                     executionPrice,
                     pos.qty,
                     sellAmount,
@@ -484,12 +509,12 @@ function startBotScheduler() {
                   );
                 }
                 db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                  `[토스 실전매도] ${pos.stock_name} ${pos.qty}주 @ ${executionPrice.toLocaleString()}원 (${profitPct >= 0 ? '+' : ''}${profitPct}%, 이유: ${sellReason})`,
+                  `[🐍 Python 실전매도] ${pos.stock_name} ${pos.qty}주 @ ${executionPrice.toLocaleString()}원 (${profitPct >= 0 ? '+' : ''}${profitPct}%, 이유: ${sellReason})`,
                   nowIso,
                   bot.bot_id
                 );
               } catch (err) {
-                console.error('[BotScheduler] 토스 실전 매도 에러:', err.message);
+                console.error('[BotScheduler] Python 실전 매도 에러:', err.message);
               }
             }
           }
@@ -507,11 +532,11 @@ function startBotScheduler() {
         const openCount = db.prepare("SELECT COUNT(*) as cnt FROM bot_positions WHERE bot_id = ? AND trade_mode = ? AND status = 'OPEN'").get(bot.bot_id, bot.trade_mode).cnt;
         if (openCount > 0) continue; // 포지션 보유 중이면 신규 진입 대기
 
-        // Select a candidate stock from TOP_KR_STOCKS via Kiwoom market inquiry
-        const candidate = TOP_KR_STOCKS[Math.floor(Math.random() * TOP_KR_STOCKS.length)];
+        // Select candidate from ALL_CANDIDATE_STOCKS (국내 및 미국 소수점 종목)
+        const candidate = ALL_CANDIDATE_STOCKS[Math.floor(Math.random() * ALL_CANDIDATE_STOCKS.length)];
         const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
 
-        // Simulation strategy condition trigger (roughly 1 in 8 ticks during active run)
+        // Simulation strategy condition trigger
         const isEntryTriggered = Math.random() < 0.12;
         if (isEntryTriggered) {
           const nowIso = new Date().toISOString();
@@ -528,7 +553,9 @@ function startBotScheduler() {
               const remainingCap = Math.max(0, botCap - usedCap);
 
               const perTradeBudget = Math.min(bot.virtual_krw || 0, remainingCap, Math.floor(botCap * 0.4));
-              if (perTradeBudget >= priceInfo.currentPrice) {
+              const minReq = candidate.isFractional ? 1000 : priceInfo.currentPrice;
+
+              if (perTradeBudget >= minReq) {
                 await virtualEngine.executeVirtualBuy({
                   botId: bot.bot_id,
                   stockCode: candidate.code,
@@ -544,7 +571,7 @@ function startBotScheduler() {
               }
             } catch (err) {}
           } else {
-            // REAL 모드: 토스 실전 예산 한도 및 실잔고 내 집행
+            // REAL 모드: Python Core Executor를 통한 안전 실전 매매 집행
             try {
               const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
               const realTotalBudget = realBudgetRow ? parseInt(realBudgetRow.value, 10) : 10000000;
@@ -557,67 +584,129 @@ function startBotScheduler() {
               const tossBal = await tossClient.getAccountBalance();
               const availableRealCash = Math.min(tossBal.availableCash, remainingCap);
               const perTradeBudget = Math.min(availableRealCash, Math.floor(botCap * 0.4));
-              const qty = Math.floor(perTradeBudget / priceInfo.currentPrice);
 
-              if (qty > 0 && perTradeBudget >= priceInfo.currentPrice) {
-                const buyAmount = priceInfo.currentPrice * qty;
-                const buyFee = Math.round(buyAmount * 0.00015);
-                const orderRes = await tossClient.sendOrder({
-                  orderType: 'BUY',
-                  stockCode: candidate.code,
-                  qty,
-                  price: priceInfo.currentPrice,
-                });
-                const orderNo = orderRes.orderNo || `TORD_B_${Date.now()}`;
+              const isFractional = !!candidate.isFractional;
 
-                const insertTrade = db.prepare(`
-                  INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
-                                      buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
-                  VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-                `);
-                const tradeRes = insertTrade.run(
-                  bot.bot_id,
-                  candidate.code,
-                  candidate.name,
-                  orderNo,
-                  priceInfo.currentPrice,
-                  qty,
-                  buyAmount,
-                  nowIso,
-                  buyFee
-                );
+              if (isFractional) {
+                // 미국 주식 소수점 금액 주문
+                const usdRate = await pythonBridge.getExchangeRate();
+                const perTradeBudgetUsd = perTradeBudget / usdRate;
 
-                db.prepare(`
-                  INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
-                                             qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-                  VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-                `).run(
-                  bot.bot_id,
-                  candidate.code,
-                  candidate.name,
-                  orderNo,
-                  qty,
-                  priceInfo.currentPrice,
-                  buyAmount,
-                  buyFee,
-                  tradeRes.lastInsertRowid,
-                  nowIso
-                );
+                if (perTradeBudgetUsd >= 0.05 && perTradeBudget >= 100) {
+                  const orderRes = await pythonBridge.executeOrder({
+                    symbol: candidate.code,
+                    side: 'BUY',
+                    orderType: 'MARKET',
+                    market: 'US',
+                    orderAmount: perTradeBudgetUsd.toFixed(2),
+                    reason: 'AI LLM 퀀트 신호',
+                  });
 
-                db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                  `[토스 실전매수] ${candidate.name} ${qty}주 @ ${priceInfo.currentPrice.toLocaleString()}원 체결 완료`,
-                  nowIso,
-                  bot.bot_id
-                );
+                  const orderNo = orderRes.orderId || `TORD_B_${Date.now()}`;
+                  const buyAmount = Math.round(perTradeBudgetUsd * usdRate);
+                  const buyQty = parseFloat((perTradeBudgetUsd / (priceInfo.currentPriceUsd || 100)).toFixed(6));
+                  const buyFee = Math.round(buyAmount * 0.00015);
+
+                  const insertTrade = db.prepare(`
+                    INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
+                                        buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
+                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+                  `);
+                  const tradeRes = insertTrade.run(
+                    bot.bot_id,
+                    candidate.code,
+                    candidate.name,
+                    orderNo,
+                    priceInfo.currentPrice,
+                    buyQty,
+                    buyAmount,
+                    nowIso,
+                    buyFee
+                  );
+
+                  db.prepare(`
+                    INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
+                                               qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                  `).run(
+                    bot.bot_id,
+                    candidate.code,
+                    candidate.name,
+                    orderNo,
+                    buyQty,
+                    priceInfo.currentPrice,
+                    buyAmount,
+                    buyFee,
+                    tradeRes.lastInsertRowid,
+                    nowIso
+                  );
+
+                  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+                    `[🐍 Python 소수점매수] ${candidate.name} $${perTradeBudgetUsd.toFixed(2)} (${buyQty}주) 체결 완료`,
+                    nowIso,
+                    bot.bot_id
+                  );
+                }
               } else {
-                db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                  `🚨 토스 실전 배분 예산 한도 도달 (할당: ${botCap.toLocaleString()}원, 잔여: ${remainingCap.toLocaleString()}원)`,
-                  nowIso,
-                  bot.bot_id
-                );
+                // 국내 주식 온주(1주 단위) 주문
+                const qty = Math.floor(perTradeBudget / priceInfo.currentPrice);
+                if (qty > 0 && perTradeBudget >= priceInfo.currentPrice) {
+                  const buyAmount = priceInfo.currentPrice * qty;
+                  const buyFee = Math.round(buyAmount * 0.00015);
+                  const orderRes = await pythonBridge.executeOrder({
+                    symbol: candidate.code,
+                    side: 'BUY',
+                    orderType: 'LIMIT',
+                    market: 'KR',
+                    quantity: qty,
+                    price: priceInfo.currentPrice,
+                    reason: 'AI LLM 퀀트 신호',
+                  });
+                  const orderNo = orderRes.orderId || `TORD_B_${Date.now()}`;
+
+                  const insertTrade = db.prepare(`
+                    INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
+                                        buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
+                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+                  `);
+                  const tradeRes = insertTrade.run(
+                    bot.bot_id,
+                    candidate.code,
+                    candidate.name,
+                    orderNo,
+                    priceInfo.currentPrice,
+                    qty,
+                    buyAmount,
+                    nowIso,
+                    buyFee
+                  );
+
+                  db.prepare(`
+                    INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
+                                               qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                  `).run(
+                    bot.bot_id,
+                    candidate.code,
+                    candidate.name,
+                    orderNo,
+                    qty,
+                    priceInfo.currentPrice,
+                    buyAmount,
+                    buyFee,
+                    tradeRes.lastInsertRowid,
+                    nowIso
+                  );
+
+                  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+                    `[🐍 Python 실전매수] ${candidate.name} ${qty}주 @ ${priceInfo.currentPrice.toLocaleString()}원 체결 완료`,
+                    nowIso,
+                    bot.bot_id
+                  );
+                }
               }
             } catch (err) {
-              console.error('[BotScheduler] 토스 실전 매수 에러:', err.message);
+              console.error('[BotScheduler] Python 실전 매수 에러:', err.message);
             }
           }
         }
@@ -696,7 +785,12 @@ const server = http.createServer(async (req, res) => {
       return sendJson(res, 200, {
         ok: true,
         service: 'autoStockTrader',
-        architecture: '키움증권(시세) ⨉ 토스증권(매매)',
+        architecture: '키움증권(시세) ⨉ Gemini LLM(판단) ⨉ Python/토스(소수점 매매)',
+        hybridModel: {
+          llmEngine: 'Google Gemini (News/Catalyst AI Inference)',
+          pythonExecutor: 'Python Core Toss Executor (Fractional & Unit Orders)',
+          fractionalTrading: true,
+        },
         uptime: process.uptime(),
         kiwoomHealth,
         tossHealth,
@@ -951,15 +1045,17 @@ const server = http.createServer(async (req, res) => {
       return sendError(res, 400, '알 수 없는 액션입니다.');
     }
 
-    // 수동 매수 / 매도 테스트 (봇 모드 REAL / VIRTUAL 자동 반영)
+    // 수동 매수 / 매도 테스트 (봇 모드 REAL / VIRTUAL 자동 반영 및 Python 실행기 연동)
     if (pathname.match(/^\/api\/bots\/([^/]+)\/virtual-trade$/) && method === 'POST') {
       const botId = pathname.split('/')[3];
-      const { side, stockCode, positionId } = await parseJsonBody(req);
+      const body = await parseJsonBody(req);
+      const { side, positionId } = body;
+      const stockCode = body.stockCode || body.symbol;
       const bot = db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
       if (!bot) return sendError(res, 404, '해당 봇을 찾을 수 없습니다.');
 
       const isReal = bot.trade_mode === 'REAL';
-      const targetStock = TOP_KR_STOCKS.find((s) => s.code === stockCode) || TOP_KR_STOCKS[0];
+      const targetStock = ALL_CANDIDATE_STOCKS.find((s) => s.code === stockCode) || ALL_CANDIDATE_STOCKS[0];
       const nowIso = new Date().toISOString();
 
       if (side === 'BUY') {
@@ -970,9 +1066,13 @@ const server = http.createServer(async (req, res) => {
             stockName: targetStock.name,
             requestedBudget: 2000000,
           });
-          return sendJson(res, 200, { success: true, message: `[가상] 매수 체결: ${result.stockName} ${result.qty}주`, result });
+          return sendJson(res, 200, {
+            success: true,
+            message: `[가상] 매수 체결: ${result.stockName} ${result.qty}주 (${targetStock.isFractional ? '미국 소수점' : '국내 온주'})`,
+            result,
+          });
         } else {
-          // 실전 모드 매수 집행
+          // 실전 모드 매수 집행 (Python Core Executor 연동)
           const priceInfo = await kiwoomClient.getCurrentPrice(targetStock.code);
           const tossBal = await tossClient.getAccountBalance();
           const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
@@ -983,63 +1083,143 @@ const server = http.createServer(async (req, res) => {
           const remainingCap = Math.max(0, botCap - usedCap);
 
           const availableCash = Math.min(tossBal.availableCash, remainingCap);
-          if (availableCash < priceInfo.currentPrice) {
-            return sendError(
-              res,
-              400,
-              `실전 매수 불가: 토스증권 가용 예수금 또는 봇 예산이 부족합니다. (현재 가용금액: ${availableCash.toLocaleString()}원, 1주 매수가: ${priceInfo.currentPrice.toLocaleString()}원)`
+
+          if (targetStock.isFractional) {
+            // 미국 주식 소수점 금액 매수 (orderAmount)
+            const usdRate = await pythonBridge.getExchangeRate();
+            const perTradeBudgetUsd = availableCash / usdRate;
+
+            if (perTradeBudgetUsd < 0.05 || availableCash < 100) {
+              return sendError(
+                res,
+                400,
+                `실전 소수점 매수 불가: 토스증권 가용 예수금이 부족합니다. (현재 가용금액: ${availableCash.toLocaleString()}원 / 약 $${perTradeBudgetUsd.toFixed(2)}, 최소 $0.05 필요)`
+              );
+            }
+
+            const orderAmountStr = Math.min(perTradeBudgetUsd, 10.0).toFixed(2);
+            const orderRes = await pythonBridge.executeOrder({
+              symbol: targetStock.code,
+              side: 'BUY',
+              orderType: 'MARKET',
+              market: 'US',
+              orderAmount: orderAmountStr,
+              reason: '사용자 소수점 매수 테스트',
+            });
+
+            const orderNo = orderRes.orderId || `TORD_B_${Date.now()}`;
+            const buyAmount = Math.round(parseFloat(orderAmountStr) * usdRate);
+            const buyQty = parseFloat((parseFloat(orderAmountStr) / (priceInfo.currentPriceUsd || 100)).toFixed(6));
+            const buyFee = Math.round(buyAmount * 0.00015);
+
+            const insertTrade = db.prepare(`
+              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
+                                  buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+            `);
+            const tradeRes = insertTrade.run(
+              botId,
+              targetStock.code,
+              targetStock.name,
+              orderNo,
+              priceInfo.currentPrice,
+              buyQty,
+              buyAmount,
+              nowIso,
+              buyFee
             );
+
+            db.prepare(`
+              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
+                                         qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            `).run(
+              botId,
+              targetStock.code,
+              targetStock.name,
+              orderNo,
+              buyQty,
+              priceInfo.currentPrice,
+              buyAmount,
+              buyFee,
+              tradeRes.lastInsertRowid,
+              nowIso
+            );
+
+            return sendJson(res, 200, {
+              success: true,
+              message: `[실전 🐍 Python] 소수점 매수 체결: ${targetStock.name} $${orderAmountStr} (${buyQty}주)`,
+              orderNo,
+              isFractional: true,
+            });
+          } else {
+            // 국내 주식 온주 매수
+            if (availableCash < priceInfo.currentPrice) {
+              return sendError(
+                res,
+                400,
+                `실전 매수 불가: 토스증권 가용 예수금 또는 봇 예산이 부족합니다. (현재 가용금액: ${availableCash.toLocaleString()}원, 1주 매수가: ${priceInfo.currentPrice.toLocaleString()}원)`
+              );
+            }
+            const qty = Math.floor(Math.min(availableCash, 2000000) / priceInfo.currentPrice);
+            if (qty <= 0) {
+              return sendError(res, 400, '실전 매수 불가: 주문 가능 수량이 0주입니다.');
+            }
+            const buyAmount = priceInfo.currentPrice * qty;
+            const buyFee = Math.round(buyAmount * 0.00015);
+
+            const orderRes = await pythonBridge.executeOrder({
+              symbol: targetStock.code,
+              side: 'BUY',
+              orderType: 'LIMIT',
+              market: 'KR',
+              quantity: qty,
+              price: priceInfo.currentPrice,
+              reason: '사용자 국내주식 매수 테스트',
+            });
+            const orderNo = orderRes.orderId || `TORD_B_${Date.now()}`;
+
+            const insertTrade = db.prepare(`
+              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
+                                  buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+            `);
+            const tradeRes = insertTrade.run(
+              botId,
+              targetStock.code,
+              targetStock.name,
+              orderNo,
+              priceInfo.currentPrice,
+              qty,
+              buyAmount,
+              nowIso,
+              buyFee
+            );
+
+            db.prepare(`
+              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
+                                         qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            `).run(
+              botId,
+              targetStock.code,
+              targetStock.name,
+              orderNo,
+              qty,
+              priceInfo.currentPrice,
+              buyAmount,
+              buyFee,
+              tradeRes.lastInsertRowid,
+              nowIso
+            );
+
+            return sendJson(res, 200, {
+              success: true,
+              message: `[실전 🐍 Python] 국내주식 매수 체결: ${targetStock.name} ${qty}주`,
+              orderNo,
+              isFractional: false,
+            });
           }
-          const qty = Math.floor(Math.min(availableCash, 2000000) / priceInfo.currentPrice);
-          if (qty <= 0) {
-            return sendError(res, 400, '실전 매수 불가: 주문 가능 수량이 0주입니다.');
-          }
-          const buyAmount = priceInfo.currentPrice * qty;
-          const buyFee = Math.round(buyAmount * 0.00015);
-
-          const orderRes = await tossClient.sendOrder({
-            orderType: 'BUY',
-            stockCode: targetStock.code,
-            qty,
-            price: priceInfo.currentPrice,
-          });
-          const orderNo = orderRes.orderNo || `TORD_B_${Date.now()}`;
-
-          const insertTrade = db.prepare(`
-            INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
-                                buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
-            VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-          `);
-          const tradeRes = insertTrade.run(
-            botId,
-            targetStock.code,
-            targetStock.name,
-            orderNo,
-            priceInfo.currentPrice,
-            qty,
-            buyAmount,
-            nowIso,
-            buyFee
-          );
-
-          db.prepare(`
-            INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
-                                       qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-            VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-          `).run(
-            botId,
-            targetStock.code,
-            targetStock.name,
-            orderNo,
-            qty,
-            priceInfo.currentPrice,
-            buyAmount,
-            buyFee,
-            tradeRes.lastInsertRowid,
-            nowIso
-          );
-
-          return sendJson(res, 200, { success: true, message: `[실전] 토스증권 매수 체결: ${targetStock.name} ${qty}주`, orderNo });
         }
       }
 
@@ -1052,7 +1232,7 @@ const server = http.createServer(async (req, res) => {
           });
           return sendJson(res, 200, { success: true, message: `[가상] 매도 완료: ${result.stockName} (손익: ${result.profitKrw.toLocaleString()}원)`, result });
         } else {
-          // 실전 모드 매도 집행
+          // 실전 모드 매도 집행 (Python Core Executor 연동)
           let pos;
           if (positionId) {
             pos = db.prepare("SELECT * FROM bot_positions WHERE id = ? AND trade_mode = 'REAL' AND status = 'OPEN'").get(positionId);
@@ -1063,16 +1243,20 @@ const server = http.createServer(async (req, res) => {
 
           const priceInfo = await kiwoomClient.getCurrentPrice(pos.stock_code);
           const executionPrice = priceInfo.currentPrice;
-          const sellAmount = executionPrice * pos.qty;
+          const sellAmount = Math.round(executionPrice * pos.qty);
           const feeAndTax = Math.round(sellAmount * (0.00015 + 0.0018)) + (pos.buy_fee || 0);
           const profitKrw = (sellAmount - pos.buy_amount) - feeAndTax;
           const profitPct = parseFloat(((profitKrw / pos.buy_amount) * 100).toFixed(2));
 
-          const orderRes = await tossClient.sendOrder({
-            orderType: 'SELL',
-            stockCode: pos.stock_code,
-            qty: pos.qty,
+          const isKr = /^[0-9]/.test(pos.stock_code);
+          const orderRes = await pythonBridge.executeOrder({
+            symbol: pos.stock_code,
+            side: 'SELL',
+            orderType: 'MARKET',
+            market: isKr ? 'KR' : 'US',
+            quantity: pos.qty,
             price: 0,
+            reason: '사용자 실전 매도 테스트',
           });
 
           db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, pos.id);
@@ -1082,10 +1266,10 @@ const server = http.createServer(async (req, res) => {
               SET sell_order_no = ?, sell_price = ?, sell_qty = ?, sell_amount = ?, sell_date = ?,
                   fee_and_tax = ?, profit_krw = ?, profit_pct = ?, status = 'CLOSED'
               WHERE id = ?
-            `).run(orderRes.orderNo || `TORD_S_${Date.now()}`, executionPrice, pos.qty, sellAmount, nowIso, feeAndTax, profitKrw, profitPct, pos.trade_id);
+            `).run(orderRes.orderId || `TORD_S_${Date.now()}`, executionPrice, pos.qty, sellAmount, nowIso, feeAndTax, profitKrw, profitPct, pos.trade_id);
           }
 
-          return sendJson(res, 200, { success: true, message: `[실전] 토스증권 매도 완료: ${pos.stock_name} (손익: ${profitKrw.toLocaleString()}원)` });
+          return sendJson(res, 200, { success: true, message: `[실전 🐍 Python] 토스증권 매도 완료: ${pos.stock_name} (손익: ${profitKrw.toLocaleString()}원)` });
         }
       }
 
@@ -1329,6 +1513,123 @@ const server = http.createServer(async (req, res) => {
         timeline,
         stockRanking,
       });
+    }
+
+    // -------------------------------------------------------------
+    // AI LLM Quant Decision & Candidate Stocks
+    // -------------------------------------------------------------
+    if (pathname === '/api/stocks/candidates' && method === 'GET') {
+      return sendJson(res, 200, { candidates: ALL_CANDIDATE_STOCKS });
+    }
+
+    if (pathname === '/api/ai/decisions' && method === 'GET') {
+      const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
+      const decisions = llmDecisionService.getRecentDecisions(limit);
+      return sendJson(res, 200, { decisions });
+    }
+
+    if (pathname === '/api/ai/evaluate-and-trade' && method === 'POST') {
+      const body = await parseJsonBody(req);
+      const { botId, executeTrade, candidateCode } = body;
+      const candidates = candidateCode
+        ? ALL_CANDIDATE_STOCKS.filter((c) => c.code === candidateCode)
+        : ALL_CANDIDATE_STOCKS;
+
+      const decisions = await llmDecisionService.evaluateTradeSignals(candidates);
+      let executedResult = null;
+
+      if (executeTrade && botId) {
+        const bot = db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
+        if (bot) {
+          const buySignal = decisions.find((d) => d.action === 'BUY' && d.confidence >= 65) || decisions[0];
+          if (buySignal) {
+            const stock = ALL_CANDIDATE_STOCKS.find((s) => s.code === buySignal.symbol) || candidates[0];
+            const isReal = bot.trade_mode === 'REAL';
+            const priceInfo = await kiwoomClient.getCurrentPrice(stock.code);
+            const nowIso = new Date().toISOString();
+
+            if (isReal) {
+              const tossBal = await tossClient.getAccountBalance();
+              const usdRate = await pythonBridge.getExchangeRate();
+              if (stock.market === 'US') {
+                const availUsd = tossBal.availableCash / usdRate;
+                if (availUsd < 0.05 || tossBal.availableCash < 100) {
+                  return sendJson(res, 400, { success: false, message: `토스 예수금 부족 (현재 잔고: ${tossBal.availableCash}원 / 약 $${availUsd.toFixed(2)})` });
+                }
+                const orderAmountStr = Math.min(availUsd, 10.0).toFixed(2);
+                const pyRes = await pythonBridge.executeOrder({
+                  symbol: stock.code,
+                  side: 'BUY',
+                  orderType: 'MARKET',
+                  market: 'US',
+                  orderAmount: orderAmountStr,
+                  reason: buySignal.reasoning,
+                });
+
+                const orderNo = pyRes.orderId || `TORD_B_${Date.now()}`;
+                const buyAmount = Math.round(parseFloat(orderAmountStr) * usdRate);
+                const buyQty = parseFloat((parseFloat(orderAmountStr) / (priceInfo.currentPriceUsd || 100)).toFixed(6));
+                const buyFee = Math.round(buyAmount * 0.00015);
+
+                const insertTrade = db.prepare(`
+                  INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
+                                      buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
+                  VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+                `);
+                const tradeRes = insertTrade.run(botId, stock.code, stock.name, orderNo, priceInfo.currentPrice, buyQty, buyAmount, nowIso, buyFee);
+                db.prepare(`
+                  INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
+                                             qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                  VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                `).run(botId, stock.code, stock.name, orderNo, buyQty, priceInfo.currentPrice, buyAmount, buyFee, tradeRes.lastInsertRowid, nowIso);
+
+                executedResult = { executor: 'Python Core', ...pyRes, buyQty, buyAmount };
+              } else {
+                if (tossBal.availableCash < priceInfo.currentPrice) {
+                  return sendJson(res, 400, { success: false, message: `토스 예수금 부족 (필요: 약 ${priceInfo.currentPrice.toLocaleString()}원, 보유: ${tossBal.availableCash.toLocaleString()}원)` });
+                }
+                const qty = Math.floor(tossBal.availableCash / priceInfo.currentPrice);
+                const pyRes = await pythonBridge.executeOrder({
+                  symbol: stock.code,
+                  side: 'BUY',
+                  orderType: 'LIMIT',
+                  market: 'KR',
+                  quantity: qty,
+                  price: priceInfo.currentPrice,
+                  reason: buySignal.reasoning,
+                });
+                const orderNo = pyRes.orderId || `TORD_B_${Date.now()}`;
+                const buyAmount = priceInfo.currentPrice * qty;
+                const buyFee = Math.round(buyAmount * 0.00015);
+
+                const insertTrade = db.prepare(`
+                  INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no,
+                                      buy_price, buy_qty, buy_amount, buy_date, fee_and_tax, status)
+                  VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+                `);
+                const tradeRes = insertTrade.run(botId, stock.code, stock.name, orderNo, priceInfo.currentPrice, qty, buyAmount, nowIso, buyFee);
+                db.prepare(`
+                  INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
+                                             qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                  VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                `).run(botId, stock.code, stock.name, orderNo, qty, priceInfo.currentPrice, buyAmount, buyFee, tradeRes.lastInsertRowid, nowIso);
+
+                executedResult = { executor: 'Python Core', ...pyRes, qty, buyAmount };
+              }
+            } else {
+              const vRes = await virtualEngine.executeVirtualBuy({
+                botId,
+                stockCode: stock.code,
+                stockName: stock.name,
+                requestedBudget: 2000000,
+              });
+              executedResult = { executor: 'Virtual Engine', ...vRes };
+            }
+          }
+        }
+      }
+
+      return sendJson(res, 200, { success: true, decisions, executedResult });
     }
 
     // -------------------------------------------------------------

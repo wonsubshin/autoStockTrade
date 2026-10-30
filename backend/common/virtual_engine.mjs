@@ -23,8 +23,10 @@ export class VirtualPaperTradingEngine {
     const priceInfo = await this.kiwoomClient.getCurrentPrice(stockCode);
     const executionPrice = priceInfo.askPrice1 || priceInfo.currentPrice; // 매수 시 매도 1호가로 체결
 
-    // 1주 매수 최소 필요금액 (수수료 포함)
-    const minRequired = Math.ceil(executionPrice * (1 + BROKERAGE_FEE_RATE));
+    // 소수점 거래 여부 확인 (미국 주식은 1,000원 이상 소수점 매수 가능, 국내는 1주 이상)
+    const isFractional = !!priceInfo.isFractional;
+    const minRequired = isFractional ? 1000 : Math.ceil(executionPrice * (1 + BROKERAGE_FEE_RATE));
+
     if (virtualKrw < minRequired) {
       // 잔고 부족: 봇 비활성화 및 상태 업데이트
       db.prepare(`
@@ -51,11 +53,12 @@ export class VirtualPaperTradingEngine {
       throw new Error(`봇 [${bot.nickname || bot.name}]에 할당된 예산 한도(${allocatedBudget.toLocaleString()}원)에 도달하였습니다. (현재 보유: ${usedBudget.toLocaleString()}원)`);
     }
 
-    // 3. 가용 예산 내 1주 단위 정수 수량 산출 (할당 예산 및 보유 잔고 범위 내)
+    // 3. 가용 예산 산출 (미국 주식은 소수점 수량, 국내 주식은 1주 단위 정수 수량)
     const maxBudget = Math.min(virtualKrw, requestedBudget || virtualKrw, remainingBudget);
-    const qty = Math.floor(maxBudget / (executionPrice * (1 + BROKERAGE_FEE_RATE)));
+    const rawQty = maxBudget / (executionPrice * (1 + BROKERAGE_FEE_RATE));
+    const qty = isFractional ? parseFloat(rawQty.toFixed(6)) : Math.floor(rawQty);
     if (qty <= 0) {
-      throw new Error('주문 가능 수량이 0주입니다.');
+      throw new Error('주문 가능 수량이 0입니다.');
     }
 
     const buyAmount = executionPrice * qty;

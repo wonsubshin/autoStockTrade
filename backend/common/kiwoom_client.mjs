@@ -15,21 +15,36 @@ export function adjustKRXTickSize(price) {
 
 // Major domestic benchmark stocks for simulation & fallback
 export const TOP_KR_STOCKS = [
-  { code: '005930', name: '삼성전자', sector: '반도체', basePrice: 78500 },
-  { code: '000660', name: 'SK하이닉스', sector: '반도체', basePrice: 194000 },
-  { code: '373220', name: 'LG에너지솔루션', sector: '2차전지', basePrice: 382000 },
-  { code: '207940', name: '삼성바이오로직스', sector: '바이오', basePrice: 1045000 },
-  { code: '005380', name: '현대차', sector: '자동차', basePrice: 248000 },
-  { code: '000270', name: '기아', sector: '자동차', basePrice: 102500 },
-  { code: '068270', name: '셀트리온', sector: '바이오', basePrice: 192500 },
-  { code: '005490', name: 'POSCO홀딩스', sector: '철강/2차전지', basePrice: 375000 },
-  { code: '035420', name: 'NAVER', sector: 'AI/IT', basePrice: 173500 },
-  { code: '105560', name: 'KB금융', sector: '금융/지주', basePrice: 89500 },
-  { code: '247540', name: '에코프로비엠', sector: '2차전지', basePrice: 168000 },
-  { code: '086520', name: '에코프로', sector: '2차전지', basePrice: 78000 },
-  { code: '041510', name: '에스엠', sector: '엔터', basePrice: 72000 },
-  { code: '028300', name: 'HLB', sector: '바이오', basePrice: 84000 },
-  { code: '259960', name: '크래프톤', sector: '게임', basePrice: 334000 },
+  { code: '005930', name: '삼성전자', sector: '반도체', basePrice: 78500, market: 'KR', isFractional: false },
+  { code: '000660', name: 'SK하이닉스', sector: '반도체', basePrice: 194000, market: 'KR', isFractional: false },
+  { code: '373220', name: 'LG에너지솔루션', sector: '2차전지', basePrice: 382000, market: 'KR', isFractional: false },
+  { code: '207940', name: '삼성바이오로직스', sector: '바이오', basePrice: 1045000, market: 'KR', isFractional: false },
+  { code: '005380', name: '현대차', sector: '자동차', basePrice: 248000, market: 'KR', isFractional: false },
+  { code: '000270', name: '기아', sector: '자동차', basePrice: 102500, market: 'KR', isFractional: false },
+  { code: '068270', name: '셀트리온', sector: '바이오', basePrice: 192500, market: 'KR', isFractional: false },
+  { code: '005490', name: 'POSCO홀딩스', sector: '철강/2차전지', basePrice: 375000, market: 'KR', isFractional: false },
+  { code: '035420', name: 'NAVER', sector: 'AI/IT', basePrice: 173500, market: 'KR', isFractional: false },
+  { code: '105560', name: 'KB금융', sector: '금융/지주', basePrice: 89500, market: 'KR', isFractional: false },
+  { code: '247540', name: '에코프로비엠', sector: '2차전지', basePrice: 168000, market: 'KR', isFractional: false },
+  { code: '086520', name: '에코프로', sector: '2차전지', basePrice: 78000, market: 'KR', isFractional: false },
+  { code: '041510', name: '에스엠', sector: '엔터', basePrice: 72000, market: 'KR', isFractional: false },
+  { code: '028300', name: 'HLB', sector: '바이오', basePrice: 84000, market: 'KR', isFractional: false },
+  { code: '259960', name: '크래프톤', sector: '게임', basePrice: 334000, market: 'KR', isFractional: false },
+];
+
+// 토스증권 소수점 거래(orderAmount / fractional qty) 지원 미국 대표 우량 종목군
+export const TOP_US_STOCKS = [
+  { code: 'AAPL', name: '애플', sector: '빅테크/AI', basePriceUsd: 228.5, market: 'US', isFractional: true },
+  { code: 'NVDA', name: '엔비디아', sector: 'AI반도체', basePriceUsd: 135.2, market: 'US', isFractional: true },
+  { code: 'TSLA', name: '테슬라', sector: '전기차/로봇', basePriceUsd: 255.0, market: 'US', isFractional: true },
+  { code: 'MSFT', name: '마이크로소프트', sector: '클라우드/AI', basePriceUsd: 425.0, market: 'US', isFractional: true },
+  { code: 'QQQ', name: 'Invesco QQQ', sector: '나스닥100', basePriceUsd: 485.0, market: 'US', isFractional: true },
+  { code: 'SBUX', name: '스타벅스', sector: '소비재', basePriceUsd: 98.5, market: 'US', isFractional: true },
+];
+
+export const ALL_CANDIDATE_STOCKS = [
+  ...TOP_KR_STOCKS,
+  ...TOP_US_STOCKS,
 ];
 
 /**
@@ -258,12 +273,16 @@ export class KiwoomClient {
   }
 
   getMockPrice(stockCode) {
-    const stock = TOP_KR_STOCKS.find((s) => s.code === stockCode) || {
+    const stock = ALL_CANDIDATE_STOCKS.find((s) => s.code === stockCode) || {
       code: stockCode,
       name: `종목 ${stockCode}`,
       basePrice: 50000,
       sector: '일반',
+      market: 'KR',
+      isFractional: false,
     };
+
+    const effectiveBasePrice = stock.basePrice || (stock.basePriceUsd ? Math.round(stock.basePriceUsd * 1340) : 50000);
 
     let offset = this.mockPriceOffsets.get(stockCode);
     if (offset === undefined) {
@@ -275,7 +294,7 @@ export class KiwoomClient {
       this.mockPriceOffsets.set(stockCode, offset);
     }
 
-    const currentPrice = adjustKRXTickSize(stock.basePrice * (1 + offset));
+    const currentPrice = adjustKRXTickSize(effectiveBasePrice * (1 + offset));
     const tick = currentPrice < 2000 ? 1 : currentPrice < 5000 ? 5 : currentPrice < 20000 ? 10 : currentPrice < 50000 ? 50 : 100;
     const askPrice1 = adjustKRXTickSize(currentPrice + tick);
     const bidPrice1 = adjustKRXTickSize(currentPrice - tick);
@@ -283,7 +302,10 @@ export class KiwoomClient {
     return {
       stockCode: stock.code,
       stockName: stock.name,
+      market: stock.market || 'KR',
+      isFractional: !!stock.isFractional,
       currentPrice,
+      currentPriceUsd: stock.basePriceUsd ? parseFloat((stock.basePriceUsd * (1 + offset)).toFixed(2)) : undefined,
       askPrice1,
       bidPrice1,
       volume: Math.floor(1800000 + Math.random() * 400000),
