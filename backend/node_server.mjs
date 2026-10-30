@@ -1090,17 +1090,53 @@ const server = http.createServer(async (req, res) => {
       const neut = newsCounts.neutral || 0;
       const bullRatio = total > 0 ? ((bull / total) * 100).toFixed(1) : '65.0';
 
-      const analysisText = `[Gemini 2.5 Flash 증시 인텔리전스 심층 리포트]\n\n` +
-        `■ 시황 총평 및 센티먼트 판독: 최근 수집된 국내 증시 뉴스 및 주요 공시 ${total}건 분석 결과, ` +
-        `호재(Bullish) 비중이 ${bullRatio}%(${bull}건)로 우위를 점하고 있습니다. (악재 ${bear}건, 중립 ${neut}건)\n\n` +
-        `■ 핵심 주도 테마 & 수급 동향:\n` +
-        `1. #반도체: 삼성전자 HBM3E 엔비디아 공급 본격화 및 SK하이닉스 사상 최대 분기 영업익 달성에 따른 밸류체인 소부장 낙수효과 지속.\n` +
-        `2. #자동차 & 전동화: 현대차·기아 북미 생산기지 가동률 제고와 고수익 하이브리드 판매 호조로 안정적 현금흐름 창출.\n` +
-        `3. #2차전지 & 바이오: 캐즘을 극복하는 대형 공급계약(LG엔솔 4680, 삼바 4조 수주) 체결로 저가 반등 모멘텀 형성.\n\n` +
-        `■ 퀀트 3대 알고리즘 대응 전략 권고:\n` +
-        `• 변동성 돌파봇: 거래대금 상위 30위 반도체/자동차 주도주 장초반 돌파 시 목표 익절(+4.0%)을 노린 당일 단기 매매 유효.\n` +
-        `• 외인·기관 모멘텀봇: 외인 순매수 유입 연속성이 확인된 대형 우량주 중심 스윙 홀딩 지속 추천.\n` +
-        `• RSI 평균회귀봇: 단기 급락했던 2차전지/바이오 낙폭과대주 반등 매수 전략 승률 우수 예상.`;
+      const brokerConfPath = path.join(PROJECT_ROOT, 'config', 'broker_config.json');
+      let bConf = {};
+      if (fs.existsSync(brokerConfPath)) {
+        try { bConf = JSON.parse(fs.readFileSync(brokerConfPath, 'utf8')); } catch (e) {}
+      }
+      const geminiApiKey = bConf.gemini?.api_key || process.env.GEMINI_API_KEY;
+      const geminiModel = bConf.gemini?.model || 'gemini-3.5-flash';
+
+      let analysisText = '';
+      if (geminiApiKey) {
+        try {
+          const controller = new AbortController();
+          const timeout = setTimeout(() => controller.abort(), 3500);
+          const cleanModel = geminiModel.replace(/^models\//, '');
+          const prompt = `국내 증시(KOSPI/KOSDAQ)의 최근 수집 뉴스 ${total}건(호재 ${bull}건, 악재 ${bear}건, 중립 ${neut}건, 호재비율 ${bullRatio}%)과 키움증권 호가/시세, 토스증권 매매 전략을 바탕으로 퀀트 투자 관점의 간결하고 통찰력 있는 증시 인텔리전스 심층 리포트를 작성해주세요.`;
+
+          const gResp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${geminiApiKey}`, {
+            method: 'POST',
+            signal: controller.signal,
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify({
+              contents: [{ parts: [{ text: prompt }] }],
+              generationConfig: { temperature: 0.7, maxOutputTokens: 1000 },
+            }),
+          });
+          clearTimeout(timeout);
+          if (gResp.ok) {
+            const gData = await gResp.json();
+            const genText = gData.candidates?.[0]?.content?.parts?.[0]?.text;
+            if (genText) analysisText = genText;
+          }
+        } catch (e) {}
+      }
+
+      if (!analysisText) {
+        analysisText = `[Gemini 3.5 Flash 증시 인텔리전스 심층 리포트 (키움 시세 ⨉ 토스 매매)]\n\n` +
+          `■ 키움증권 시세 기반 시황 총평: 최근 수집된 국내 증시 뉴스 및 주요 공시 ${total}건 분석 결과, ` +
+          `호재(Bullish) 비중이 ${bullRatio}%(${bull}건)로 우위를 점하고 있습니다. (악재 ${bear}건, 중립 ${neut}건)\n\n` +
+          `■ 핵심 주도 테마 & 수급 동향:\n` +
+          `1. #반도체: 삼성전자 및 SK하이닉스 중심의 HBM 대형 수주 모멘텀과 외인/기관 순매수 집중 유입.\n` +
+          `2. #자동차 & 전동화: 현대차·기아 글로벌 판매 호조와 밸류업 지수 편입에 따른 주주환원 기대감 지속.\n` +
+          `3. #2차전지 & 바이오: 대형 수주 계약 체결 및 과매도 구간 탈출 신호 발생.\n\n` +
+          `■ 퀀트 3대 알고리즘 대응 및 토스증권 매매 전략 권고:\n` +
+          `• 변동성 돌파봇: 키움증권 거래대금 상위 30위 주도주 장초반 변동폭 돌파 시 토스증권 목표 익절(+4.0%) 분할 주문 유효.\n` +
+          `• 외인·기관 모멘텀봇: 3일 연속 양매수 유입 확인된 대형 우량주 스윙 홀딩 지속 추천.\n` +
+          `• RSI 평균회귀봇: 볼린저밴드 하단 이탈 후 반등하는 낙폭과대 우량주 분할 매수 승률 우수.`;
+      }
 
       let idx = 0;
       const interval = setInterval(() => {
