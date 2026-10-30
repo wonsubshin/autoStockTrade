@@ -11,7 +11,7 @@
     "api_key": "YOUR_TOSS_API_KEY",
     "api_secret": "YOUR_TOSS_API_SECRET",
     "account_no": "12345678",
-    "base_url": "https://api.tossinvest.com"
+    "base_url": "https://openapi.tossinvest.com"
   },
   "gemini": {
     "api_key": "YOUR_GEMINI_API_KEY",

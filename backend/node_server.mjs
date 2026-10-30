@@ -886,7 +886,23 @@ const server = http.createServer(async (req, res) => {
     // Bots Management
     // -------------------------------------------------------------
     if (pathname === '/api/bots' && method === 'GET') {
-      const bots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
+      const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
+      const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
+      const realTotal = realBudgetRow ? parseInt(realBudgetRow.value, 10) : 0;
+      const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
+
+      const rawBots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
+      const bots = rawBots.map((b) => {
+        const ratio = b.allocation_ratio || 0.33;
+        const realAllocated = Math.floor(realTotal * ratio);
+        const virtualAllocated = Math.floor(virtTotal * ratio);
+        return {
+          ...b,
+          real_allocated_capital: realAllocated,
+          virtual_allocated_capital: virtualAllocated,
+          allocated_capital: b.trade_mode === 'REAL' ? realAllocated : virtualAllocated,
+        };
+      });
       return sendJson(res, 200, { bots });
     }
 
@@ -910,8 +926,15 @@ const server = http.createServer(async (req, res) => {
 
       if (action === 'TOGGLE_MODE') {
         const nextMode = bot.trade_mode === 'VIRTUAL' ? 'REAL' : 'VIRTUAL';
-        db.prepare('UPDATE bots SET trade_mode = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?').run(
+        const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
+        const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
+        const realTotal = realBudgetRow ? parseInt(realBudgetRow.value, 10) : 0;
+        const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
+        const nextAllocatedCap = Math.floor((nextMode === 'REAL' ? realTotal : virtTotal) * (bot.allocation_ratio || 0.33));
+
+        db.prepare('UPDATE bots SET trade_mode = ?, allocated_capital = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?').run(
           nextMode,
+          nextAllocatedCap,
           `모드 변경: ${nextMode === 'REAL' ? '💰 실전매매' : '🧪 가상매매'}`,
           nowIso,
           botId
@@ -960,7 +983,17 @@ const server = http.createServer(async (req, res) => {
           const remainingCap = Math.max(0, botCap - usedCap);
 
           const availableCash = Math.min(tossBal.availableCash, remainingCap);
-          const qty = Math.floor(Math.min(availableCash, 2000000) / priceInfo.currentPrice) || 1;
+          if (availableCash < priceInfo.currentPrice) {
+            return sendError(
+              res,
+              400,
+              `실전 매수 불가: 토스증권 가용 예수금 또는 봇 예산이 부족합니다. (현재 가용금액: ${availableCash.toLocaleString()}원, 1주 매수가: ${priceInfo.currentPrice.toLocaleString()}원)`
+            );
+          }
+          const qty = Math.floor(Math.min(availableCash, 2000000) / priceInfo.currentPrice);
+          if (qty <= 0) {
+            return sendError(res, 400, '실전 매수 불가: 주문 가능 수량이 0주입니다.');
+          }
           const buyAmount = priceInfo.currentPrice * qty;
           const buyFee = Math.round(buyAmount * 0.00015);
 
@@ -1155,6 +1188,37 @@ const server = http.createServer(async (req, res) => {
           };
         })
       );
+
+      // REAL 모드 조회 시 토스증권 실계좌 보유 주식(Holdings) 자동 병합
+      if (mode === 'REAL' || mode === 'ALL') {
+        try {
+          const tossBal = await tossClient.getAccountBalance();
+          if (tossBal && !tossBal.isMock && Array.isArray(tossBal.holdings)) {
+            for (const h of tossBal.holdings) {
+              const exists = enriched.some((p) => p.stock_code === h.stockCode);
+              if (!exists) {
+                enriched.push({
+                  id: `toss_${h.stockCode}`,
+                  bot_id: 'toss_real_account',
+                  trade_mode: 'REAL',
+                  stock_code: h.stockCode,
+                  stock_name: h.stockName,
+                  order_no: `TOSS_HOLDING_${h.stockCode}`,
+                  qty: h.qty,
+                  avg_buy_price: h.avgBuyPrice,
+                  currentPrice: h.currentPrice,
+                  buy_amount: Math.round(h.avgBuyPrice * h.qty),
+                  evalAmount: h.evalAmount,
+                  unrealizedProfitKrw: h.unrealizedProfitKrw,
+                  unrealizedProfitPct: h.unrealizedProfitPct,
+                  created_at: new Date().toISOString(),
+                  priceProvider: '토스증권(실전)',
+                });
+              }
+            }
+          }
+        } catch (e) {}
+      }
 
       return sendJson(res, 200, { positions: enriched });
     }
