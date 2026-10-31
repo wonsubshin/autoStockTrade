@@ -42,7 +42,6 @@ export default function GateModal({ onAuthenticated }) {
           <input
             type="password"
             className="input-field"
-            placeholder="입장 코드 입력 (sws@2129)"
             value={passcodeInput}
             onChange={(e) => setPasscodeInput(e.target.value)}
             autoFocus
