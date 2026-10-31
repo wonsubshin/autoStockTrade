@@ -16,11 +16,42 @@ import StatsPanel from './components/stats/StatsPanel';
 import NewsPanel from './components/news/NewsPanel';
 import SettingsPanel from './components/settings/SettingsPanel';
 
+// 24시간 세션 유효기간 (1일 = 86,400,000 ms)
+const GATE_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
+
+function checkGateAuthentication() {
+  const passed = localStorage.getItem('kis_gate_passed');
+  const authTimeStr = localStorage.getItem('kis_gate_auth_time');
+
+  if (passed !== 'true') return false;
+
+  // 기존 사용자 마이그레이션: auth_time이 없으면 현재 시각으로 초기 등록
+  if (!authTimeStr) {
+    localStorage.setItem('kis_gate_auth_time', Date.now().toString());
+    return true;
+  }
+
+  const authTime = parseInt(authTimeStr, 10);
+  if (isNaN(authTime)) {
+    localStorage.removeItem('kis_gate_passed');
+    localStorage.removeItem('kis_gate_auth_time');
+    return false;
+  }
+
+  const elapsed = Date.now() - authTime;
+  if (elapsed >= GATE_SESSION_TTL_MS) {
+    // 24시간(하루) 경과 시 세션 만료 및 인증 화면으로 이동
+    localStorage.removeItem('kis_gate_passed');
+    localStorage.removeItem('kis_gate_auth_time');
+    return false;
+  }
+
+  return true;
+}
+
 export default function App() {
-  // 1. Gate Authorization State
-  const [isAuthenticated, setIsAuthenticated] = useState(
-    () => localStorage.getItem('kis_gate_passed') === 'true'
-  );
+  // 1. Gate Authorization State (24시간 만료 검증)
+  const [isAuthenticated, setIsAuthenticated] = useState(() => checkGateAuthentication());
 
   // 2. Navigation State (5 Menus: TRADING, LAB, STATS, NEWS, SETTINGS)
   const [activeMenu, setActiveMenu] = useState('TRADING');
@@ -191,6 +222,25 @@ export default function App() {
     const healthInterval = setInterval(fetchHealth, 10000);
     return () => clearInterval(healthInterval);
   }, [isAuthenticated, fetchHealth, fetchBots, fetchAiDecisions, fetchSettingsAndBalance]);
+
+  // 24시간 보안 세션 만료 감시 타이머 (하루가 지나면 즉시 인증코드 입력화면으로 이동)
+  useEffect(() => {
+    if (!isAuthenticated) return;
+
+    const checkExpire = () => {
+      if (!checkGateAuthentication()) {
+        setIsAuthenticated(false);
+        setModalInfo({
+          title: '인증 세션 만료',
+          message: '로그인 후 24시간(1일)이 경과하여 보안을 위해 인증이 만료되었습니다.\n인증코드를 다시 입력해주세요.',
+          type: 'warning',
+        });
+      }
+    };
+
+    const expireTimer = setInterval(checkExpire, 15000); // 15초마다 만료 여부 확인
+    return () => clearInterval(expireTimer);
+  }, [isAuthenticated]);
 
   // Dynamic Content Polling per Tab
   useEffect(() => {
@@ -460,6 +510,7 @@ export default function App() {
         setActiveMenu={setActiveMenu}
         onLogout={() => {
           localStorage.removeItem('kis_gate_passed');
+          localStorage.removeItem('kis_gate_auth_time');
           setIsAuthenticated(false);
         }}
       />

@@ -9,6 +9,27 @@ export default function Header({
   const marketStatus = healthData?.marketStatus;
   const regime = healthData?.marketRegime;
 
+  const [remainingSessionStr, setRemainingSessionStr] = React.useState('24시간');
+
+  React.useEffect(() => {
+    const updateRemaining = () => {
+      const authTimeStr = localStorage.getItem('kis_gate_auth_time');
+      if (!authTimeStr) {
+        setRemainingSessionStr('24시간');
+        return;
+      }
+      const authTime = parseInt(authTimeStr, 10);
+      const remainingMs = Math.max(0, 24 * 60 * 60 * 1000 - (Date.now() - authTime));
+      const hours = Math.floor(remainingMs / (60 * 60 * 1000));
+      const mins = Math.floor((remainingMs % (60 * 60 * 1000)) / (60 * 1000));
+      setRemainingSessionStr(`${hours}시간 ${mins}분 남음`);
+    };
+
+    updateRemaining();
+    const timer = setInterval(updateRemaining, 30000);
+    return () => clearInterval(timer);
+  }, []);
+
   return (
     <aside className="sidebar">
       {/* Brand Header */}
@@ -94,8 +115,11 @@ export default function Header({
       <div className="sidebar-footer">
         <div>PostgreSQL: {healthData?.pgConnected ? '🟢 동기화 정상' : '🟡 대기/로컬모드'}</div>
         <div>Dual DB: SQLite + PG16</div>
+        <div style={{ color: '#38bdf8', marginTop: '4px', fontSize: '10.5px' }}>
+          ⏱️ 인증 만료: {remainingSessionStr}
+        </div>
         <div
-          style={{ cursor: 'pointer', color: '#ef4444', marginTop: '8px' }}
+          style={{ cursor: 'pointer', color: '#ef4444', marginTop: '6px' }}
           onClick={onLogout}
         >
           🚪 로그아웃 (게이트 락)

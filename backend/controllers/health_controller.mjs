@@ -33,7 +33,15 @@ export class HealthController {
     const expectedPasscode = row ? row.value : 'sws@2129';
 
     if (passcode === expectedPasscode) {
-      return sendJson(res, 200, { success: true, token: 'AUTH_GATE_PASSED_2026' });
+      const now = Date.now();
+      const expiresIn = 24 * 60 * 60 * 1000; // 24시간 (하루)
+      return sendJson(res, 200, {
+        success: true,
+        token: 'AUTH_GATE_PASSED_2026',
+        authTime: now,
+        expiresIn,
+        expiresAt: now + expiresIn,
+      });
     } else {
       return sendError(res, 401, '입장 코드가 올바르지 않습니다.');
     }

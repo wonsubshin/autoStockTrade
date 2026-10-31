@@ -15,7 +15,9 @@ export default function GateModal({ onAuthenticated }) {
     try {
       const res = await api.verifyGate(passcodeInput);
       if (res.success) {
+        const authTime = res.authTime || Date.now();
         localStorage.setItem('kis_gate_passed', 'true');
+        localStorage.setItem('kis_gate_auth_time', authTime.toString());
         onAuthenticated();
       } else {
         setErrorMsg(res.message || '인증에 실패했습니다.');
@@ -49,6 +51,9 @@ export default function GateModal({ onAuthenticated }) {
           <button type="submit" className="btn-primary" disabled={isLoading}>
             {isLoading ? '인증 확인 중...' : '보안 게이트 입장'}
           </button>
+          <div style={{ fontSize: '11.5px', color: '#64748b', marginTop: '4px', lineHeight: '1.4' }}>
+            🔒 24시간 보안 세션: 1일이 지나면 안전을 위해 인증이 만료됩니다.
+          </div>
         </form>
       </div>
     </div>
