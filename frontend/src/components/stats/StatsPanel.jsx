@@ -7,141 +7,163 @@ export default function StatsPanel({
   statsModeFilter,
   setStatsModeFilter,
 }) {
-  const totalProfit = statsData?.totalProfitKrw || 0;
-  const totalTrades = statsData?.totalTrades || 0;
-  const winRate = statsData?.winRate || 0;
-  const timeline = statsData?.timeline || [];
-  const stockRanking = statsData?.stockRanking || [];
-
   return (
-    <div className="space-y-6">
-      {/* Controls & Filter */}
-      <div className="flex flex-col sm:flex-row items-start sm:items-center justify-between gap-4 bg-slate-900/80 border border-slate-800 rounded-2xl p-4">
-        {/* Period Tabs */}
-        <div className="flex items-center space-x-1 bg-slate-950 p-1 rounded-xl border border-slate-800">
-          {[
-            { id: 'daily', label: '일별' },
-            { id: 'weekly', label: '주별' },
-            { id: 'monthly', label: '월별' },
-          ].map((tab) => (
-            <button
-              key={tab.id}
-              onClick={() => setStatsPeriodTab(tab.id)}
-              className={`px-3 py-1.5 rounded-lg text-xs font-bold transition ${
-                statsPeriodTab === tab.id
-                  ? 'bg-blue-600 text-white'
-                  : 'text-slate-400 hover:text-white'
-              }`}
-            >
-              {tab.label}
-            </button>
-          ))}
+    <div>
+      <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '20px', flexWrap: 'wrap', gap: '12px' }}>
+        <div className="period-tab-group">
+          <button
+            className={`period-tab-btn ${statsPeriodTab === 'daily' ? 'active' : ''}`}
+            onClick={() => setStatsPeriodTab('daily')}
+          >
+            일별 (Daily)
+          </button>
+          <button
+            className={`period-tab-btn ${statsPeriodTab === 'weekly' ? 'active' : ''}`}
+            onClick={() => setStatsPeriodTab('weekly')}
+          >
+            주별 (Weekly)
+          </button>
+          <button
+            className={`period-tab-btn ${statsPeriodTab === 'monthly' ? 'active' : ''}`}
+            onClick={() => setStatsPeriodTab('monthly')}
+          >
+            월별 (Monthly)
+          </button>
         </div>
 
-        {/* Mode Filter */}
-        <div className="flex items-center space-x-2 text-xs">
-          <span className="text-slate-400">통계 대상:</span>
-          {['ALL', 'VIRTUAL', 'REAL'].map((m) => (
-            <button
-              key={m}
-              onClick={() => setStatsModeFilter(m)}
-              className={`px-2.5 py-1 rounded-lg font-bold border transition ${
-                statsModeFilter === m
-                  ? 'bg-slate-800 text-white border-slate-600'
-                  : 'bg-slate-950 text-slate-500 border-slate-800 hover:text-slate-300'
-              }`}
-            >
-              {m === 'ALL' ? '전체' : m === 'VIRTUAL' ? '가상' : '실전'}
-            </button>
-          ))}
-        </div>
-      </div>
-
-      {/* Summary Stat Cards */}
-      <div className="grid grid-cols-1 sm:grid-cols-3 gap-4">
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
-          <div className="text-xs text-slate-400">누적 실현 손익</div>
-          <div className={`text-2xl font-black mt-1 ${
-            totalProfit > 0 ? 'text-rose-400' : totalProfit < 0 ? 'text-blue-400' : 'text-white'
-          }`}>
-            {totalProfit > 0 ? '+' : ''}{totalProfit.toLocaleString()}원
-          </div>
-        </div>
-
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
-          <div className="text-xs text-slate-400">총 거래 횟수</div>
-          <div className="text-2xl font-black text-white mt-1">
-            {totalTrades}회
-          </div>
-        </div>
-
-        <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5">
-          <div className="text-xs text-slate-400">전체 승률</div>
-          <div className="text-2xl font-black text-emerald-400 mt-1">
-            {winRate}%
-          </div>
+        <div className="mode-filter-bar">
+          <span style={{ fontSize: '11px', color: '#94a3b8', marginRight: '4px', fontWeight: 600 }}>통계 모드:</span>
+          <button
+            className={`mode-filter-btn ${statsModeFilter === 'ALL' ? 'active all' : ''}`}
+            onClick={() => setStatsModeFilter('ALL')}
+          >
+            🌐 통합 전체
+          </button>
+          <button
+            className={`mode-filter-btn ${statsModeFilter === 'VIRTUAL' ? 'active virtual' : ''}`}
+            onClick={() => setStatsModeFilter('VIRTUAL')}
+          >
+            🧪 가상 매매
+          </button>
+          <button
+            className={`mode-filter-btn ${statsModeFilter === 'REAL' ? 'active real' : ''}`}
+            onClick={() => setStatsModeFilter('REAL')}
+          >
+            💰 실전 매매
+          </button>
         </div>
       </div>
 
-      {/* Timeline Table */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-3">
-        <h3 className="font-bold text-white text-sm">📅 기간별 손익 추이 ({statsPeriodTab.toUpperCase()})</h3>
-        <div className="overflow-x-auto max-h-80">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead className="sticky top-0 bg-slate-900 z-10">
-              <tr className="border-b border-slate-800 text-slate-400 font-semibold">
-                <th className="py-2 px-3">기간</th>
-                <th className="py-2 px-3 text-right">손익(원)</th>
-                <th className="py-2 px-3 text-right">거래수</th>
-                <th className="py-2 px-3 text-right">승률</th>
+      {/* Overall Cumulative Metrics Cards */}
+      <div className="metrics-grid">
+        <div className="metric-card">
+          <div className="metric-title">누적 실현 손익합계 (2026.10~)</div>
+          <div className="metric-value">
+            <span className={(statsData?.totalProfitKrw || 0) >= 0 ? 'num-up' : 'num-down'}>
+              {(statsData?.totalProfitKrw || 0) >= 0 ? '+' : ''}
+              {(statsData?.totalProfitKrw || 0).toLocaleString()}원
+            </span>
+          </div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-title">총 체결 완료 거래수</div>
+          <div className="metric-value">{statsData?.totalTrades || 0}회</div>
+        </div>
+        <div className="metric-card">
+          <div className="metric-title">종합 승률 (Win Rate)</div>
+          <div className="metric-value">
+            <span className={(statsData?.winRate || 0) >= 50 ? 'num-up' : 'num-down'}>
+              {statsData?.winRate || 0}%
+            </span>
+          </div>
+        </div>
+      </div>
+
+      {/* Periodical Performance Table */}
+      <div className="board-card">
+        <div className="card-title-row">
+          <div className="card-title">
+            📅 {statsPeriodTab === 'daily' ? '일별' : statsPeriodTab === 'weekly' ? '주별' : '월별'} 실현 손익 및 체결 성과 내역
+          </div>
+        </div>
+        <div className="table-wrapper">
+          <table className="custom-table">
+            <thead>
+              <tr>
+                <th>기간 (Period)</th>
+                <th>실현 손익금</th>
+                <th>체결 횟수</th>
+                <th>승률</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {timeline.map((item) => (
-                <tr key={item.period} className="hover:bg-slate-800/40">
-                  <td className="py-2.5 px-3 font-semibold text-white">{item.period}</td>
-                  <td className={`py-2.5 px-3 text-right font-bold ${
-                    item.profitKrw > 0 ? 'text-rose-400' : item.profitKrw < 0 ? 'text-blue-400' : 'text-slate-400'
-                  }`}>
-                    {item.profitKrw > 0 ? '+' : ''}{item.profitKrw.toLocaleString()}원
+            <tbody>
+              {!statsData?.timeline || statsData.timeline.length === 0 ? (
+                <tr>
+                  <td colSpan="4" style={{ textAlign: 'center', padding: '24px', color: '#64748b' }}>
+                    선택한 조건의 거래 내역이 없습니다.
                   </td>
-                  <td className="py-2.5 px-3 text-right text-slate-300">{item.tradesCount}건</td>
-                  <td className="py-2.5 px-3 text-right text-emerald-400 font-medium">{item.winRate}%</td>
                 </tr>
-              ))}
+              ) : (
+                statsData.timeline.map((item) => {
+                  const isUp = item.profitKrw > 0;
+                  const isDown = item.profitKrw < 0;
+                  return (
+                    <tr key={item.period}>
+                      <td style={{ fontWeight: 600 }}>{item.period}</td>
+                      <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                        {isUp ? '+' : ''}{item.profitKrw.toLocaleString()}원
+                      </td>
+                      <td>{item.tradesCount}건</td>
+                      <td className={item.winRate >= 50 ? 'num-up' : 'num-down'}>{item.winRate}%</td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>
       </div>
 
-      {/* Stock Ranking Contribution Table */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-3">
-        <h3 className="font-bold text-white text-sm">🥇 종목별 수익 기여도 랭킹</h3>
-        <div className="overflow-x-auto max-h-80">
-          <table className="w-full text-left text-xs border-collapse">
-            <thead className="sticky top-0 bg-slate-900 z-10">
-              <tr className="border-b border-slate-800 text-slate-400 font-semibold">
-                <th className="py-2 px-3">종목명/코드</th>
-                <th className="py-2 px-3 text-right">누적 기여 손익</th>
-                <th className="py-2 px-3 text-right">거래수</th>
-                <th className="py-2 px-3 text-right">승률</th>
+      {/* Stock Contribution Ranking Table */}
+      <div className="board-card">
+        <div className="card-title-row">
+          <div className="card-title">🏆 종목별 수익 기여도 순위</div>
+        </div>
+        <div className="table-wrapper">
+          <table className="custom-table">
+            <thead>
+              <tr>
+                <th>순위</th>
+                <th>종목명 (종목코드)</th>
+                <th>누적 실현 손익</th>
+                <th>매매 횟수</th>
+                <th>종목별 승률</th>
               </tr>
             </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {stockRanking.map((s) => (
-                <tr key={s.stockCode} className="hover:bg-slate-800/40">
-                  <td className="py-2.5 px-3 font-semibold text-white">
-                    {s.stockName} <span className="text-[11px] text-slate-500 font-normal">({s.stockCode})</span>
+            <tbody>
+              {!statsData?.stockRanking || statsData.stockRanking.length === 0 ? (
+                <tr>
+                  <td colSpan="5" style={{ textAlign: 'center', padding: '24px', color: '#64748b' }}>
+                    매매된 종목 데이터가 없습니다.
                   </td>
-                  <td className={`py-2.5 px-3 text-right font-bold ${
-                    s.totalProfitKrw > 0 ? 'text-rose-400' : s.totalProfitKrw < 0 ? 'text-blue-400' : 'text-slate-400'
-                  }`}>
-                    {s.totalProfitKrw > 0 ? '+' : ''}{s.totalProfitKrw.toLocaleString()}원
-                  </td>
-                  <td className="py-2.5 px-3 text-right text-slate-300">{s.tradesCount}건</td>
-                  <td className="py-2.5 px-3 text-right text-emerald-400 font-medium">{s.winRate}%</td>
                 </tr>
-              ))}
+              ) : (
+                statsData.stockRanking.map((stock, idx) => {
+                  const isUp = stock.totalProfitKrw > 0;
+                  const isDown = stock.totalProfitKrw < 0;
+                  return (
+                    <tr key={stock.stockCode}>
+                      <td>{idx + 1}위</td>
+                      <td style={{ fontWeight: 600 }}>{stock.stockName} ({stock.stockCode})</td>
+                      <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                        {isUp ? '+' : ''}{stock.totalProfitKrw.toLocaleString()}원
+                      </td>
+                      <td>{stock.tradesCount}회</td>
+                      <td className={stock.winRate >= 50 ? 'num-up' : 'num-down'}>{stock.winRate}%</td>
+                    </tr>
+                  );
+                })
+              )}
             </tbody>
           </table>
         </div>

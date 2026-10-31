@@ -1,159 +1,153 @@
 import React from 'react';
 
 export default function HybridBoard({
-  candidateStocks,
-  selectedStockCode,
-  setSelectedStockCode,
   aiDecisions,
   isAiEvaluating,
   onAiEvaluateAndTrade,
-  onManualTradeTest,
-  activeTradeMode,
 }) {
-  const isReal = activeTradeMode === 'REAL';
-  const selectedStock = candidateStocks.find((s) => s.code === selectedStockCode) || candidateStocks[0];
-
   return (
-    <div className={`rounded-2xl border p-5 space-y-4 transition-all duration-300 ${
-      isReal
-        ? 'bg-slate-900/90 border-amber-500/30 shadow-xl'
-        : 'bg-slate-900/80 border-slate-800'
-    }`}>
-      {/* Board Header & Controls */}
-      <div className="flex flex-col lg:flex-row lg:items-center justify-between gap-4 border-b border-slate-800 pb-4">
-        <div>
-          <div className="flex items-center space-x-2">
-            <span className="text-xl">🤖</span>
-            <h2 className="text-base font-black text-white">
-              Gemini LLM 실시간 뉴스 감성 분석 & Python Core Executor
-            </h2>
-            <span className="text-[11px] font-bold px-2 py-0.5 rounded-full bg-indigo-500/20 text-indigo-300 border border-indigo-500/30">
-              하이브리드 파이프라인
-            </span>
-          </div>
-          <p className="text-xs text-slate-400 mt-1">
-            Gemini AI가 실시간 뉴스와 공시를 분석하여 매매 시그널을 생성하고, Python 실행기가 토스증권 API로 소수점/온주 주문을 집행합니다.
-          </p>
+    <div
+      className="board-card"
+      style={{
+        background: 'linear-gradient(135deg, rgba(24, 24, 37, 0.95), rgba(15, 23, 42, 0.95))',
+        borderColor: 'rgba(147, 51, 234, 0.35)',
+        marginBottom: '20px',
+      }}
+    >
+      <div className="card-title-row">
+        <div className="card-title" style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
+          <span>🤖 Gemini LLM 실시간 뉴스 감성 분석 & Python Core Executor 매매 판단</span>
+          <span
+            style={{
+              fontSize: '11px',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              background: 'rgba(147, 51, 234, 0.2)',
+              color: '#c084fc',
+              border: '1px solid rgba(147, 51, 234, 0.4)',
+            }}
+          >
+            하이브리드 아키텍처
+          </span>
+          <span
+            style={{
+              fontSize: '11px',
+              padding: '2px 8px',
+              borderRadius: '4px',
+              background: 'rgba(59, 130, 246, 0.2)',
+              color: '#93c5fd',
+              border: '1px solid rgba(59, 130, 246, 0.4)',
+            }}
+          >
+            🇺🇸 소수점 / 🇰🇷 온주 통합
+          </span>
         </div>
-
-        {/* Action Controls & Stock Selector */}
-        <div className="flex flex-wrap items-center gap-2">
-          {/* Candidate Stock Selector */}
-          <select
-            value={selectedStockCode}
-            onChange={(e) => setSelectedStockCode(e.target.value)}
-            className="bg-slate-950 border border-slate-700 text-white text-xs font-semibold rounded-xl px-3 py-2 focus:outline-none focus:border-indigo-500"
-          >
-            <optgroup label="🇺🇸 미국 주식 (소수점 금액 매수)">
-              {candidateStocks
-                .filter((s) => s.market === 'US' || s.isFractional)
-                .map((s) => (
-                  <option key={s.code} value={s.code}>
-                    {s.name} ({s.code}) - ${s.basePriceUsd} [소수점]
-                  </option>
-                ))}
-            </optgroup>
-            <optgroup label="🇰🇷 국내 주식 (1주 온주 매수)">
-              {candidateStocks
-                .filter((s) => s.market !== 'US' && !s.isFractional)
-                .map((s) => (
-                  <option key={s.code} value={s.code}>
-                    {s.name} ({s.code}) - {s.basePrice?.toLocaleString()}원
-                  </option>
-                ))}
-            </optgroup>
-          </select>
-
-          {/* 1-Click AI Evaluate & Trade */}
+        <div style={{ display: 'flex', gap: '8px' }}>
           <button
-            onClick={() => onAiEvaluateAndTrade(true, selectedStockCode)}
+            className="btn-action"
+            style={{ fontSize: '11px', padding: '4px 10px' }}
+            onClick={() => onAiEvaluateAndTrade(false)}
             disabled={isAiEvaluating}
-            className={`px-3 py-2 rounded-xl text-xs font-bold transition flex items-center space-x-1.5 shadow-md ${
-              isReal
-                ? 'bg-amber-500 hover:bg-amber-400 text-slate-950 font-black shadow-amber-500/20'
-                : 'bg-indigo-600 hover:bg-indigo-500 text-white shadow-indigo-600/30'
-            } disabled:opacity-50`}
           >
-            <span>{isAiEvaluating ? '⏳ 분석 및 체결 중...' : '🤖 AI 뉴스 분석 & 주문 실행'}</span>
-          </button>
-
-          {/* 1-Click Python Manual Test */}
-          <button
-            onClick={() => onManualTradeTest('BUY', selectedStockCode)}
-            className="px-3 py-2 rounded-xl bg-slate-800 hover:bg-slate-700 text-slate-200 text-xs font-bold transition border border-slate-700"
-          >
-            ⚡ 수동 테스트 매수
+            {isAiEvaluating ? '⏳ 분석 중...' : '🔄 AI 시그널 재분석'}
           </button>
         </div>
       </div>
 
-      {/* Selected Stock Quick Summary Pill */}
-      {selectedStock && (
-        <div className="flex items-center space-x-3 text-xs bg-slate-950/60 p-2.5 rounded-xl border border-slate-800/80">
-          <span className="text-slate-400 font-medium">선택 종목:</span>
-          <span className="text-white font-bold">{selectedStock.name} ({selectedStock.code})</span>
-          <span className="text-slate-500">|</span>
-          <span className="text-slate-400">시장:</span>
-          <span className="font-semibold text-slate-200">
-            {selectedStock.market === 'US' ? '🇺🇸 미국 (NASDAQ/NYSE)' : '🇰🇷 국내 (KOSPI/KOSDAQ)'}
-          </span>
-          <span className="text-slate-500">|</span>
-          <span className="text-slate-400">주문 방식:</span>
-          <span className={`font-bold ${selectedStock.isFractional ? 'text-indigo-400' : 'text-emerald-400'}`}>
-            {selectedStock.isFractional ? '💵 소수점 금액 주문 ($10 단위)' : '📦 1주 단위 온주 주문'}
-          </span>
-        </div>
-      )}
+      <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.5 }}>
+        💡 <strong>하이브리드 파이프라인</strong>: 실시간 수집된 증시 뉴스·공시를 <strong>Gemini LLM</strong>이 심층 분석하여 종목별 감성점수와 매매 시그널을 판정하고, 주문 집행은 <strong>Python 코어 실행기(Toss Executor)</strong>가 토스증권 Open API를 통해 안전하게 집행합니다.
+      </div>
 
-      {/* AI Decisions Grid */}
-      <div className="grid grid-cols-1 md:grid-cols-2 lg:grid-cols-3 gap-3">
-        {aiDecisions.length === 0 ? (
-          <div className="col-span-full py-8 text-center text-xs text-slate-500">
-            생성된 AI 퀀트 매매 판단이 없습니다. 상단의 'AI 뉴스 분석' 버튼을 눌러보세요.
-          </div>
-        ) : (
-          aiDecisions.slice(0, 6).map((d) => {
-            const isBuy = d.action === 'BUY';
-            const isSell = d.action === 'SELL';
-
-            return (
-              <div
-                key={d.id || `${d.symbol}_${d.created_at}`}
-                className="bg-slate-950/70 border border-slate-800 rounded-xl p-3.5 space-y-2 hover:border-slate-700 transition"
-              >
-                <div className="flex items-center justify-between">
-                  <div className="flex items-center space-x-2">
-                    <span className="font-bold text-white text-sm">{d.stock_name}</span>
-                    <span className="text-[11px] text-slate-400">({d.symbol})</span>
-                  </div>
-                  <span className={`text-[11px] font-black px-2 py-0.5 rounded ${
-                    isBuy
-                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                      : isSell
-                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                      : 'bg-slate-800 text-slate-400'
-                  }`}>
-                    {d.action}
-                  </span>
-                </div>
-
-                <div className="flex items-center justify-between text-xs text-slate-400">
-                  <span>감성 지수: <b className={d.sentiment_score > 0 ? 'text-rose-400' : d.sentiment_score < 0 ? 'text-blue-400' : 'text-slate-400'}>{d.sentiment_score > 0 ? `+${d.sentiment_score}` : d.sentiment_score}</b></span>
-                  <span>신뢰도: <b className="text-white">{d.confidence}%</b></span>
-                </div>
-
-                <p className="text-xs text-slate-300 line-clamp-2 leading-relaxed">
-                  {d.reasoning}
-                </p>
-
-                <div className="flex items-center justify-between pt-1 border-t border-slate-800/80 text-[10px] text-slate-500">
-                  <span>{d.suggested_order_type === 'AMOUNT_FRACTIONAL' ? '미국 소수점' : '국내 온주'}</span>
-                  <span className="text-emerald-400">🐍 {d.executed_by || 'Python'}</span>
-                </div>
-              </div>
-            );
-          })
-        )}
+      <div className="table-wrapper">
+        <table className="custom-table">
+          <thead>
+            <tr>
+              <th>종목명 (코드)</th>
+              <th>시장/구분</th>
+              <th>AI 매매 신호</th>
+              <th>감성점수 / 확신도</th>
+              <th>LLM 퀀트 분석 핵심 근거</th>
+              <th>실행 엔진</th>
+              <th>원클릭 주문</th>
+            </tr>
+          </thead>
+          <tbody>
+            {aiDecisions.length === 0 ? (
+              <tr>
+                <td colSpan="7" style={{ textAlign: 'center', padding: '24px', color: '#64748b', fontSize: '13px' }}>
+                  현재 대기 중인 AI 분석 시그널이 없습니다. 상단의 <strong>[🔄 AI 시그널 재분석]</strong> 버튼을 누르면 실시간 뉴스를 분석합니다.
+                </td>
+              </tr>
+            ) : (
+              aiDecisions.slice(0, 8).map((d, idx) => {
+                const isBuy = d.action === 'BUY';
+                const isSell = d.action === 'SELL';
+                const isUS = d.market === 'US';
+                return (
+                  <tr key={idx}>
+                    <td style={{ fontWeight: 600 }}>
+                      {d.stock_name || d.name} ({d.symbol})
+                    </td>
+                    <td>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          padding: '2px 6px',
+                          borderRadius: '4px',
+                          background: isUS ? 'rgba(99, 102, 241, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                          color: isUS ? '#a5b4fc' : '#6ee7b7',
+                          border: isUS ? '1px solid rgba(99, 102, 241, 0.4)' : '1px solid rgba(16, 185, 129, 0.4)',
+                        }}
+                      >
+                        {isUS ? '🇺🇸 미국 소수점' : '🇰🇷 국내 온주'}
+                      </span>
+                    </td>
+                    <td>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          fontWeight: 700,
+                          padding: '2px 8px',
+                          borderRadius: '4px',
+                          background: isBuy ? 'rgba(16, 185, 129, 0.2)' : isSell ? 'rgba(239, 68, 68, 0.2)' : 'rgba(245, 158, 11, 0.2)',
+                          color: isBuy ? '#34d399' : isSell ? '#f87171' : '#fbbf24',
+                          border: isBuy ? '1px solid #10b981' : isSell ? '1px solid #ef4444' : '1px solid #f59e0b',
+                        }}
+                      >
+                        {isBuy ? '🟢 강력 매수 (BUY)' : isSell ? '🔴 매도 권고 (SELL)' : '🟡 관망 (HOLD)'}
+                      </span>
+                    </td>
+                    <td>
+                      <span className={(d.sentiment_score || d.sentimentScore) > 0 ? 'num-up' : (d.sentiment_score || d.sentimentScore) < 0 ? 'num-down' : ''}>
+                        {(d.sentiment_score || d.sentimentScore) > 0 ? '+' : ''}{d.sentiment_score || d.sentimentScore}점
+                      </span>
+                      <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '6px' }}>
+                        (확신 {d.confidence}%)
+                      </span>
+                    </td>
+                    <td style={{ fontSize: '12px', color: '#cbd5e1', maxWidth: '320px', lineHeight: 1.4 }}>
+                      {d.reasoning}
+                    </td>
+                    <td>
+                      <span style={{ fontSize: '11px', color: '#38bdf8' }}>
+                        🐍 Python Toss Core
+                      </span>
+                    </td>
+                    <td>
+                      <button
+                        className={`btn-action ${isBuy ? 'success' : 'secondary'}`}
+                        style={{ fontSize: '11px', padding: '3px 8px' }}
+                        onClick={() => onAiEvaluateAndTrade(true, d.symbol)}
+                      >
+                        {isBuy ? '⚡ 즉시 집행' : '수동 집행'}
+                      </button>
+                    </td>
+                  </tr>
+                );
+              })
+            )}
+          </tbody>
+        </table>
       </div>
     </div>
   );

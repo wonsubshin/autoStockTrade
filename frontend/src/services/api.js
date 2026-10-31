@@ -117,3 +117,4 @@ export const api = {
   createBriefingStream: () => new EventSource(`${API_BASE}/api/ai/stream-briefing`),
   createNewsStream: () => new EventSource(`${API_BASE}/api/ai/stream-news-analyze`),
 };
+

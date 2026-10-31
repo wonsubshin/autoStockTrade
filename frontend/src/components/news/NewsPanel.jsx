@@ -1,4 +1,4 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export default function NewsPanel({
   newsList,
@@ -17,201 +17,251 @@ export default function NewsPanel({
   isAiNewsStreaming,
   aiNewsText,
   onStartAiNews,
-  onStopAiNews,
 }) {
-  const TAG_OPTIONS = [
-    '', '#반도체', '#2차전지', '#바이오', '#자동차', '#AI/로봇',
-    '#실적/수출', '#외국인수급', '#공시/계약',
+  const [isAccordionOpen, setIsAccordionOpen] = useState(true);
+
+  const POPULAR_TAGS = [
+    '#반도체', '#2차전지', '#바이오', '#AI/로봇', '#자동차',
+    '#실적발표', '#금리/연준', '#환율', '#외국인수급', '#공시/계약',
   ];
 
   return (
-    <div className="space-y-6">
-      {/* AI News Briefing Stream Card */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-3">
-        <div className="flex items-center justify-between">
-          <div className="flex items-center space-x-2">
-            <span className="text-lg">🤖</span>
-            <h3 className="font-bold text-white text-base">Gemini 2.5 Flash 증시 인텔리전스 심층 리포트</h3>
-          </div>
-          <div>
-            {isAiNewsStreaming ? (
-              <button
-                onClick={onStopAiNews}
-                className="px-3 py-1.5 rounded-xl bg-rose-600/20 hover:bg-rose-600/30 text-rose-300 border border-rose-500/40 text-xs font-bold transition"
-              >
-                중지
-              </button>
-            ) : (
-              <button
-                onClick={onStartAiNews}
-                className="px-3 py-1.5 rounded-xl bg-indigo-600 hover:bg-indigo-500 text-white text-xs font-bold transition shadow-sm"
-              >
-                AI 분석 리포트 생성
-              </button>
-            )}
-          </div>
-        </div>
-
-        <div className="bg-slate-950 p-4 rounded-xl border border-slate-800/80 text-xs text-slate-300 leading-relaxed min-h-[90px] whitespace-pre-wrap">
-          {aiNewsText || '현재 수집된 증시 뉴스와 공시를 바탕으로 Gemini AI가 퀀트 투자 관점의 심층 리포트를 생성합니다.'}
-        </div>
-      </div>
-
-      {/* News Sentiment Counts Bar */}
-      <div className="grid grid-cols-2 sm:grid-cols-4 gap-3">
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 text-center">
-          <div className="text-slate-400 text-xs">수집 뉴스 총계</div>
-          <div className="text-xl font-black text-white mt-0.5">{newsCounts.total}건</div>
-        </div>
-        <div className="bg-slate-900/80 border border-rose-500/30 rounded-xl p-3.5 text-center">
-          <div className="text-rose-400 text-xs">호재 (Bullish)</div>
-          <div className="text-xl font-black text-rose-300 mt-0.5">{newsCounts.bullish}건</div>
-        </div>
-        <div className="bg-slate-900/80 border border-blue-500/30 rounded-xl p-3.5 text-center">
-          <div className="text-blue-400 text-xs">악재 (Bearish)</div>
-          <div className="text-xl font-black text-blue-300 mt-0.5">{newsCounts.bearish}건</div>
-        </div>
-        <div className="bg-slate-900/80 border border-slate-800 rounded-xl p-3.5 text-center">
-          <div className="text-slate-400 text-xs">중립 (Neutral)</div>
-          <div className="text-xl font-black text-slate-300 mt-0.5">{newsCounts.neutral}건</div>
-        </div>
-      </div>
-
-      {/* Filter and Search Bar */}
-      <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-4 flex flex-wrap items-center justify-between gap-3">
-        <div className="flex flex-wrap items-center gap-2 flex-1">
-          <input
-            type="text"
-            placeholder="뉴스 제목, 키워드 검색..."
-            value={newsQuery}
-            onChange={(e) => setNewsQuery(e.target.value)}
-            onKeyDown={(e) => e.key === 'Enter' && onFetchNews(1)}
-            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs w-52 focus:outline-none focus:border-blue-500"
-          />
-
-          <select
-            value={selectedTag}
-            onChange={(e) => {
-              setSelectedTag(e.target.value);
-            }}
-            className="bg-slate-950 border border-slate-800 rounded-xl px-3 py-2 text-white text-xs"
-          >
-            <option value="">전체 테마</option>
-            {TAG_OPTIONS.filter(Boolean).map((t) => (
-              <option key={t} value={t}>{t}</option>
-            ))}
-          </select>
-
-          <input
-            type="date"
-            value={startDate}
-            onChange={(e) => setStartDate(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-white text-xs"
-          />
-          <span className="text-slate-500 text-xs">~</span>
-          <input
-            type="date"
-            value={endDate}
-            onChange={(e) => setEndDate(e.target.value)}
-            className="bg-slate-950 border border-slate-800 rounded-xl px-2 py-2 text-white text-xs"
-          />
-
-          <button
-            onClick={() => onFetchNews(1)}
-            className="px-3 py-2 bg-blue-600 hover:bg-blue-500 text-white rounded-xl text-xs font-bold transition"
-          >
-            검색
-          </button>
-        </div>
-
-        <button
-          onClick={onRefreshNews}
-          className="px-3 py-2 bg-slate-800 hover:bg-slate-700 text-slate-300 hover:text-white rounded-xl text-xs font-bold transition border border-slate-700 flex items-center space-x-1"
-        >
-          <span>🔄</span>
-          <span>뉴스 수집 갱신</span>
+    <div>
+      <div className="section-header">
+        <div className="section-title">📰 국내 증시 뉴스 & 실시간 AI 인텔리전스</div>
+        <button className="btn-action" onClick={onRefreshNews}>
+          🔄 최신 증시뉴스 즉시 수집
         </button>
       </div>
 
-      {/* News Items List */}
-      <div className="space-y-3">
-        {newsList.length === 0 ? (
-          <div className="text-center py-12 text-slate-500 text-xs bg-slate-900/40 rounded-2xl border border-slate-800">
-            조건에 일치하는 뉴스가 없습니다.
+      {/* Collapsible Accordion: AI News Intelligence Box */}
+      <div className="collapsible-box">
+        <div
+          className="collapsible-header"
+          onClick={() => setIsAccordionOpen(!isAccordionOpen)}
+        >
+          <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+            <span style={{ fontSize: '18px' }}>🤖</span>
+            <span style={{ fontWeight: 700, fontSize: '15px', color: '#fff' }}>
+              Gemini 2.5 Flash 증시 뉴스 종합 시황 AI 분석
+            </span>
+            <span className="badge-mode real" style={{ fontSize: '11px' }}>
+              호재 {newsCounts.bullish}건 / 악재 {newsCounts.bearish}건 / 중립 {newsCounts.neutral}건
+            </span>
           </div>
-        ) : (
-          newsList.map((item) => {
-            const isBull = item.sentiment === 'BULLISH';
-            const isBear = item.sentiment === 'BEARISH';
+          <button
+            className="btn-action"
+            style={{ padding: '4px 10px', fontSize: '12px' }}
+            onClick={(e) => {
+              e.stopPropagation();
+              setIsAccordionOpen(!isAccordionOpen);
+            }}
+          >
+            {isAccordionOpen ? '▲ 접기' : '▼ 펼치기'}
+          </button>
+        </div>
 
-            return (
-              <div
-                key={item.id || item.link}
-                className="bg-slate-900/80 border border-slate-800 hover:border-slate-700 rounded-xl p-4 transition space-y-2"
-              >
-                <div className="flex items-center justify-between text-xs">
-                  <div className="flex items-center space-x-2">
-                    <span className="font-semibold text-slate-400">{item.source}</span>
-                    <span className="text-slate-600">•</span>
-                    <span className="text-slate-500">{new Date(item.published_at).toLocaleString()}</span>
-                  </div>
-
-                  <span className={`text-[10px] font-bold px-2 py-0.5 rounded ${
-                    isBull
-                      ? 'bg-rose-500/20 text-rose-300 border border-rose-500/30'
-                      : isBear
-                      ? 'bg-blue-500/20 text-blue-300 border border-blue-500/30'
-                      : 'bg-slate-800 text-slate-400'
-                  }`}>
-                    {item.sentiment}
-                  </span>
-                </div>
-
-                <h4 className="text-sm font-bold text-white hover:text-blue-400 transition">
-                  <a href={item.link} target="_blank" rel="noreferrer">
-                    {item.title}
-                  </a>
-                </h4>
-
-                {item.summary && (
-                  <p className="text-xs text-slate-400 line-clamp-2 leading-relaxed">
-                    {item.summary}
-                  </p>
-                )}
-
-                {item.keywords && (
-                  <div className="text-[11px] text-slate-500">
-                    {item.keywords}
-                  </div>
-                )}
+        {isAccordionOpen && (
+          <div className="collapsible-content">
+            <div style={{ display: 'flex', justifyContent: 'space-between', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+              <div style={{ fontSize: '13px', color: '#94a3b8' }}>
+                수집된 {newsCounts.total}건의 증시 뉴스와 시장 수급을 AI가 실시간 종합 분석합니다.
               </div>
-            );
-          })
+              <button
+                className="btn-action success"
+                onClick={onStartAiNews}
+                disabled={isAiNewsStreaming}
+              >
+                {isAiNewsStreaming ? '🤖 AI 스트리밍 분석 중...' : '🤖 AI 분석하기'}
+              </button>
+            </div>
+            <div
+              style={{
+                background: 'rgba(0, 0, 0, 0.4)',
+                padding: '16px',
+                borderRadius: '8px',
+                fontSize: '13.5px',
+                lineHeight: '1.7',
+                color: '#e2e8f0',
+                whiteSpace: 'pre-wrap',
+                minHeight: '100px',
+              }}
+            >
+              {aiNewsText || '상단의 [🤖 AI 분석하기] 버튼을 누르면 실시간 시황 보고서가 생성됩니다.'}
+              {isAiNewsStreaming && <span className="cursor-blink">|</span>}
+            </div>
+          </div>
         )}
       </div>
 
-      {/* Pagination */}
-      {newsPagination.totalPages > 1 && (
-        <div className="flex items-center justify-center space-x-2 pt-2">
+      {/* News Filters & Search */}
+      <div className="board-card" style={{ padding: '16px', marginBottom: '20px' }}>
+        <div style={{ display: 'flex', gap: '12px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <input
+            type="date"
+            className="input-field"
+            style={{ width: '160px', padding: '8px 12px', fontSize: '13px' }}
+            value={startDate}
+            onChange={(e) => setStartDate(e.target.value)}
+          />
+          <span style={{ color: '#64748b' }}>~</span>
+          <input
+            type="date"
+            className="input-field"
+            style={{ width: '160px', padding: '8px 12px', fontSize: '13px' }}
+            value={endDate}
+            onChange={(e) => setEndDate(e.target.value)}
+          />
+
+          <input
+            type="text"
+            className="input-field"
+            style={{ flex: 1, minWidth: '220px', padding: '8px 12px', fontSize: '13px' }}
+            placeholder="통합 검색 (기사 제목, 요약, 언론사, 종목명)..."
+            value={newsQuery}
+            onChange={(e) => setNewsQuery(e.target.value)}
+            onKeyDown={(e) => e.key === 'Enter' && onFetchNews(1)}
+          />
+
           <button
-            onClick={() => onFetchNews(Math.max(1, newsPagination.page - 1))}
-            disabled={newsPagination.page <= 1}
-            className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 disabled:opacity-40 text-xs"
+            className="btn-primary"
+            style={{ padding: '8px 16px', fontSize: '13px' }}
+            onClick={() => onFetchNews(1)}
           >
-            이전
+            검색
           </button>
-          <span className="text-xs text-slate-400">
-            {newsPagination.page} / {newsPagination.totalPages}
-          </span>
           <button
-            onClick={() => onFetchNews(Math.min(newsPagination.totalPages, newsPagination.page + 1))}
-            disabled={newsPagination.page >= newsPagination.totalPages}
-            className="px-3 py-1.5 rounded-lg bg-slate-800 text-slate-300 disabled:opacity-40 text-xs"
+            className="btn-action"
+            style={{ padding: '8px 14px', fontSize: '13px' }}
+            onClick={() => {
+              setNewsQuery('');
+              setSelectedTag('');
+              setStartDate('');
+              setEndDate('');
+              setTimeout(() => onFetchNews(1), 50);
+            }}
           >
-            다음
+            초기화
           </button>
         </div>
-      )}
+
+        {/* Popular Tag Badges */}
+        <div style={{ display: 'flex', gap: '8px', marginTop: '12px', flexWrap: 'wrap' }}>
+          {POPULAR_TAGS.map((tag) => (
+            <button
+              key={tag}
+              className={`filter-badge-btn ${selectedTag === tag ? 'active' : ''}`}
+              onClick={() => {
+                const nextTag = selectedTag === tag ? '' : tag;
+                setSelectedTag(nextTag);
+                setTimeout(() => onFetchNews(1), 50);
+              }}
+            >
+              {tag}
+            </button>
+          ))}
+        </div>
+      </div>
+
+      {/* News Board Table (Strict 48px Fixed Row Height) */}
+      <div className="board-card" style={{ padding: '0', overflow: 'hidden' }}>
+        <table className="news-board-table">
+          <thead>
+            <tr>
+              <th style={{ width: '100px' }}>감성구분</th>
+              <th style={{ width: '140px' }}>테마 태그</th>
+              <th>기사 제목 (클릭 시 새 탭 원문 이동)</th>
+              <th style={{ width: '110px' }}>언론사</th>
+              <th style={{ width: '140px' }}>보도일시</th>
+            </tr>
+          </thead>
+          <tbody>
+            {newsList.length === 0 ? (
+              <tr>
+                <td colSpan="5" style={{ textAlign: 'center', height: '100px', color: '#64748b' }}>
+                  조회된 증시 뉴스가 없습니다.
+                </td>
+              </tr>
+            ) : (
+              newsList.map((n) => (
+                <tr key={n.id}>
+                  <td>
+                    <span className={`sentiment-badge ${n.sentiment}`}>
+                      {n.sentiment === 'BULLISH' ? '▲ 호재' : n.sentiment === 'BEARISH' ? '▼ 악재' : '● 중립'}
+                    </span>
+                  </td>
+                  <td className="cell-ellipsis">
+                    <span className="news-tag">{n.keywords || '#국내증시'}</span>
+                  </td>
+                  <td className="cell-ellipsis">
+                    <a
+                      href={n.link}
+                      target="_blank"
+                      rel="noopener noreferrer"
+                      className="news-title-link"
+                      title={`[${n.title}]\n\n${n.summary || ''}`}
+                    >
+                      {n.title}
+                    </a>
+                  </td>
+                  <td className="cell-ellipsis" style={{ color: '#94a3b8' }}>{n.source}</td>
+                  <td style={{ color: '#64748b', fontSize: '12px' }}>
+                    {n.published_at ? n.published_at.slice(0, 16).replace('T', ' ') : '-'}
+                  </td>
+                </tr>
+              ))
+            )}
+          </tbody>
+        </table>
+      </div>
+
+      {/* Pagination Controls */}
+      <div className="pagination-container">
+        <button
+          className="page-btn"
+          disabled={newsPagination.page <= 1}
+          onClick={() => onFetchNews(1)}
+        >
+          « 처음
+        </button>
+        <button
+          className="page-btn"
+          disabled={newsPagination.page <= 1}
+          onClick={() => onFetchNews(newsPagination.page - 1)}
+        >
+          ‹ 이전
+        </button>
+
+        {Array.from({ length: Math.min(7, newsPagination.totalPages) }, (_, i) => {
+          const startP = Math.max(1, Math.min(newsPagination.page - 3, newsPagination.totalPages - 6));
+          const pageNum = startP + i;
+          if (pageNum > newsPagination.totalPages) return null;
+          return (
+            <button
+              key={pageNum}
+              className={`page-btn ${newsPagination.page === pageNum ? 'active' : ''}`}
+              onClick={() => onFetchNews(pageNum)}
+            >
+              {pageNum}
+            </button>
+          );
+        })}
+
+        <button
+          className="page-btn"
+          disabled={newsPagination.page >= newsPagination.totalPages}
+          onClick={() => onFetchNews(newsPagination.page + 1)}
+        >
+          다음 ›
+        </button>
+        <button
+          className="page-btn"
+          disabled={newsPagination.page >= newsPagination.totalPages}
+          onClick={() => onFetchNews(newsPagination.totalPages)}
+        >
+          마지막 »
+        </button>
+      </div>
     </div>
   );
 }

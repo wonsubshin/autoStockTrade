@@ -1,105 +1,92 @@
 import React from 'react';
 
 export default function PositionsTable({ positions, onSellPosition, activeTradeMode }) {
-  const isReal = activeTradeMode === 'REAL';
+  const filteredPositions = positions.filter(
+    (p) => activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode
+  );
 
   return (
-    <div className="bg-slate-900/80 border border-slate-800 rounded-2xl p-5 space-y-4">
-      <div className="flex items-center justify-between">
-        <div className="flex items-center space-x-2">
-          <span className="text-lg">📦</span>
-          <h3 className="font-bold text-white text-base">보유 포지션 (Open Positions)</h3>
-          <span className="text-xs px-2 py-0.5 rounded-full bg-slate-800 text-slate-300 font-semibold">
-            {positions.length}건
-          </span>
+    <div className="board-card">
+      <div className="card-title-row">
+        <div className="card-title">
+          📌 실시간 보유 종목 & 평가 손익 현황 ({activeTradeMode === 'REAL' ? '토스증권 실전 계좌' : activeTradeMode === 'VIRTUAL' ? '가상 매매' : '전체'})
         </div>
-        <div className="text-xs text-slate-400">
-          실시간 호가 평가 손익 반영
-        </div>
+        <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+          총 {filteredPositions.length}개 보유 중
+        </span>
       </div>
-
-      {positions.length === 0 ? (
-        <div className="text-center py-12 text-slate-500 text-xs">
-          현재 보유 중인 포지션이 없습니다.
-        </div>
-      ) : (
-        <div className="overflow-x-auto">
-          <table className="w-full text-left border-collapse text-xs">
-            <thead>
-              <tr className="border-b border-slate-800 text-slate-400 font-semibold">
-                <th className="py-2.5 px-3">종목명/코드</th>
-                <th className="py-2.5 px-3">모드</th>
-                <th className="py-2.5 px-3 text-right">보유수량</th>
-                <th className="py-2.5 px-3 text-right">매수단가</th>
-                <th className="py-2.5 px-3 text-right">현재가</th>
-                <th className="py-2.5 px-3 text-right">평가금액</th>
-                <th className="py-2.5 px-3 text-right">평가손익</th>
-                <th className="py-2.5 px-3 text-center">관리</th>
+      <div className="table-wrapper">
+        <table className="custom-table">
+          <thead>
+            <tr>
+              <th>종목명 (코드)</th>
+              <th>구분</th>
+              <th>보유수량</th>
+              <th>매수평균가</th>
+              <th>현재가</th>
+              <th>평가금액</th>
+              <th>평가손익</th>
+              <th>수익률</th>
+              <th>진입일시</th>
+              <th>청산</th>
+            </tr>
+          </thead>
+          <tbody>
+            {filteredPositions.length === 0 ? (
+              <tr>
+                <td colSpan="10" style={{ textAlign: 'center', padding: '28px', color: '#64748b', fontSize: '13px' }}>
+                  {activeTradeMode === 'REAL'
+                    ? '💰 현재 실전 보유 중인 종목이 없습니다. (토스증권 실전 계좌 감시 진행 중)'
+                    : '🧪 현재 가상 보유 중인 종목이 없습니다. (키움 시세 감시 진행 중)'}
+                </td>
               </tr>
-            </thead>
-            <tbody className="divide-y divide-slate-800/60">
-              {positions.map((pos) => {
-                const profit = pos.unrealizedProfitKrw || 0;
-                const profitPct = pos.unrealizedProfitPct || 0;
-                const isPositive = profit > 0;
-                const isNegative = profit < 0;
-                const isPosReal = pos.trade_mode === 'REAL';
-
-                // Display fractional quantity nicely
+            ) : (
+              filteredPositions.map((pos) => {
+                const isUp = pos.unrealizedProfitKrw > 0;
+                const isDown = pos.unrealizedProfitKrw < 0;
                 const formattedQty = Number(pos.qty) % 1 === 0
-                  ? `${pos.qty}주`
-                  : `${Number(pos.qty).toFixed(6)}주 (소수점)`;
+                  ? `${pos.qty.toLocaleString()}주`
+                  : `${Number(pos.qty).toFixed(6)}주`;
 
                 return (
-                  <tr key={pos.id} className="hover:bg-slate-800/40 transition">
-                    <td className="py-3 px-3">
-                      <div className="font-bold text-white">{pos.stock_name}</div>
-                      <div className="text-[11px] text-slate-500">{pos.stock_code}</div>
+                  <tr key={pos.id}>
+                    <td style={{ fontWeight: 600 }}>
+                      {pos.stock_name} ({pos.stock_code})
                     </td>
-                    <td className="py-3 px-3">
-                      <span className={`text-[10px] font-bold px-1.5 py-0.5 rounded ${
-                        isPosReal
-                          ? 'bg-amber-500/20 text-amber-300 border border-amber-500/40'
-                          : 'bg-emerald-500/20 text-emerald-300 border border-emerald-500/40'
-                      }`}>
-                        {isPosReal ? '실전' : '가상'}
+                    <td>
+                      <span className={`badge-mode ${pos.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
+                        {pos.trade_mode === 'REAL' ? '💰 실전' : '🧪 가상'}
                       </span>
                     </td>
-                    <td className="py-3 px-3 text-right font-medium text-slate-200">
-                      {formattedQty}
+                    <td>{formattedQty}</td>
+                    <td>{pos.avg_buy_price?.toLocaleString()}원</td>
+                    <td style={{ fontWeight: 600 }}>{pos.currentPrice?.toLocaleString()}원</td>
+                    <td>{Math.round(pos.evalAmount || 0).toLocaleString()}원</td>
+                    <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                      {isUp ? '+' : ''}{Math.round(pos.unrealizedProfitKrw || 0).toLocaleString()}원
                     </td>
-                    <td className="py-3 px-3 text-right text-slate-300">
-                      {pos.avg_buy_price?.toLocaleString()}원
+                    <td className={isUp ? 'num-up' : isDown ? 'num-down' : 'num-zero'}>
+                      {isUp ? '+' : ''}{pos.unrealizedProfitPct}%
                     </td>
-                    <td className="py-3 px-3 text-right font-bold text-white">
-                      {pos.currentPrice?.toLocaleString()}원
+                    <td style={{ fontSize: '11px', color: '#94a3b8' }}>
+                      {new Date(pos.created_at).toLocaleString()}
                     </td>
-                    <td className="py-3 px-3 text-right font-bold text-slate-200">
-                      {Math.round(pos.evalAmount || 0).toLocaleString()}원
-                    </td>
-                    <td className="py-3 px-3 text-right font-bold">
-                      <div className={isPositive ? 'text-rose-400' : isNegative ? 'text-blue-400' : 'text-slate-400'}>
-                        {isPositive ? '+' : ''}{Math.round(profit).toLocaleString()}원
-                      </div>
-                      <div className={`text-[11px] ${isPositive ? 'text-rose-400' : isNegative ? 'text-blue-400' : 'text-slate-500'}`}>
-                        ({isPositive ? '+' : ''}{profitPct}%)
-                      </div>
-                    </td>
-                    <td className="py-3 px-3 text-center">
+                    <td>
                       <button
+                        className="btn-action danger"
+                        style={{ padding: '3px 8px', fontSize: '11px' }}
                         onClick={() => onSellPosition(pos.id, pos.bot_id)}
-                        className="px-2.5 py-1 rounded-lg bg-rose-950/60 hover:bg-rose-900 border border-rose-800 text-rose-300 text-xs font-bold transition"
                       >
                         청산
                       </button>
                     </td>
                   </tr>
                 );
-              })}
-            </tbody>
-          </table>
-        </div>
-      )}
+              })
+            )}
+          </tbody>
+        </table>
+      </div>
     </div>
   );
 }

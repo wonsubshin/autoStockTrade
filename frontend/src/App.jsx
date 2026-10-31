@@ -1,21 +1,20 @@
 import React, { useState, useEffect, useCallback, useRef } from 'react';
 import { api } from './services/api';
 
-// Modular Components
+// Modular UI Components (Styled with Pretendard & styles.css)
 import Modal from './components/common/Modal';
 import GateModal from './components/auth/GateModal';
 import Header from './components/layout/Header';
 import MarketBanner from './components/layout/MarketBanner';
 import BudgetBar from './components/layout/BudgetBar';
-import HybridBoard from './components/trading/HybridBoard';
 import BotCard from './components/trading/BotCard';
+import HybridBoard from './components/trading/HybridBoard';
 import PositionsTable from './components/trading/PositionsTable';
 import TradesTable from './components/trading/TradesTable';
-import AiBriefingPanel from './components/trading/AiBriefingPanel';
 import LabPanel from './components/lab/LabPanel';
 import StatsPanel from './components/stats/StatsPanel';
 import NewsPanel from './components/news/NewsPanel';
-import SettingsModal from './components/settings/SettingsModal';
+import SettingsPanel from './components/settings/SettingsPanel';
 
 export default function App() {
   // 1. Gate Authorization State
@@ -23,11 +22,10 @@ export default function App() {
     () => localStorage.getItem('kis_gate_passed') === 'true'
   );
 
-  // 2. Navigation State
-  const [activeMenu, setActiveMenu] = useState('TRADING'); // TRADING, LAB, STATS, NEWS
-  const [isSettingsOpen, setIsSettingsOpen] = useState(false);
+  // 2. Navigation State (5 Menus: TRADING, LAB, STATS, NEWS, SETTINGS)
+  const [activeMenu, setActiveMenu] = useState('TRADING');
 
-  // 3. Global Modal / Notifications
+  // 3. Global Modal / Notification
   const [modalInfo, setModalInfo] = useState(null);
 
   // 4. System & Health State
@@ -39,10 +37,9 @@ export default function App() {
   const [tradingModeFilter, setTradingModeFilter] = useState('AUTO'); // 'AUTO', 'VIRTUAL', 'REAL', 'ALL'
   const [trades, setTrades] = useState([]);
   const [positions, setPositions] = useState([]);
-
-  // 6. AI Hybrid Decisions & Candidates State
-  const [candidateStocks, setCandidateStocks] = useState([]);
   const [selectedStockCode, setSelectedStockCode] = useState('005930');
+
+  // 6. AI Hybrid Decisions State
   const [aiDecisions, setAiDecisions] = useState([]);
   const [isAiEvaluating, setIsAiEvaluating] = useState(false);
 
@@ -58,7 +55,9 @@ export default function App() {
 
   // 9. Stats State
   const [statsModeFilter, setStatsModeFilter] = useState('ALL');
-  const [statsPeriodTab, setStatsPeriodTab] = useState('daily');
+  const [statsPeriodTab, setStatsPeriodTab] = useState(
+    () => localStorage.getItem('kis_stats_tab') || 'daily'
+  );
   const [statsData, setStatsData] = useState(null);
 
   // 10. News State
@@ -74,6 +73,7 @@ export default function App() {
   const newsStreamRef = useRef(null);
 
   // 11. Budget & Settings State
+  const [accountBalance, setAccountBalance] = useState(null);
   const [budgetSettings, setBudgetSettings] = useState({
     virtualTotalBudget: 30000000,
     realTotalBudget: 10000000,
@@ -81,6 +81,7 @@ export default function App() {
     tossTotalAssetAmount: 0,
     bots: [],
   });
+  const [botRatios, setBotRatios] = useState({});
   const [brokerConfig, setBrokerConfig] = useState({
     account_mode: 'VIRTUAL',
     has_kiwoom_keys: false,
@@ -95,7 +96,7 @@ export default function App() {
     : tradingModeFilter;
 
   // ========================================================
-  // DATA FETCHING VIA API SERVICE
+  // DATA FETCHING VIA API SERVICE LAYER
   // ========================================================
 
   const fetchHealth = useCallback(async () => {
@@ -127,13 +128,6 @@ export default function App() {
     } catch {}
   }, [activeTradeMode]);
 
-  const fetchCandidates = useCallback(async () => {
-    try {
-      const data = await api.getCandidates();
-      setCandidateStocks(data.candidates || []);
-    } catch {}
-  }, []);
-
   const fetchAiDecisions = useCallback(async () => {
     try {
       const data = await api.getAiDecisions(15);
@@ -141,13 +135,15 @@ export default function App() {
     } catch {}
   }, []);
 
-  const fetchBudgetAndSettings = useCallback(async () => {
+  const fetchSettingsAndBalance = useCallback(async () => {
     try {
-      const [budgetData, settingsData] = await Promise.all([
+      const [budgetData, settingsData, balanceData] = await Promise.all([
         api.getBudgetSettings(),
         api.getSettings(),
+        api.getAccountBalance(),
       ]);
       setBudgetSettings(budgetData);
+      setAccountBalance(balanceData);
       if (settingsData.brokerConfig) {
         setBrokerConfig(settingsData.brokerConfig);
       }
@@ -183,19 +179,18 @@ export default function App() {
     } catch {}
   }, [newsQuery, selectedTag, startDate, endDate]);
 
-  // Initial Load & Periodic Health Polling
+  // Initial Data Load & Polling
   useEffect(() => {
     if (!isAuthenticated) return;
 
     fetchHealth();
     fetchBots();
-    fetchCandidates();
     fetchAiDecisions();
-    fetchBudgetAndSettings();
+    fetchSettingsAndBalance();
 
     const healthInterval = setInterval(fetchHealth, 10000);
     return () => clearInterval(healthInterval);
-  }, [isAuthenticated, fetchHealth, fetchBots, fetchCandidates, fetchAiDecisions, fetchBudgetAndSettings]);
+  }, [isAuthenticated, fetchHealth, fetchBots, fetchAiDecisions, fetchSettingsAndBalance]);
 
   // Dynamic Content Polling per Tab
   useEffect(() => {
@@ -227,46 +222,31 @@ export default function App() {
   // USER ACTION HANDLERS
   // ========================================================
 
-  const handleToggleRunning = async (botId, action) => {
+  const handleBotAction = async (action, extra = {}) => {
+    if (!selectedBotId) return;
     try {
-      const res = await api.botAction(botId, action);
+      const res = await api.botAction(selectedBotId, action, extra);
       setModalInfo({ title: '봇 제어 완료', message: res.message, type: 'info' });
       await fetchBots();
+      if (action === 'TOGGLE_MODE' && res.newMode) {
+        fetchTradesAndPositions(res.newMode);
+      } else {
+        fetchTradesAndPositions();
+      }
+      fetchSettingsAndBalance();
     } catch (err) {
-      setModalInfo({ title: '제어 오류', message: err.message, type: 'error' });
+      setModalInfo({ title: '오류', message: err.message, type: 'error' });
     }
   };
 
-  const handleToggleMode = async (botId) => {
-    try {
-      const res = await api.botAction(botId, 'TOGGLE_MODE');
-      setModalInfo({ title: '모드 전환 완료', message: res.message, type: 'info' });
-      await fetchBots();
-      if (res.newMode) fetchTradesAndPositions(res.newMode);
-    } catch (err) {
-      setModalInfo({ title: '모드 전환 실패', message: err.message, type: 'error' });
-    }
-  };
-
-  const handleResetVirtual = async (botId) => {
-    try {
-      const res = await api.botAction(botId, 'RESET_VIRTUAL');
-      setModalInfo({ title: '가상 계좌 초기화', message: res.message, type: 'info' });
-      await fetchBots();
-      await fetchTradesAndPositions();
-    } catch (err) {
-      setModalInfo({ title: '초기화 실패', message: err.message, type: 'error' });
-    }
-  };
-
-  const handleManualTradeTest = async (side, stockCode) => {
+  const handleVirtualTradeTest = async (side, stockCode = selectedStockCode) => {
     if (!selectedBotId) return;
     try {
       const res = await api.botVirtualTrade(selectedBotId, { side, stockCode });
-      setModalInfo({ title: '주문 체결 성공', message: res.message, type: 'success' });
+      setModalInfo({ title: '주문 체결 완료', message: res.message, type: 'success' });
       fetchBots();
       fetchTradesAndPositions();
-      fetchBudgetAndSettings();
+      fetchSettingsAndBalance();
     } catch (err) {
       setModalInfo({ title: '주문 실패 / 거부', message: err.message, type: 'error' });
     }
@@ -279,7 +259,7 @@ export default function App() {
       setModalInfo({ title: '매도 완료', message: res.message, type: 'info' });
       fetchBots();
       fetchTradesAndPositions();
-      fetchBudgetAndSettings();
+      fetchSettingsAndBalance();
     } catch (err) {
       setModalInfo({ title: '매도 실패', message: err.message, type: 'error' });
     }
@@ -302,9 +282,9 @@ export default function App() {
           type: 'success',
         });
         fetchTradesAndPositions();
-        fetchBudgetAndSettings();
+        fetchSettingsAndBalance();
         fetchBots();
-      } else {
+      } else if (!executeTrade) {
         setModalInfo({
           title: 'AI LLM 시장 분석 완료',
           message: `Gemini LLM이 ${res.decisions?.length || 0}개 종목에 대한 실시간 뉴스 감성 및 매매 시그널 분석을 완료했습니다.`,
@@ -318,11 +298,11 @@ export default function App() {
     }
   };
 
-  const handleFastReplay = async (seed) => {
+  const handleFastReplay = async () => {
     setIsReplaying(true);
     setReplayResult(null);
     try {
-      const res = await api.fastReplay(seed);
+      const res = await api.fastReplay(10000000);
       setReplayResult(res.result);
       fetchLeaderboard();
     } catch (err) {
@@ -339,29 +319,74 @@ export default function App() {
       fetchBots();
       fetchLeaderboard();
     } catch (err) {
-      setModalInfo({ title: '승격 실패', message: err.message, type: 'error' });
+      setModalInfo({ title: '오류', message: err.message, type: 'error' });
     }
   };
 
-  const handleSaveBudget = async (payload) => {
+  const handleSaveBudget = async () => {
+    const allocations = bots.map((b) => ({
+      bot_id: b.bot_id,
+      ratio: botRatios[b.bot_id] ?? Math.round((b.allocation_ratio || 0.33) * 100),
+    }));
+
     try {
-      const res = await api.saveBudgetSettings(payload);
-      setModalInfo({ title: '예산 설정 완료', message: res.message, type: 'success' });
-      setIsSettingsOpen(false);
-      fetchBudgetAndSettings();
+      const res = await api.saveBudgetSettings({
+        virtualTotalBudget: budgetSettings.virtualTotalBudget,
+        realTotalBudget: budgetSettings.realTotalBudget,
+        botAllocations: allocations,
+      });
+      setModalInfo({ title: '예산 저장 완료', message: res.message, type: 'success' });
+      fetchSettingsAndBalance();
       fetchBots();
     } catch (err) {
       setModalInfo({ title: '설정 저장 실패', message: err.message, type: 'error' });
     }
   };
 
-  const handleSaveKeys = async (form) => {
+  const handleSaveKeys = async (form, onSuccess) => {
     try {
       const res = await api.saveSettings({ brokerConfig: form });
-      setModalInfo({ title: '보안 키 저장 완료', message: res.message, type: 'success' });
-      fetchBudgetAndSettings();
+      setModalInfo({ title: '키 갱신 완료', message: res.message, type: 'success' });
+      if (onSuccess) onSuccess();
+      fetchSettingsAndBalance();
     } catch (err) {
-      setModalInfo({ title: '저장 실패', message: err.message, type: 'error' });
+      setModalInfo({ title: '오류', message: err.message, type: 'error' });
+    }
+  };
+
+  const handleExportBackup = async () => {
+    window.open('/api/backup/export', '_blank');
+  };
+
+  const handleImportBackup = async (e) => {
+    const file = e.target.files?.[0];
+    if (!file) return;
+
+    try {
+      const reader = new FileReader();
+      reader.onload = async (evt) => {
+        try {
+          const parsed = JSON.parse(evt.target.result);
+          const res = await fetch('/api/backup/import', {
+            method: 'POST',
+            headers: { 'Content-Type': 'application/json' },
+            body: JSON.stringify(parsed),
+          });
+          const data = await res.json();
+          if (res.ok) {
+            setModalInfo({ title: '복원 성공', message: data.message, type: 'success' });
+            fetchSettingsAndBalance();
+            fetchBots();
+          } else {
+            setModalInfo({ title: '복원 실패', message: data.message, type: 'error' });
+          }
+        } catch (err) {
+          setModalInfo({ title: '파일 파싱 오류', message: err.message, type: 'error' });
+        }
+      };
+      reader.readAsText(file);
+    } catch (err) {
+      setModalInfo({ title: '오류', message: err.message, type: 'error' });
     }
   };
 
@@ -391,14 +416,6 @@ export default function App() {
     };
   };
 
-  const handleStopBriefing = () => {
-    if (briefingStreamRef.current) {
-      briefingStreamRef.current.close();
-      briefingStreamRef.current = null;
-    }
-    setIsBriefingStreaming(false);
-  };
-
   // Streaming News Analysis handlers
   const handleStartAiNews = () => {
     if (newsStreamRef.current) newsStreamRef.current.close();
@@ -425,94 +442,82 @@ export default function App() {
     };
   };
 
-  const handleStopAiNews = () => {
-    if (newsStreamRef.current) {
-      newsStreamRef.current.close();
-      newsStreamRef.current = null;
-    }
-    setIsAiNewsStreaming(false);
-  };
-
   // If Gate is locked, show Gate Passcode Screen
   if (!isAuthenticated) {
     return <GateModal onAuthenticated={() => setIsAuthenticated(true)} />;
   }
 
   // ========================================================
-  // MAIN VIEW RENDER
+  // RENDER: MAIN APPLICATION (2:8 LAYOUT VIA styles.css)
   // ========================================================
 
   return (
-    <div className={`min-h-screen text-slate-100 ${
-      activeTradeMode === 'REAL' ? 'bg-slate-950 font-sans' : 'bg-slate-950 font-sans'
-    }`}>
-      {/* 1. Header Navigation & Health Bar */}
+    <div className="app-container">
+      {/* 20% Sidebar */}
       <Header
         healthData={healthData}
         activeMenu={activeMenu}
         setActiveMenu={setActiveMenu}
-        tradingModeFilter={tradingModeFilter}
-        setTradingModeFilter={setTradingModeFilter}
-        onOpenSettings={() => setIsSettingsOpen(true)}
-        activeTradeMode={activeTradeMode}
+        onLogout={() => {
+          localStorage.removeItem('kis_gate_passed');
+          setIsAuthenticated(false);
+        }}
       />
 
-      <main className="max-w-7xl mx-auto px-4 py-6 space-y-6">
-        {/* 2. Market Regime & Hybrid Architecture Indicator */}
-        <MarketBanner healthData={healthData} />
-
-        {/* 3. Budget & Safety Cap Overview */}
-        <BudgetBar
-          budgetSettings={budgetSettings}
-          activeTradeMode={activeTradeMode}
-          onOpenSettings={() => setIsSettingsOpen(true)}
-        />
-
-        {/* 4. Active Menu View Content */}
+      {/* 80% Main Content Area */}
+      <main className="main-content">
+        {/* ========================================================
+            MENU 1: 거래현황
+            ======================================================== */}
         {activeMenu === 'TRADING' && (
-          <div className="space-y-6">
-            {/* AI Hybrid Intelligence Board (Gemini LLM + Python Core Executor) */}
-            <HybridBoard
-              candidateStocks={candidateStocks}
+          <div>
+            {/* Top Market AI Streaming Marquee Box */}
+            <MarketBanner
+              aiBriefingText={aiBriefingText}
+              isBriefingStreaming={isBriefingStreaming}
+              onStartBriefing={handleStartBriefing}
+            />
+
+            {/* Mode Filter Bar, Mode Banner & Account Assets Summary */}
+            <BudgetBar
+              tradingModeFilter={tradingModeFilter}
+              setTradingModeFilter={setTradingModeFilter}
+              activeTradeMode={activeTradeMode}
+              selectedBot={selectedBot}
+              accountBalance={accountBalance}
+              onRefreshBalance={fetchSettingsAndBalance}
+            />
+
+            {/* Bot Tabs & Action Controls & Metrics */}
+            <BotCard
+              bots={bots}
+              selectedBotId={selectedBotId}
+              setSelectedBotId={setSelectedBotId}
+              selectedBot={selectedBot}
               selectedStockCode={selectedStockCode}
               setSelectedStockCode={setSelectedStockCode}
-              aiDecisions={aiDecisions}
-              isAiEvaluating={isAiEvaluating}
+              onBotAction={handleBotAction}
+              onManualTradeTest={handleVirtualTradeTest}
               onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
-              onManualTradeTest={handleManualTradeTest}
+              isAiEvaluating={isAiEvaluating}
+              positionsCount={
+                positions.filter(
+                  (p) =>
+                    p.bot_id === selectedBot?.bot_id &&
+                    (activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode)
+                ).length
+              }
               activeTradeMode={activeTradeMode}
             />
 
-            {/* Trading Bots Grid */}
-            <div className="space-y-3">
-              <div className="flex items-center justify-between">
-                <div className="flex items-center space-x-2">
-                  <span className="text-lg">🤖</span>
-                  <h3 className="font-bold text-white text-base">3대 퀀트 전략 봇</h3>
-                </div>
-                <div className="text-xs text-slate-400">
-                  선택된 봇: <b className="text-white">{selectedBot?.nickname || '선택 없음'}</b>
-                </div>
-              </div>
+            {/* Hybrid Architecture Board (AI LLM Decisions & Python Executor) */}
+            <HybridBoard
+              aiDecisions={aiDecisions}
+              isAiEvaluating={isAiEvaluating}
+              onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
+            />
 
-              <div className="grid grid-cols-1 md:grid-cols-3 gap-4">
-                {bots.map((bot) => (
-                  <BotCard
-                    key={bot.bot_id}
-                    bot={bot}
-                    isSelected={selectedBotId === bot.bot_id}
-                    onSelect={() => setSelectedBotId(bot.bot_id)}
-                    onToggleRunning={handleToggleRunning}
-                    onToggleMode={handleToggleMode}
-                    onResetVirtual={handleResetVirtual}
-                    onManualTrade={handleManualTradeTest}
-                    activeTradeMode={activeTradeMode}
-                  />
-                ))}
-              </div>
-            </div>
-
-            {/* Positions Table */}
+            {/* Active Positions Table */}
             <PositionsTable
               positions={positions}
               onSellPosition={handleSellPosition}
@@ -520,18 +525,13 @@ export default function App() {
             />
 
             {/* Trades History Table */}
-            <TradesTable trades={trades} />
-
-            {/* Real-time Streaming AI Market Briefing */}
-            <AiBriefingPanel
-              aiBriefingText={aiBriefingText}
-              isStreaming={isBriefingStreaming}
-              onStartBriefing={handleStartBriefing}
-              onStopBriefing={handleStopBriefing}
-            />
+            <TradesTable trades={trades} activeTradeMode={activeTradeMode} />
           </div>
         )}
 
+        {/* ========================================================
+            MENU 2: 알고리즘 성능 검증소 (가상 매매 전용 대시보드)
+            ======================================================== */}
         {activeMenu === 'LAB' && (
           <LabPanel
             leaderboard={leaderboard}
@@ -542,16 +542,25 @@ export default function App() {
           />
         )}
 
+        {/* ========================================================
+            MENU 3: 통계
+            ======================================================== */}
         {activeMenu === 'STATS' && (
           <StatsPanel
             statsData={statsData}
             statsPeriodTab={statsPeriodTab}
-            setStatsPeriodTab={setStatsPeriodTab}
+            setStatsPeriodTab={(tab) => {
+              setStatsPeriodTab(tab);
+              localStorage.setItem('kis_stats_tab', tab);
+            }}
             statsModeFilter={statsModeFilter}
             setStatsModeFilter={setStatsModeFilter}
           />
         )}
 
+        {/* ========================================================
+            MENU 4: 증시뉴스 & 공시
+            ======================================================== */}
         {activeMenu === 'NEWS' && (
           <NewsPanel
             newsList={newsList}
@@ -575,22 +584,30 @@ export default function App() {
             isAiNewsStreaming={isAiNewsStreaming}
             aiNewsText={aiNewsText}
             onStartAiNews={handleStartAiNews}
-            onStopAiNews={handleStopAiNews}
+          />
+        )}
+
+        {/* ========================================================
+            MENU 5: 설정
+            ======================================================== */}
+        {activeMenu === 'SETTINGS' && (
+          <SettingsPanel
+            accountBalance={accountBalance}
+            budgetSettings={budgetSettings}
+            setBudgetSettings={setBudgetSettings}
+            botRatios={botRatios}
+            setBotRatios={setBotRatios}
+            bots={bots}
+            brokerConfig={brokerConfig}
+            onSaveBudget={handleSaveBudget}
+            onSaveKeys={handleSaveKeys}
+            onExportBackup={handleExportBackup}
+            onImportBackup={handleImportBackup}
           />
         )}
       </main>
 
-      {/* 5. Settings Modal */}
-      <SettingsModal
-        isOpen={isSettingsOpen}
-        onClose={() => setIsSettingsOpen(false)}
-        budgetSettings={budgetSettings}
-        onSaveBudget={handleSaveBudget}
-        brokerConfig={brokerConfig}
-        onSaveKeys={handleSaveKeys}
-      />
-
-      {/* 6. Alert / Confirm Notification Modal */}
+      {/* Modal Dialog */}
       <Modal modalInfo={modalInfo} onClose={() => setModalInfo(null)} />
     </div>
   );

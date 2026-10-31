@@ -28,51 +28,28 @@ export default function GateModal({ onAuthenticated }) {
   };
 
   return (
-    <div className="min-h-screen bg-slate-950 flex items-center justify-center p-4">
-      <div className="max-w-md w-full bg-slate-900 border border-slate-800 rounded-3xl p-8 shadow-2xl space-y-6">
-        <div className="text-center space-y-2">
-          <div className="w-16 h-16 bg-blue-600/20 text-blue-400 border border-blue-500/30 rounded-2xl flex items-center justify-center mx-auto text-2xl shadow-lg">
-            🔐
-          </div>
-          <h2 className="text-2xl font-black text-white tracking-tight">AutoStockTrader 시스템</h2>
-          <p className="text-sm text-slate-400">
-            키움증권 시세 ⨉ Gemini LLM ⨉ 토스증권 소수점 매매
-          </p>
-        </div>
-
-        <form onSubmit={handleSubmit} className="space-y-4">
-          <div>
-            <label className="block text-xs font-semibold text-slate-400 uppercase tracking-wider mb-2">
-              입장 암호 (Gate Passcode)
-            </label>
-            <input
-              type="password"
-              value={passcodeInput}
-              onChange={(e) => setPasscodeInput(e.target.value)}
-              placeholder="패스코드 입력"
-              className="w-full bg-slate-950 border border-slate-800 rounded-xl px-4 py-3 text-white text-sm focus:outline-none focus:border-blue-500 transition"
-              autoFocus
-            />
-          </div>
-
-          {errorMsg && (
-            <div className="p-3 bg-red-950/60 border border-red-800/60 rounded-xl text-xs text-red-300">
-              {errorMsg}
-            </div>
-          )}
-
-          <button
-            type="submit"
-            disabled={isLoading}
-            className="w-full bg-blue-600 hover:bg-blue-500 disabled:opacity-50 text-white font-bold py-3 px-4 rounded-xl text-sm transition shadow-lg shadow-blue-600/30"
-          >
-            {isLoading ? '인증 확인 중...' : '시스템 접속하기'}
+    <div className="gate-screen">
+      <div className="gate-card">
+        <div className="gate-icon">📈</div>
+        <h1 className="gate-title">키움(시세) ⨉ 토스(매매) AI 퀀트 시스템</h1>
+        <p className="gate-desc">
+          본 시스템은 키움증권 시세 조회 및 토스증권 매매 연동 전용 게이트입니다.<br />
+          개인 입장 코드를 입력하고 접속하세요.
+        </p>
+        <form onSubmit={handleSubmit} className="gate-form">
+          <input
+            type="password"
+            className="input-field"
+            placeholder="입장 코드 입력 (sws@2129)"
+            value={passcodeInput}
+            onChange={(e) => setPasscodeInput(e.target.value)}
+            autoFocus
+          />
+          {errorMsg && <div style={{ color: '#ef4444', fontSize: '13px' }}>{errorMsg}</div>}
+          <button type="submit" className="btn-primary" disabled={isLoading}>
+            {isLoading ? '인증 확인 중...' : '보안 게이트 입장'}
           </button>
         </form>
-
-        <div className="text-center text-xs text-slate-500">
-          안전한 퀀트 트레이딩을 위해 허가된 사용자만 접속 가능합니다.
-        </div>
       </div>
     </div>
   );

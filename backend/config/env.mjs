@@ -34,3 +34,4 @@ export const BROKER_CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'broker_conf
 fs.mkdirSync(path.join(PROJECT_ROOT, 'data'), { recursive: true });
 fs.mkdirSync(path.join(PROJECT_ROOT, 'logs'), { recursive: true });
 fs.mkdirSync(path.join(PROJECT_ROOT, 'config'), { recursive: true });
+

@@ -33,3 +33,4 @@ export function sendJson(res, statusCode, data) {
 export function sendError(res, statusCode, message) {
   sendJson(res, statusCode, { error: true, message });
 }
+
