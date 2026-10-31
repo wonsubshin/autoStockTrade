@@ -235,28 +235,62 @@ export class VirtualPaperTradingEngine {
     };
   }
 
-  // 가상 계좌 초기화
+  // 가상 계좌 단일 봇 초기화 (포지션, 체결내역, 성과로그 완전 삭제 후 초기화)
   resetVirtualBalance(botId, seedCapital = 10000000) {
     const db = this.getDb();
     if (!db) return;
 
     const nowIso = new Date().toISOString();
 
-    // 청산되지 않은 포지션 정리
+    // 해당 봇의 가상 포지션, 가상 체결내역, 성과 로그 완전 삭제
     db.prepare("DELETE FROM bot_positions WHERE bot_id = ? AND trade_mode = 'VIRTUAL'").run(botId);
     db.prepare("DELETE FROM trades WHERE bot_id = ? AND trade_mode = 'VIRTUAL'").run(botId);
+    db.prepare("DELETE FROM virtual_performance_logs WHERE bot_id = ?").run(botId);
 
     db.prepare(`
       UPDATE bots
       SET virtual_krw = ?,
           allocated_capital = ?,
           is_running = 1,
-          last_status_msg = '가상 계좌 초기화 완료 (시드머니 1,000만 원)',
+          last_status_msg = '가상 리셋 완료 - 초기 자본금으로 새로운 전략 거래 시작',
           updated_at = ?
       WHERE bot_id = ?
     `).run(seedCapital, seedCapital, nowIso, botId);
 
     return { botId, seedCapital };
+  }
+
+  // 가상 계좌 전체 봇 및 거래내역 일괄 초기화 (완전 삭제 후 0부터 재시작)
+  resetAllVirtual(seedCapital = 10000000) {
+    const db = this.getDb();
+    if (!db) return { count: 0 };
+
+    const nowIso = new Date().toISOString();
+
+    // 1. 모든 가상 포지션, 가상 체결내역, 시뮬레이션 로그 완전 삭제
+    db.prepare("DELETE FROM bot_positions WHERE trade_mode = 'VIRTUAL'").run();
+    db.prepare("DELETE FROM trades WHERE trade_mode = 'VIRTUAL'").run();
+    db.prepare("DELETE FROM virtual_performance_logs").run();
+
+    // 2. 가상 총 예산 로드 및 각 봇별 할당 금액 계산
+    const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
+    const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
+
+    const bots = db.prepare("SELECT * FROM bots WHERE trade_mode = 'VIRTUAL'").all();
+    for (const b of bots) {
+      const cap = Math.floor(virtTotal * (b.allocation_ratio || 0.33)) || seedCapital;
+      db.prepare(`
+        UPDATE bots
+        SET virtual_krw = ?,
+            allocated_capital = ?,
+            is_running = 1,
+            last_status_msg = '가상 전체 리셋 완료 - 초기 자본금으로 새로운 전략 거래 시작',
+            updated_at = ?
+        WHERE bot_id = ?
+      `).run(cap, cap, nowIso, b.bot_id);
+    }
+
+    return { success: true, count: bots.length };
   }
 
   // 가상 계좌 전체 자산 요약
@@ -336,14 +370,14 @@ export class VirtualPaperTradingEngine {
 
     const trades = db.prepare(`
       SELECT * FROM trades
-      WHERE bot_id = ? AND status = 'CLOSED'
+      WHERE bot_id = ? AND trade_mode = ? AND status = 'CLOSED'
       ORDER BY id ASC
-    `).all(botId);
+    `).all(botId, bot.trade_mode);
 
     const openPositions = db.prepare(`
       SELECT * FROM bot_positions
-      WHERE bot_id = ? AND status = 'OPEN'
-    `).all(botId);
+      WHERE bot_id = ? AND trade_mode = ? AND status = 'OPEN'
+    `).all(botId, bot.trade_mode);
 
     const initialCapital = bot.allocated_capital || 10000000;
     const totalTrades = trades.length;
@@ -432,12 +466,18 @@ export class VirtualPaperTradingEngine {
     const bots = db.prepare('SELECT bot_id FROM bots').all();
     const metricsList = bots.map((b) => this.calculateBotMetrics(b.bot_id)).filter(Boolean);
 
-    // Rank by cumulativeReturnPct DESC, then Sharpe Ratio DESC
+    // Rank by cumulativeReturnPct DESC, then Sharpe Ratio DESC, then totalTrades DESC
     metricsList.sort((a, b) => {
       if (b.cumulativeReturnPct !== a.cumulativeReturnPct) {
         return b.cumulativeReturnPct - a.cumulativeReturnPct;
       }
-      return b.sharpeRatio - a.sharpeRatio;
+      if (b.sharpeRatio !== a.sharpeRatio) {
+        return b.sharpeRatio - a.sharpeRatio;
+      }
+      if (b.totalTrades !== a.totalTrades) {
+        return b.totalTrades - a.totalTrades;
+      }
+      return (a.botId || '').localeCompare(b.botId || '');
     });
 
     return metricsList.map((item, index) => ({

@@ -66,6 +66,9 @@ export class Router {
         const botId = pathname.split('/')[3];
         return await BotController.postAction(req, res, botId);
       }
+      if (pathname === '/api/bots/reset-virtual-all' && method === 'POST') {
+        return await BotController.postAction(req, res, 'all');
+      }
       if (pathname.match(/^\/api\/bots\/([^/]+)\/virtual-trade$/) && method === 'POST') {
         const botId = pathname.split('/')[3];
         return await BotController.postTrade(req, res, botId);

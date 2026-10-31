@@ -266,6 +266,10 @@ export default function App() {
 
     if (activeMenu === 'LAB') {
       fetchLeaderboard();
+      const labInterval = setInterval(() => {
+        fetchLeaderboard();
+      }, 5000); // 알고리즘 검증소 실시간 랭킹 5초 주기 자동 집계
+      return () => clearInterval(labInterval);
     }
 
     if (activeMenu === 'STATS') {
@@ -278,11 +282,64 @@ export default function App() {
   }, [isAuthenticated, activeMenu, activeTradeMode, statsModeFilter, statsPeriodTab, fetchTradesAndPositions, fetchBots, fetchLeaderboard, fetchStats, fetchNews]);
 
   // ========================================================
-  // USER ACTION HANDLERS
+  // USER ACTION HANDLERS & CONFIRMATION ALERTS
   // ========================================================
 
+  const CANDIDATE_NAMES = {
+    '005930': '삼성전자',
+    '000660': 'SK하이닉스',
+    '373220': 'LG에너지솔루션',
+    '207940': '삼성바이오로직스',
+    '005380': '현대차',
+    '000270': '기아',
+    '068270': '셀트리온',
+    '005490': 'POSCO홀딩스',
+    '035420': 'NAVER',
+    '105560': 'KB금융',
+    '247540': '에코프로비엠',
+    '086520': '에코프로',
+    '041510': '에스엠',
+    '028300': 'HLB',
+    '259960': '크래프톤',
+    AAPL: '애플 (Apple)',
+    NVDA: '엔비디아 (NVIDIA)',
+    TSLA: '테슬라 (Tesla)',
+    MSFT: '마이크로소프트 (Microsoft)',
+    QQQ: 'Invesco QQQ ETF',
+    SBUX: '스타벅스 (Starbucks)',
+  };
+
   const handleBotAction = async (action, extra = {}) => {
-    if (!selectedBotId) return;
+    if (!selectedBotId && action !== 'RESET_VIRTUAL_ALL') return;
+
+    // 가상 계좌 리셋 시 확인 Alert 모달
+    if (action === 'RESET_VIRTUAL' || action === 'RESET_VIRTUAL_ALL') {
+      const isAll = action === 'RESET_VIRTUAL_ALL';
+      setModalInfo({
+        type: 'confirm',
+        title: isAll ? '⚠️ 가상 전체 초기화 및 새로 시작' : '⚠️ 가상 계좌 초기화',
+        message: isAll
+          ? '모든 가상 봇의 보유 포지션 및 누적 거래내역이 완전히 삭제됩니다.\n\n시드머니(3,000만 원)로 원복되며, 0건부터 새로운 자율 전략 거래를 다시 시작합니다.\n\n정말 모든 가상 데이터를 초기화하시겠습니까?'
+          : `[${selectedBot?.nickname || selectedBot?.name}]의 모든 가상 보유 포지션과 지금까지 거래한 내역이 모두 삭제됩니다.\n\n초기 자본금으로 원복되어 처음부터 새롭게 거래를 시작합니다.\n\n정말 초기화하시겠습니까?`,
+        onConfirm: async () => {
+          try {
+            const targetId = isAll ? 'all' : selectedBotId;
+            const res = isAll ? await api.resetVirtualAll() : await api.botAction(targetId, action, extra);
+            setModalInfo({ title: '초기화 완료', message: res.message, type: 'success' });
+            await Promise.all([
+              fetchBots(),
+              fetchTradesAndPositions(),
+              fetchLeaderboard(),
+              fetchSettingsAndBalance(),
+            ]);
+          } catch (err) {
+            setModalInfo({ title: '초기화 실패', message: err.message, type: 'error' });
+          }
+        },
+      });
+      return;
+    }
+
     try {
       const res = await api.botAction(selectedBotId, action, extra);
       setModalInfo({ title: '봇 제어 완료', message: res.message, type: 'info' });
@@ -298,63 +355,132 @@ export default function App() {
     }
   };
 
+  const handleResetVirtualAll = () => handleBotAction('RESET_VIRTUAL_ALL');
+
   const handleVirtualTradeTest = async (side, stockCode = selectedStockCode) => {
     if (!selectedBotId) return;
-    try {
-      const res = await api.botVirtualTrade(selectedBotId, { side, stockCode });
-      setModalInfo({ title: '주문 체결 완료', message: res.message, type: 'success' });
-      fetchBots();
-      fetchTradesAndPositions();
-      fetchSettingsAndBalance();
-    } catch (err) {
-      setModalInfo({ title: '주문 실패 / 거부', message: err.message, type: 'error' });
+
+    const code = stockCode;
+    const stockName = CANDIDATE_NAMES[code] || code;
+    const isUs = /^[A-Za-z.]+$/.test(code);
+    const sideText = side === 'BUY' ? '🛒 실전 매수' : '📉 실전 매도';
+
+    const proceedManualTrade = async () => {
+      try {
+        const res = await api.botVirtualTrade(selectedBotId, { side, stockCode });
+        setModalInfo({ title: '주문 체결 완료', message: res.message, type: 'success' });
+        fetchBots();
+        fetchTradesAndPositions();
+        fetchLeaderboard();
+        fetchSettingsAndBalance();
+      } catch (err) {
+        setModalInfo({ title: '주문 실패 / 거부', message: err.message, type: 'error' });
+      }
+    };
+
+    // 파이썬 실전 즉시 매매 시 확인 Alert 모달
+    if (selectedBot?.trade_mode === 'REAL') {
+      setModalInfo({
+        type: 'confirm',
+        title: '🚨 Python 실전 즉시 매매 확인',
+        message: `Python 코어 실행기를 통해 실제 브로커 주문을 즉시 집행하시겠습니까?\n\n• 주문 구분: ${sideText}\n• 대상 종목: ${stockName} (${code})\n• 실행 봇: ${selectedBot?.nickname || selectedBot?.name}\n• 거래 시장: ${isUs ? '🇺🇸 미국주식 (토스증권 실계좌 API)' : '🇰🇷 국내주식 (키움 연동)'}\n• 실행 엔진: 🐍 Python Core Executor (toss_executor.py)\n\n'확인 진행'을 누르시면 실제 계좌로 주문이 전송됩니다.`,
+        onConfirm: () => {
+          proceedManualTrade();
+        },
+      });
+      return;
     }
+
+    proceedManualTrade();
   };
 
   const handleSellPosition = async (positionId, botId) => {
     const targetBot = botId || selectedBotId;
-    try {
-      const res = await api.botVirtualTrade(targetBot, { side: 'SELL', positionId });
-      setModalInfo({ title: '매도 완료', message: res.message, type: 'info' });
-      fetchBots();
-      fetchTradesAndPositions();
-      fetchSettingsAndBalance();
-    } catch (err) {
-      setModalInfo({ title: '매도 실패', message: err.message, type: 'error' });
+    const targetPos = positions.find((p) => p.id === positionId);
+
+    const proceedSell = async () => {
+      try {
+        const res = await api.botVirtualTrade(targetBot, { side: 'SELL', positionId });
+        setModalInfo({ title: '매도 완료', message: res.message, type: 'info' });
+        fetchBots();
+        fetchTradesAndPositions();
+        fetchLeaderboard();
+        fetchSettingsAndBalance();
+      } catch (err) {
+        setModalInfo({ title: '매도 실패', message: err.message, type: 'error' });
+      }
+    };
+
+    // 파이썬 실전 포지션 청산 시 확인 Alert 모달
+    if (targetPos?.trade_mode === 'REAL') {
+      setModalInfo({
+        type: 'confirm',
+        title: '🚨 Python 실전 즉시 청산(매도) 확인',
+        message: `실전 보유 종목을 시장가로 즉시 청산(매도)하시겠습니까?\n\n• 대상 종목: ${targetPos.stock_name} (${targetPos.stock_code})\n• 매도 수량: ${targetPos.qty}주\n• 실행 엔진: 🐍 Python Core Executor (토스증권 Open API)\n\n'확인 진행'을 누르시면 토스증권 실계좌로 즉시 매도 주문이 집행됩니다.`,
+        onConfirm: () => {
+          proceedSell();
+        },
+      });
+      return;
     }
+
+    proceedSell();
   };
 
   const handleAiEvaluateAndTrade = async (executeTrade = false, targetCode = null) => {
-    setIsAiEvaluating(true);
-    try {
-      const res = await api.aiEvaluateAndTrade({
-        botId: selectedBotId,
-        candidateCode: targetCode || selectedStockCode,
-        executeTrade,
-      });
+    const code = targetCode || selectedStockCode;
+    const stockName = CANDIDATE_NAMES[code] || code;
+    const isUs = /^[A-Za-z.]+$/.test(code);
+    const modeText = selectedBot?.trade_mode === 'REAL' ? '💰 실전매매 (토스 API)' : '🧪 가상매매';
 
-      setAiDecisions(res.decisions || []);
-      if (executeTrade && res.executedResult) {
-        setModalInfo({
-          title: 'AI 퀀트 ⨉ Python 주문 실행 완료',
-          message: `[${res.executedResult.symbol || selectedStockCode}] 주문이 Python Core Executor를 통해 성공적으로 집행되었습니다.`,
-          type: 'success',
+    const proceedAiTrade = async () => {
+      setIsAiEvaluating(true);
+      try {
+        const res = await api.aiEvaluateAndTrade({
+          botId: selectedBotId,
+          candidateCode: code,
+          executeTrade,
         });
-        fetchTradesAndPositions();
-        fetchSettingsAndBalance();
-        fetchBots();
-      } else if (!executeTrade) {
-        setModalInfo({
-          title: 'AI LLM 시장 분석 완료',
-          message: `Gemini LLM이 ${res.decisions?.length || 0}개 종목에 대한 실시간 뉴스 감성 및 매매 시그널 분석을 완료했습니다.`,
-          type: 'info',
-        });
+
+        setAiDecisions(res.decisions || []);
+        if (executeTrade && res.executedResult) {
+          setModalInfo({
+            title: 'AI 퀀트 ⨉ Python 주문 실행 완료',
+            message: `[${stockName} (${res.executedResult.symbol || code})] 주문이 Python Core Executor를 통해 성공적으로 집행되었습니다.`,
+            type: 'success',
+          });
+          fetchTradesAndPositions();
+          fetchSettingsAndBalance();
+          fetchBots();
+          fetchLeaderboard();
+        } else if (!executeTrade) {
+          setModalInfo({
+            title: 'AI LLM 시장 분석 완료',
+            message: `Gemini LLM이 ${res.decisions?.length || 0}개 종목에 대한 실시간 뉴스 감성 및 매매 시그널 분석을 완료했습니다.`,
+            type: 'info',
+          });
+        }
+      } catch (err) {
+        setModalInfo({ title: 'AI 분석 실패', message: err.message, type: 'error' });
+      } finally {
+        setIsAiEvaluating(false);
       }
-    } catch (err) {
-      setModalInfo({ title: 'AI 분석 실패', message: err.message, type: 'error' });
-    } finally {
-      setIsAiEvaluating(false);
+    };
+
+    // 파이썬 즉시 매매 실행 시 확인 Alert 모달
+    if (executeTrade) {
+      setModalInfo({
+        type: 'confirm',
+        title: '🚨 Python 즉시 매매 실행 확인',
+        message: `AI 실시간 판단 결과에 따라 Python 실행기를 통해 즉시 매매를 집행하시겠습니까?\n\n• 대상 종목: ${stockName} (${code})\n• 거래 시장: ${isUs ? '🇺🇸 미국주식 (토스 소수점/온주)' : '🇰🇷 국내주식 (키움 시세)'}\n• 실행 모드: ${modeText}\n• 실행 엔진: 🐍 Python Core Executor (toss_executor.py)\n\n'확인 진행'을 누르시면 즉시 브로커 주문이 전송됩니다.`,
+        onConfirm: () => {
+          proceedAiTrade();
+        },
+      });
+      return;
     }
+
+    proceedAiTrade();
   };
 
   const handleFastReplay = async () => {
@@ -624,6 +750,8 @@ export default function App() {
             isReplaying={isReplaying}
             replayResult={replayResult}
             onPromoteBot={handlePromoteBot}
+            onResetVirtualAll={handleResetVirtualAll}
+            onRefreshLeaderboard={fetchLeaderboard}
           />
         )}
 

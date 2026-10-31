@@ -33,6 +33,16 @@ export class BotService {
 
   static async handleAction(botId, action, seedCapital) {
     const db = getDb();
+
+    // 1. 전체 가상 봇 및 거래내역 일괄 초기화
+    if (botId === 'all' || action === 'RESET_VIRTUAL_ALL') {
+      const res = virtualEngine.resetAllVirtual(seedCapital);
+      return {
+        success: true,
+        message: `전체 가상 봇(${res.count}개)의 보유 포지션 및 누적 거래내역이 완전히 삭제되었습니다. 초기 자본금으로 새로운 거래를 시작합니다.`,
+      };
+    }
+
     const bot = db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
     if (!bot) throw new Error('해당 봇을 찾을 수 없습니다.');
 
@@ -67,9 +77,14 @@ export class BotService {
     }
 
     if (action === 'RESET_VIRTUAL') {
-      const capital = seedCapital || 10000000;
+      const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
+      const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
+      const capital = seedCapital || Math.floor(virtTotal * (bot.allocation_ratio || 0.33)) || 10000000;
       virtualEngine.resetVirtualBalance(botId, capital);
-      return { success: true, message: `[${bot.name}] 가상 계좌가 초기화되었습니다. (시드: ${capital.toLocaleString()}원)` };
+      return {
+        success: true,
+        message: `[${bot.nickname || bot.name}] 가상 계좌 및 누적 거래내역이 완전히 삭제되었습니다. (초기 자본: ${capital.toLocaleString()}원)`,
+      };
     }
 
     throw new Error('알 수 없는 액션입니다.');
