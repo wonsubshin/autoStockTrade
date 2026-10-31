@@ -551,8 +551,12 @@ export class TossClient {
     };
   }
 
-  // 8. 토스증권 계좌 실제 예수금, 보유주식 평가액, 총 자산 조회
+  // 8. 토스증권 계좌 실제 예수금, 보유주식 평가액, 총 자산 조회 (6초 단기 캐싱으로 429 방지)
   async getAccountBalance() {
+    if (this._balanceCache && Date.now() - this._balanceCacheTime < 6000) {
+      return this._balanceCache;
+    }
+
     const config = this.loadConfig();
     const token = await this.getAuthToken();
 
@@ -634,7 +638,7 @@ export class TossClient {
         const totalAssetAmount = availableCash + stockEvalAmount;
         const totalProfitKrw = stockEvalAmount - totalPurchaseAmount;
 
-        return {
+        const resObj = {
           availableCash,
           stockEvalAmount,
           totalAssetAmount,
@@ -646,13 +650,16 @@ export class TossClient {
           provider: '토스증권(실전)',
           isMock: false,
         };
+        this._balanceCache = resObj;
+        this._balanceCacheTime = Date.now();
+        return resObj;
       } catch (e) {
         console.warn('[Toss] 실시간 계좌 잔고 파싱 오류:', e.message);
       }
     }
 
     // API 키 미설정 시의 기본 반환
-    return {
+    const fallbackObj = {
       availableCash: 0,
       stockEvalAmount: 0,
       totalAssetAmount: 0,
@@ -662,6 +669,9 @@ export class TossClient {
       provider: '토스증권(미연결)',
       isMock: true,
     };
+    this._balanceCache = fallbackObj;
+    this._balanceCacheTime = Date.now();
+    return fallbackObj;
   }
 
   // 9. 토스증권 국내주식 실전 주문 발송 (POST /api/v1/orders)

@@ -64,6 +64,21 @@ export class SchedulerService {
               sellReason = '15:15 당일 장마감 동시호가 전 시간청산 (오버나잇 배제)';
             }
           }
+          // 4. 가상 모드(VIRTUAL) 환경 시 전략 기반 동적 트레일링 익절 / 청산
+          else if (pos.trade_mode === 'VIRTUAL') {
+            const holdingTimeMs = Date.now() - new Date(pos.created_at).getTime();
+            // 포지션 진입 후 25초 이상 경과 시 목표 수익(+0.5% 이상) 또는 리스크 관리(-1.0% 이하) 도달 시 익절/손절 청산
+            if (holdingTimeMs > 25000 && (returnPct >= 0.5 || returnPct <= -1.0)) {
+              shouldSell = true;
+              sellReason = returnPct >= 0.5
+                ? `가상 단기 목표 수익 달성 (+${returnPct.toFixed(2)}%)`
+                : `가상 리스크 관리 조기 손절 (${returnPct.toFixed(2)}%)`;
+            } else if (holdingTimeMs > 75000) {
+              // 75초 이상 경과 시 포지션 순환 리밸런싱 청산
+              shouldSell = true;
+              sellReason = `가상 포지션 순환 리밸런싱 (${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%)`;
+            }
+          }
 
           if (shouldSell) {
             if (pos.trade_mode === 'VIRTUAL') {
@@ -132,18 +147,15 @@ export class SchedulerService {
         return;
       }
 
-      // 2. Check Entry Signals for Bots with zero open positions
+      // 2. Check Entry Signals for Bots with room for positions (최대 3개 종목 분산 보유)
       for (const bot of runningBots) {
         const isReal = bot.trade_mode === 'REAL';
         const openCount = db.prepare("SELECT COUNT(*) as cnt FROM bot_positions WHERE bot_id = ? AND trade_mode = ? AND status = 'OPEN'").get(bot.bot_id, bot.trade_mode).cnt;
-        if (openCount > 0) continue; // 포지션 보유 중이면 신규 진입 대기
+        if (openCount >= 3) continue; // 최대 3개 포지션까지 분산 보유 허용
 
-        // Select candidate from ALL_CANDIDATE_STOCKS (국내 및 미국 소수점 종목)
-        const candidate = ALL_CANDIDATE_STOCKS[Math.floor(Math.random() * ALL_CANDIDATE_STOCKS.length)];
-        const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
-
-        // Simulation strategy condition trigger (대기 중 12% 확률로 진입 시그널 모의)
-        const isEntryTriggered = Math.random() < 0.12;
+        // 0건일 때는 70% 높은 확률로 빠른 진입, 이미 보유 중일 때는 25% 추가 분산 진입
+        const entryProbability = openCount === 0 ? 0.70 : 0.25;
+        const isEntryTriggered = Math.random() < entryProbability;
         if (isEntryTriggered) {
           const nowIso = new Date().toISOString();
 
@@ -174,7 +186,9 @@ export class SchedulerService {
                 if (virtualExecuted) break;
 
                 if (priority === 'KR_UNIT') {
-                  const candidate = TOP_KR_STOCKS[Math.floor(Math.random() * TOP_KR_STOCKS.length)];
+                  const unheldKr = TOP_KR_STOCKS.filter((s) => !db.prepare("SELECT id FROM bot_positions WHERE bot_id = ? AND stock_code = ? AND status = 'OPEN'").get(bot.bot_id, s.code));
+                  if (unheldKr.length === 0) continue;
+                  const candidate = unheldKr[Math.floor(Math.random() * unheldKr.length)];
                   const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
                   const unitPrice = priceInfo.currentPrice;
 
@@ -189,7 +203,9 @@ export class SchedulerService {
                     virtualExecuted = true;
                   }
                 } else if (priority === 'US_UNIT') {
-                  const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
+                  const unheldUs = TOP_US_STOCKS.filter((s) => !db.prepare("SELECT id FROM bot_positions WHERE bot_id = ? AND stock_code = ? AND status = 'OPEN'").get(bot.bot_id, s.code));
+                  if (unheldUs.length === 0) continue;
+                  const candidate = unheldUs[Math.floor(Math.random() * unheldUs.length)];
                   const priceInfo = await tossClient.getCurrentPrice(candidate.code);
                   const unitPriceKrw = priceInfo.currentPrice;
 
@@ -204,7 +220,9 @@ export class SchedulerService {
                     virtualExecuted = true;
                   }
                 } else if (priority === 'US_FRACTIONAL') {
-                  const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
+                  const unheldUs = TOP_US_STOCKS.filter((s) => !db.prepare("SELECT id FROM bot_positions WHERE bot_id = ? AND stock_code = ? AND status = 'OPEN'").get(bot.bot_id, s.code));
+                  if (unheldUs.length === 0) continue;
+                  const candidate = unheldUs[Math.floor(Math.random() * unheldUs.length)];
                   const priceInfo = await tossClient.getCurrentPrice(candidate.code);
                   const usdRate = priceInfo.exchangeRate || 1340;
                   const targetKrw = Math.round(10 * usdRate);

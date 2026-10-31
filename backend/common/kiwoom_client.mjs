@@ -304,7 +304,8 @@ export class KiwoomClient {
       offset = (Math.random() - 0.48) * 0.03;
       this.mockPriceOffsets.set(stockCode, offset);
     } else {
-      offset += (Math.random() - 0.5) * 0.004;
+      // 현실적인 틱 변동성 부여 (+-1.2% 수준 드리프트)
+      offset += (Math.random() - 0.49) * 0.015;
       offset = Math.max(-0.15, Math.min(0.15, offset));
       this.mockPriceOffsets.set(stockCode, offset);
     }
