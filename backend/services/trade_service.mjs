@@ -132,47 +132,91 @@ export class TradeService {
 
         const availableCash = Math.min(tossBal.availableCash, remainingCap);
 
-        if (targetStock.isFractional) {
-          // 미국 주식 소수점 금액 주문 ($10 기준)
-          const usdRate = 1380;
-          const targetUsd = 10;
-          const targetKrw = targetUsd * usdRate;
+        // 구매 우선순위 확인
+        const prioRow = db.prepare("SELECT value FROM system_settings WHERE key = 'purchase_priority'").get();
+        let priorityList = ['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL'];
+        if (prioRow && prioRow.value) {
+          try {
+            const parsed = JSON.parse(prioRow.value);
+            if (Array.isArray(parsed) && parsed.length > 0) priorityList = parsed;
+          } catch (e) {}
+        }
 
-          if (availableCash < targetKrw) {
-            throw new Error(`주문 가능 예수금 부족 (필요: 약 ${targetKrw.toLocaleString()}원, 잔여: ${availableCash.toLocaleString()}원)`);
+        const isUs = targetStock.market === 'US';
+        const preferUsUnit = priorityList.indexOf('US_UNIT') < priorityList.indexOf('US_FRACTIONAL');
+
+        if (isUs) {
+          const unitPriceKrw = priceInfo.currentPrice;
+
+          // 우선순위가 미국 1주 온주 우선이고 잔고가 1주 매수에 충분한 경우: 미국 1주 온주 매수
+          if (preferUsUnit && availableCash >= unitPriceKrw && unitPriceKrw > 0) {
+            const orderRes = await pythonBridge.executeOrder({
+              symbol: targetStock.code,
+              side: 'BUY',
+              orderType: 'MARKET',
+              market: 'US',
+              quantity: 1,
+              reason: `웹 수동 미국 1주 온주 매수 ($${priceInfo.currentPriceUsd})`,
+            });
+            const fee = Math.round(unitPriceKrw * 0.0025);
+
+            const insTrade = db.prepare(`
+              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+              VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
+            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
+
+            db.prepare(`
+              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+              VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
+            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
+
+            return {
+              success: true,
+              message: `[실전 Python] 미국 1주 온주 매수 성공: ${targetStock.name} ($${priceInfo.currentPriceUsd}, ${unitPriceKrw.toLocaleString()}원)`,
+              orderRes,
+            };
+          } else {
+            // 미국 소수점 금액 주문 ($10 기준)
+            const usdRate = priceInfo.exchangeRate || 1340;
+            const targetUsd = 10;
+            const targetKrw = Math.round(targetUsd * usdRate);
+
+            if (availableCash < targetKrw) {
+              throw new Error(`주문 가능 예수금 부족 (필요: 약 ${targetKrw.toLocaleString()}원, 잔여: ${availableCash.toLocaleString()}원)`);
+            }
+
+            const orderRes = await pythonBridge.executeOrder({
+              symbol: targetStock.code,
+              side: 'BUY',
+              orderType: 'MARKET',
+              market: 'US',
+              orderAmount: targetUsd,
+              reason: `웹 수동 미국 소수점 매수 ($${targetUsd})`,
+            });
+
+            const executionPrice = priceInfo.currentPrice;
+            const fractionalQty = parseFloat((targetKrw / executionPrice).toFixed(6));
+            const fee = Math.round(targetKrw * 0.0025);
+
+            const insTrade = db.prepare(`
+              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, executionPrice, fractionalQty, targetKrw, nowIso);
+
+            db.prepare(`
+              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, executionPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
+
+            return {
+              success: true,
+              message: `[실전 Python] 미국 소수점 금액 매수 성공: ${targetStock.name} ($${targetUsd}, 약 ${fractionalQty}주)`,
+              orderRes,
+            };
           }
-
-          const orderRes = await pythonBridge.executeOrder({
-            symbol: targetStock.code,
-            side: 'BUY',
-            orderType: 'MARKET',
-            market: 'US',
-            orderAmount: targetUsd,
-            reason: `웹 수동 미국 소수점 매수 ($${targetUsd})`,
-          });
-
-          const executionPrice = priceInfo.currentPrice;
-          const fractionalQty = parseFloat((targetKrw / executionPrice).toFixed(6));
-          const fee = Math.round(targetKrw * 0.0025);
-
-          const insTrade = db.prepare(`
-            INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-            VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-          `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, executionPrice, fractionalQty, targetKrw, nowIso);
-
-          db.prepare(`
-            INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-            VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-          `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, executionPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
-
-          return {
-            success: true,
-            message: `[실전 Python] 미국 소수점 금액 매수 성공: ${targetStock.name} ($${targetUsd}, 약 ${fractionalQty}주)`,
-            orderRes,
-          };
         } else {
-          // 국내 주식 온주 주문
-          const buyQty = Math.max(1, Math.floor(Math.min(availableCash, 500000) / priceInfo.currentPrice));
+          // 국내 주식 1주 온주 주문
+          const buyQty = 1;
           const totalCost = buyQty * priceInfo.currentPrice;
 
           if (availableCash < totalCost) {
@@ -185,7 +229,7 @@ export class TradeService {
             orderType: 'MARKET',
             market: 'KR',
             quantity: buyQty,
-            reason: `웹 수동 국내 온주 매수 (${buyQty}주)`,
+            reason: `웹 수동 국내 1주 온주 매수 (${buyQty}주)`,
           });
 
           const executionPrice = priceInfo.currentPrice;
@@ -203,7 +247,7 @@ export class TradeService {
 
           return {
             success: true,
-            message: `[실전 Python] 국내 온주 매수 성공: ${targetStock.name} ${buyQty}주`,
+            message: `[실전 Python] 국내 1주 온주 매수 성공: ${targetStock.name} ${buyQty}주`,
             orderRes,
           };
         }

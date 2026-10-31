@@ -10,6 +10,9 @@ export class SettingsController {
     const rows = db.prepare('SELECT key, value, updated_at FROM system_settings').all();
     const settingsMap = {};
     for (const r of rows) settingsMap[r.key] = r.value;
+    if (!settingsMap.purchase_priority) {
+      settingsMap.purchase_priority = JSON.stringify(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
+    }
 
     let bConf = {
       account_mode: 'VIRTUAL',

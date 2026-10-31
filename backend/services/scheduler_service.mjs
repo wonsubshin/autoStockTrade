@@ -1,5 +1,5 @@
 import { getDb } from '../db/index.mjs';
-import { kiwoomClient, tossClient, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
+import { kiwoomClient, tossClient, TOP_KR_STOCKS, TOP_US_STOCKS, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
 import { virtualEngine } from './bot_service.mjs';
 import { pythonBridge } from './trade_service.mjs';
 
@@ -147,8 +147,18 @@ export class SchedulerService {
         if (isEntryTriggered) {
           const nowIso = new Date().toISOString();
 
+          // 1. 사용자 설정 구매 우선순위 로드 (기본: 1.국내1주 -> 2.미국1주 -> 3.미국소수점)
+          const prioRow = db.prepare("SELECT value FROM system_settings WHERE key = 'purchase_priority'").get();
+          let priorityList = ['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL'];
+          if (prioRow && prioRow.value) {
+            try {
+              const parsed = JSON.parse(prioRow.value);
+              if (Array.isArray(parsed) && parsed.length > 0) priorityList = parsed;
+            } catch (e) {}
+          }
+
           if (!isReal) {
-            // VIRTUAL 모드: 가상 예산 한도 내 집행
+            // VIRTUAL 모드: 가상 예산 한도 내에서 우선순위에 따른 순차 매수 집행
             try {
               const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
               const virtTotalBudget = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
@@ -157,18 +167,63 @@ export class SchedulerService {
               const usedCapRow = db.prepare("SELECT COALESCE(SUM(buy_amount), 0) as used FROM bot_positions WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'").get(bot.bot_id);
               const usedCap = usedCapRow ? usedCapRow.used : 0;
               const remainingCap = Math.max(0, botCap - usedCap);
-
               const perTradeBudget = Math.min(bot.virtual_krw || 0, remainingCap, Math.floor(botCap * 0.4));
-              const minReq = candidate.isFractional ? 1000 : priceInfo.currentPrice;
 
-              if (perTradeBudget >= minReq) {
-                await virtualEngine.executeVirtualBuy({
-                  botId: bot.bot_id,
-                  stockCode: candidate.code,
-                  stockName: candidate.name,
-                  requestedBudget: perTradeBudget,
-                });
-              } else {
+              let virtualExecuted = false;
+              for (const priority of priorityList) {
+                if (virtualExecuted) break;
+
+                if (priority === 'KR_UNIT') {
+                  const candidate = TOP_KR_STOCKS[Math.floor(Math.random() * TOP_KR_STOCKS.length)];
+                  const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
+                  const unitPrice = priceInfo.currentPrice;
+
+                  if (perTradeBudget >= unitPrice) {
+                    await virtualEngine.executeVirtualBuy({
+                      botId: bot.bot_id,
+                      stockCode: candidate.code,
+                      stockName: candidate.name,
+                      requestedBudget: unitPrice,
+                      isFractional: false,
+                    });
+                    virtualExecuted = true;
+                  }
+                } else if (priority === 'US_UNIT') {
+                  const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
+                  const priceInfo = await tossClient.getCurrentPrice(candidate.code);
+                  const unitPriceKrw = priceInfo.currentPrice;
+
+                  if (perTradeBudget >= unitPriceKrw) {
+                    await virtualEngine.executeVirtualBuy({
+                      botId: bot.bot_id,
+                      stockCode: candidate.code,
+                      stockName: candidate.name,
+                      requestedBudget: unitPriceKrw,
+                      isFractional: false,
+                    });
+                    virtualExecuted = true;
+                  }
+                } else if (priority === 'US_FRACTIONAL') {
+                  const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
+                  const priceInfo = await tossClient.getCurrentPrice(candidate.code);
+                  const usdRate = priceInfo.exchangeRate || 1340;
+                  const targetKrw = Math.round(10 * usdRate);
+                  const budget = Math.min(perTradeBudget, targetKrw);
+
+                  if (budget >= 1000) {
+                    await virtualEngine.executeVirtualBuy({
+                      botId: bot.bot_id,
+                      stockCode: candidate.code,
+                      stockName: candidate.name,
+                      requestedBudget: budget,
+                      isFractional: true,
+                    });
+                    virtualExecuted = true;
+                  }
+                }
+              }
+
+              if (!virtualExecuted) {
                 db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
                   `🚨 가상 배분 예산 한도 도달 (${botCap.toLocaleString()}원 중 ${usedCap.toLocaleString()}원 사용)`,
                   nowIso,
@@ -177,7 +232,7 @@ export class SchedulerService {
               }
             } catch (err) {}
           } else {
-            // REAL 모드: Python Core Executor를 통한 안전 실전 매매 집행
+            // REAL 모드: Python Core Executor를 통한 우선순위 순차 실전 집행
             try {
               const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
               const realTotalBudget = realBudgetRow ? parseInt(realBudgetRow.value, 10) : 10000000;
@@ -190,71 +245,114 @@ export class SchedulerService {
               const tossBal = await tossClient.getAccountBalance();
               const availableRealCash = Math.min(tossBal.availableCash, remainingCap);
 
-              if (candidate.isFractional) {
-                // 미국 소수점 금액 주문 ($10)
-                const targetUsd = 10;
-                const usdRate = 1380;
-                const targetKrw = targetUsd * usdRate;
+              let realExecuted = false;
+              for (const priority of priorityList) {
+                if (realExecuted) break;
 
-                if (availableRealCash >= targetKrw) {
-                  const orderRes = await pythonBridge.executeOrder({
-                    symbol: candidate.code,
-                    side: 'BUY',
-                    orderType: 'MARKET',
-                    market: 'US',
-                    orderAmount: targetUsd,
-                    reason: `[${bot.nickname}] 미국 소수점 자동 매수`,
-                  });
-                  const fractionalQty = parseFloat((targetKrw / priceInfo.currentPrice).toFixed(6));
-                  const fee = Math.round(targetKrw * 0.0025);
+                if (priority === 'KR_UNIT') {
+                  // 1. 국내 주식 1주 온주 구매
+                  const candidate = TOP_KR_STOCKS[Math.floor(Math.random() * TOP_KR_STOCKS.length)];
+                  const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
+                  const unitPrice = priceInfo.currentPrice;
 
-                  const insTrade = db.prepare(`
-                    INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-                  `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, priceInfo.currentPrice, fractionalQty, targetKrw, nowIso);
+                  if (availableRealCash >= unitPrice && unitPrice > 0) {
+                    const orderRes = await pythonBridge.executeOrder({
+                      symbol: candidate.code,
+                      side: 'BUY',
+                      orderType: 'MARKET',
+                      market: 'KR',
+                      quantity: 1,
+                      reason: `[${bot.nickname}] 우선순위: 국내 1주 자동 매수`,
+                    });
+                    const fee = Math.round(unitPrice * 0.00015);
+                    const insTrade = db.prepare(`
+                      INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                      VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
+                    `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, unitPrice, unitPrice, nowIso);
 
-                  db.prepare(`
-                    INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-                  `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, priceInfo.currentPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
+                    db.prepare(`
+                      INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                      VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
+                    `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPrice, unitPrice, fee, insTrade.lastInsertRowid, nowIso);
 
-                  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                    `[🐍 Python 실전매수] ${candidate.name} $${targetUsd} (${fractionalQty}주)`,
-                    nowIso,
-                    bot.bot_id
-                  );
-                }
-              } else {
-                // 국내 온주 주문
-                const buyQty = Math.max(1, Math.floor(Math.min(availableRealCash, 500000) / priceInfo.currentPrice));
-                const totalCost = buyQty * priceInfo.currentPrice;
+                    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+                      `[🐍 Python 실전매수] 1순위 국내 1주: ${candidate.name} (${unitPrice.toLocaleString()}원)`,
+                      nowIso,
+                      bot.bot_id
+                    );
+                    realExecuted = true;
+                  }
+                } else if (priority === 'US_UNIT') {
+                  // 2. 미국 주식 1주 온주 구매
+                  const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
+                  const priceInfo = await tossClient.getCurrentPrice(candidate.code);
+                  const unitPriceKrw = priceInfo.currentPrice;
+                  const unitPriceUsd = priceInfo.currentPriceUsd;
 
-                if (availableRealCash >= totalCost && totalCost > 0) {
-                  const orderRes = await pythonBridge.executeOrder({
-                    symbol: candidate.code,
-                    side: 'BUY',
-                    orderType: 'MARKET',
-                    market: 'KR',
-                    quantity: buyQty,
-                    reason: `[${bot.nickname}] 국내 온주 자동 매수`,
-                  });
-                  const fee = Math.round(totalCost * 0.00015);
+                  if (availableRealCash >= unitPriceKrw && unitPriceKrw > 0) {
+                    const orderRes = await pythonBridge.executeOrder({
+                      symbol: candidate.code,
+                      side: 'BUY',
+                      orderType: 'MARKET',
+                      market: 'US',
+                      quantity: 1,
+                      reason: `[${bot.nickname}] 우선순위: 미국 1주 온주 자동 매수`,
+                    });
+                    const fee = Math.round(unitPriceKrw * 0.0025);
+                    const insTrade = db.prepare(`
+                      INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                      VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
+                    `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
 
-                  const insTrade = db.prepare(`
-                    INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-                  `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, priceInfo.currentPrice, buyQty, totalCost, nowIso);
+                    db.prepare(`
+                      INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                      VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
+                    `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
 
-                  db.prepare(`
-                    INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-                    VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-                  `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, buyQty, priceInfo.currentPrice, totalCost, fee, insTrade.lastInsertRowid, nowIso);
+                    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+                      `[🐍 Python 실전매수] 2순위 미국 1주 온주: ${candidate.name} ($${unitPriceUsd})`,
+                      nowIso,
+                      bot.bot_id
+                    );
+                    realExecuted = true;
+                  }
+                } else if (priority === 'US_FRACTIONAL') {
+                  // 3. 미국 주식 소수점 금액 구매 ($10)
+                  const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
+                  const priceInfo = await tossClient.getCurrentPrice(candidate.code);
+                  const usdRate = priceInfo.exchangeRate || 1340;
+                  const targetUsd = 10;
+                  const targetKrw = Math.round(targetUsd * usdRate);
 
-                  db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                    `[🐍 Python 실전매수] ${candidate.name} ${buyQty}주 @ ${priceInfo.currentPrice.toLocaleString()}원`,
-                    nowIso,
-                    bot.bot_id
-                  );
+                  if (availableRealCash >= targetKrw) {
+                    const orderRes = await pythonBridge.executeOrder({
+                      symbol: candidate.code,
+                      side: 'BUY',
+                      orderType: 'MARKET',
+                      market: 'US',
+                      orderAmount: targetUsd,
+                      reason: `[${bot.nickname}] 우선순위: 미국 소수점($${targetUsd}) 자동 매수`,
+                    });
+                    const fractionalQty = parseFloat((targetKrw / priceInfo.currentPrice).toFixed(6));
+                    const fee = Math.round(targetKrw * 0.0025);
+
+                    const insTrade = db.prepare(`
+                      INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                      VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+                    `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, priceInfo.currentPrice, fractionalQty, targetKrw, nowIso);
+
+                    db.prepare(`
+                      INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                      VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                    `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, priceInfo.currentPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
+
+                    db.prepare("UPDATE bots SET last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+                      `[🐍 Python 실전매수] 3순위 미국 소수점: ${candidate.name} $${targetUsd} (${fractionalQty}주)`,
+                      nowIso,
+                      bot.bot_id
+                    );
+                    realExecuted = true;
+                  }
                 }
               }
             } catch (rErr) {

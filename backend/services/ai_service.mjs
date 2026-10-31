@@ -25,12 +25,37 @@ export class AiService {
     if (executeTrade && botId) {
       const bot = db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
       if (bot) {
-        const buySignal = decisions.find((d) => d.action === 'BUY' && d.confidence >= 65) || decisions[0];
+        // 사용자 설정 구매 우선순위 로드
+        const prioRow = db.prepare("SELECT value FROM system_settings WHERE key = 'purchase_priority'").get();
+        let priorityList = ['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL'];
+        if (prioRow && prioRow.value) {
+          try {
+            const parsed = JSON.parse(prioRow.value);
+            if (Array.isArray(parsed) && parsed.length > 0) priorityList = parsed;
+          } catch (e) {}
+        }
+
+        // 우선순위에 따른 최적 매수 시그널 탐색
+        let buySignal = null;
+        for (const priority of priorityList) {
+          if (priority === 'KR_UNIT') {
+            buySignal = decisions.find((d) => d.action === 'BUY' && d.confidence >= 65 && d.market === 'KR');
+          } else if (priority === 'US_UNIT' || priority === 'US_FRACTIONAL') {
+            buySignal = decisions.find((d) => d.action === 'BUY' && d.confidence >= 65 && d.market === 'US');
+          }
+          if (buySignal) break;
+        }
+        if (!buySignal) {
+          buySignal = decisions.find((d) => d.action === 'BUY') || decisions[0];
+        }
+
         if (buySignal) {
           const stock = ALL_CANDIDATE_STOCKS.find((s) => s.code === buySignal.symbol) || candidates[0];
           const isReal = bot.trade_mode === 'REAL';
           const priceInfo = await kiwoomClient.getCurrentPrice(stock.code);
           const nowIso = new Date().toISOString();
+          const isUs = stock.market === 'US';
+          const preferUnitOverFractional = priorityList.indexOf('US_UNIT') < priorityList.indexOf('US_FRACTIONAL');
 
           if (!isReal) {
             // Virtual Buy
@@ -39,6 +64,7 @@ export class AiService {
               stockCode: stock.code,
               stockName: stock.name,
               requestedBudget: 2000000,
+              isFractional: isUs && !preferUnitOverFractional,
             });
             executedResult = { ...vResult, mode: 'VIRTUAL' };
             db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_VIRTUAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
@@ -46,27 +72,48 @@ export class AiService {
           } else {
             // Real Buy via Python Core Executor
             try {
-              if (stock.isFractional) {
-                const targetUsd = 10;
-                const orderRes = await pythonBridge.executeOrder({
-                  symbol: stock.code,
-                  side: 'BUY',
-                  orderType: 'MARKET',
-                  market: 'US',
-                  orderAmount: targetUsd,
-                  reason: `Gemini AI 추천 미국 소수점 매수 ($${targetUsd})`,
-                });
-                executedResult = { ...orderRes, symbol: stock.code, mode: 'REAL', isFractional: true };
-                db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
-                  .run(orderRes.orderId || `TORD_${Date.now()}`, stock.code);
+              if (isUs) {
+                // 미국 주식: 우선순위 및 가용 잔고에 따라 1주 온주 vs 소수점 분기
+                const unitPriceKrw = priceInfo.currentPrice;
+                const tossBal = await tossClient.getAccountBalance();
+
+                if (preferUnitOverFractional && tossBal.availableCash >= unitPriceKrw && unitPriceKrw > 0) {
+                  // 미국 1주 온주 매수
+                  const orderRes = await pythonBridge.executeOrder({
+                    symbol: stock.code,
+                    side: 'BUY',
+                    orderType: 'MARKET',
+                    market: 'US',
+                    quantity: 1,
+                    reason: `Gemini AI 추천 미국 1주 온주 매수 ($${priceInfo.currentPriceUsd})`,
+                  });
+                  executedResult = { ...orderRes, symbol: stock.code, mode: 'REAL', isFractional: false };
+                  db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
+                    .run(orderRes.orderId || `TORD_${Date.now()}`, stock.code);
+                } else {
+                  // 미국 소수점 금액 매수 ($10)
+                  const targetUsd = 10;
+                  const orderRes = await pythonBridge.executeOrder({
+                    symbol: stock.code,
+                    side: 'BUY',
+                    orderType: 'MARKET',
+                    market: 'US',
+                    orderAmount: targetUsd,
+                    reason: `Gemini AI 추천 미국 소수점 매수 ($${targetUsd})`,
+                  });
+                  executedResult = { ...orderRes, symbol: stock.code, mode: 'REAL', isFractional: true };
+                  db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
+                    .run(orderRes.orderId || `TORD_${Date.now()}`, stock.code);
+                }
               } else {
+                // 국내 주식: 1주 온주 매수
                 const orderRes = await pythonBridge.executeOrder({
                   symbol: stock.code,
                   side: 'BUY',
                   orderType: 'MARKET',
                   market: 'KR',
                   quantity: 1,
-                  reason: `Gemini AI 추천 국내 온주 매수 (1주)`,
+                  reason: `Gemini AI 추천 국내 1주 온주 매수`,
                 });
                 executedResult = { ...orderRes, symbol: stock.code, mode: 'REAL', isFractional: false };
                 db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")

@@ -10,8 +10,8 @@ export class VirtualPaperTradingEngine {
     this.kiwoomClient = kiwoomClient;
   }
 
-  // 가상 매수 체결 (키움증권 시세의 매도 1호가 기준)
-  async executeVirtualBuy({ botId, stockCode, stockName, requestedBudget }) {
+  // 가상 매수 체결 (키움/토스 시세의 매도 1호가 기준)
+  async executeVirtualBuy({ botId, stockCode, stockName, requestedBudget, isFractional: forceFractional }) {
     const db = this.getDb();
     if (!db) throw new Error('데이터베이스가 준비되지 않았습니다.');
 
@@ -23,8 +23,8 @@ export class VirtualPaperTradingEngine {
     const priceInfo = await this.kiwoomClient.getCurrentPrice(stockCode);
     const executionPrice = priceInfo.askPrice1 || priceInfo.currentPrice; // 매수 시 매도 1호가로 체결
 
-    // 소수점 거래 여부 확인 (미국 주식은 1,000원 이상 소수점 매수 가능, 국내는 1주 이상)
-    const isFractional = !!priceInfo.isFractional;
+    // 소수점 거래 여부 확인 (강제 설정 또는 종목 기본 속성)
+    const isFractional = forceFractional !== undefined ? forceFractional : !!priceInfo.isFractional;
     const minRequired = isFractional ? 1000 : Math.ceil(executionPrice * (1 + BROKERAGE_FEE_RATE));
 
     if (virtualKrw < minRequired) {

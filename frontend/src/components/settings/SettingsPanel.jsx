@@ -8,12 +8,58 @@ export default function SettingsPanel({
   setBotRatios,
   bots,
   brokerConfig,
+  purchasePriority,
+  setPurchasePriority,
+  onSavePriority,
   onSaveBudget,
   onSaveKeys,
   onExportBackup,
   onImportBackup,
 }) {
   const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
+  const [localPriority, setLocalPriority] = useState(
+    purchasePriority && purchasePriority.length === 3
+      ? purchasePriority
+      : ['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']
+  );
+
+  React.useEffect(() => {
+    if (purchasePriority && purchasePriority.length === 3) {
+      setLocalPriority(purchasePriority);
+    }
+  }, [purchasePriority]);
+
+  const movePriority = (index, direction) => {
+    const targetIdx = index + direction;
+    if (targetIdx < 0 || targetIdx >= localPriority.length) return;
+    const nextList = [...localPriority];
+    const temp = nextList[index];
+    nextList[index] = nextList[targetIdx];
+    nextList[targetIdx] = temp;
+    setLocalPriority(nextList);
+  };
+
+  const resetPriorityToDefault = () => {
+    setLocalPriority(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
+  };
+
+  const PRIORITY_META = {
+    KR_UNIT: {
+      title: '국내 주식 1주 구매 (온주)',
+      desc: '키움증권 호가 기반 삼성전자, SK하이닉스 등 KRX 대표 우량주 1주 정수 단위 매수',
+      icon: '🇰🇷',
+    },
+    US_UNIT: {
+      title: '미국 주식 1주 구매 (온주)',
+      desc: '토스증권 실시간 시세 기반 애플, 엔비디아, 테슬라 등 1주 정수 단위 매수',
+      icon: '🇺🇸',
+    },
+    US_FRACTIONAL: {
+      title: '미국 주식 소수점 구매 (금액 단위)',
+      desc: '토스증권 공식 소수점 매매(orderAmount)를 통해 소액($10 / 약 1.3만원) 분할 적립 매수',
+      icon: '🪙',
+    },
+  };
   const [newBrokerConfig, setNewBrokerConfig] = useState({
     account_mode: 'VIRTUAL',
     kiwoom_app_key: '',
@@ -214,6 +260,124 @@ export default function SettingsPanel({
         >
           💾 투자 예산 및 봇 배분 설정 저장
         </button>
+      </div>
+
+      {/* 2-1. Purchase Priority Configuration Card */}
+      <div className="board-card" style={{ borderColor: 'rgba(168, 85, 247, 0.4)', marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🎯 주식 구매 우선순위 설정 (자동 & 전략 매매)</div>
+          <span className="badge-mode" style={{ background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', borderColor: 'rgba(168, 85, 247, 0.35)' }}>
+            매수 체결 알고리즘
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '16px', lineHeight: 1.5 }}>
+          매수 발생 시 아래의 <strong>우선순위(1순위 ➔ 2순위 ➔ 3순위)</strong>에 따라 잔여 가용 예산을 확인하고 순차적으로 매수를 집행합니다.<br />
+          예를 들어 1순위(국내 1주) 매수 예산이 부족하거나 조건 미충족 시 다음 순위(미국 1주 ➔ 미국 소수점)로 자동 전환됩니다.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '18px' }}>
+          {localPriority.map((key, idx) => {
+            const meta = PRIORITY_META[key] || { title: key, desc: '', icon: '📌' };
+            const rankColor = idx === 0 ? '#10b981' : idx === 1 ? '#3b82f6' : '#a855f7';
+            return (
+              <div
+                key={key}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '14px 18px',
+                  backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                  border: `1px solid ${idx === 0 ? 'rgba(16, 185, 129, 0.4)' : idx === 1 ? 'rgba(59, 130, 246, 0.4)' : 'rgba(168, 85, 247, 0.4)'}`,
+                  borderRadius: '10px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                  <div
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '50%',
+                      background: rankColor,
+                      color: '#fff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 800,
+                      fontSize: '14px',
+                      boxShadow: `0 0 10px ${rankColor}44`,
+                    }}
+                  >
+                    {idx + 1}
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontWeight: 700, fontSize: '14.5px', color: '#f8fafc' }}>
+                        {meta.icon} {meta.title}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '10.5px',
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          background: `${rankColor}22`,
+                          color: rankColor,
+                          border: `1px solid ${rankColor}44`,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {idx + 1}순위
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '3px' }}>
+                      {meta.desc}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    disabled={idx === 0}
+                    style={{ padding: '6px 12px', fontSize: '11.5px', opacity: idx === 0 ? 0.35 : 1 }}
+                    onClick={() => movePriority(idx, -1)}
+                  >
+                    ▲ 위로
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    disabled={idx === localPriority.length - 1}
+                    style={{ padding: '6px 12px', fontSize: '11.5px', opacity: idx === localPriority.length - 1 ? 0.35 : 1 }}
+                    onClick={() => movePriority(idx, 1)}
+                  >
+                    ▼ 아래로
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ flex: 1, minWidth: '180px' }}
+            onClick={() => onSavePriority && onSavePriority(localPriority)}
+          >
+            💾 구매 우선순위 설정 저장
+          </button>
+          <button
+            type="button"
+            className="btn-action"
+            style={{ fontSize: '12px', padding: '8px 14px' }}
+            onClick={resetPriorityToDefault}
+          >
+            🔄 기본 순위로 복원 (1.국내1주 ➔ 2.미국1주 ➔ 3.미국소수점)
+          </button>
+        </div>
       </div>
 
       {/* 3. Broker API Keys Security (Hidden & Masked Protected View) */}

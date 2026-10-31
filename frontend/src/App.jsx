@@ -119,6 +119,7 @@ export default function App() {
     has_toss_keys: false,
     has_gemini_key: false,
   });
+  const [purchasePriority, setPurchasePriority] = useState(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
 
   // Active Trade Mode calculation
   const selectedBot = bots.find((b) => b.bot_id === selectedBotId) || bots[0];
@@ -177,6 +178,14 @@ export default function App() {
       setAccountBalance(balanceData);
       if (settingsData.brokerConfig) {
         setBrokerConfig(settingsData.brokerConfig);
+      }
+      if (settingsData.settings?.purchase_priority) {
+        try {
+          const parsed = JSON.parse(settingsData.settings.purchase_priority);
+          if (Array.isArray(parsed) && parsed.length > 0) {
+            setPurchasePriority(parsed);
+          }
+        } catch (e) {}
       }
     } catch {}
   }, []);
@@ -390,6 +399,31 @@ export default function App() {
       fetchBots();
     } catch (err) {
       setModalInfo({ title: '설정 저장 실패', message: err.message, type: 'error' });
+    }
+  };
+
+  const handleSavePurchasePriority = async (newPriority) => {
+    try {
+      await api.saveSettings({
+        settings: {
+          purchase_priority: JSON.stringify(newPriority),
+        },
+      });
+      setPurchasePriority(newPriority);
+      const labels = {
+        KR_UNIT: '국내 주식 1주 (온주)',
+        US_UNIT: '미국 주식 1주 (온주)',
+        US_FRACTIONAL: '미국 주식 소수점 금액',
+      };
+      const textList = newPriority.map((p, i) => `${i + 1}순위: ${labels[p] || p}`).join('\n');
+      setModalInfo({
+        title: '구매 우선순위 저장 완료',
+        message: `주식 구매 우선순위가 성공적으로 저장되었습니다.\n\n${textList}`,
+        type: 'success',
+      });
+      fetchSettingsAndBalance();
+    } catch (err) {
+      setModalInfo({ title: '우선순위 저장 실패', message: err.message, type: 'error' });
     }
   };
 
@@ -650,6 +684,9 @@ export default function App() {
             setBotRatios={setBotRatios}
             bots={bots}
             brokerConfig={brokerConfig}
+            purchasePriority={purchasePriority}
+            setPurchasePriority={setPurchasePriority}
+            onSavePriority={handleSavePurchasePriority}
             onSaveBudget={handleSaveBudget}
             onSaveKeys={handleSaveKeys}
             onExportBackup={handleExportBackup}
