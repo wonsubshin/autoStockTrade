@@ -10,6 +10,7 @@ export default function Header({
   const regime = healthData?.marketRegime;
 
   const [remainingSessionStr, setRemainingSessionStr] = React.useState('24시간');
+  const [mobileStatusOpen, setMobileStatusOpen] = React.useState(false);
 
   React.useEffect(() => {
     const updateRemaining = () => {
@@ -34,15 +35,36 @@ export default function Header({
     <aside className="sidebar">
       {/* Brand Header */}
       <div className="brand">
-        <div className="brand-icon">📈</div>
-        <div>
-          <div className="brand-title">Kiwoom ⨉ Toss</div>
-          <div className="brand-subtitle">AI Quant Trader</div>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+          <div className="brand-icon">📈</div>
+          <div>
+            <div className="brand-title">Kiwoom ⨉ Toss</div>
+            <div className="brand-subtitle">AI Quant Trader</div>
+          </div>
+        </div>
+
+        {/* Mobile Header Actions (Visible only on mobile <= 900px) */}
+        <div className="mobile-header-actions">
+          <button
+            type="button"
+            className="mobile-status-btn"
+            onClick={() => setMobileStatusOpen(!mobileStatusOpen)}
+          >
+            {mobileStatusOpen ? '▲ 접기' : '⚡ 시스템 상태'}
+          </button>
+          <button
+            type="button"
+            className="mobile-logout-btn"
+            onClick={onLogout}
+            title="로그아웃"
+          >
+            🚪
+          </button>
         </div>
       </div>
 
       {/* Real-time Status Panel */}
-      <div className="status-panel">
+      <div className={`status-panel ${mobileStatusOpen ? 'mobile-open' : ''}`}>
         <div className="status-row">
           <span className="status-label">키움 시세(KR)</span>
           <span className={`status-pill ${healthData?.kiwoomHealth?.status || 'gray'}`}>
@@ -125,7 +147,7 @@ export default function Header({
       </nav>
 
       {/* Sidebar Footer */}
-      <div className="sidebar-footer">
+      <div className={`sidebar-footer ${mobileStatusOpen ? 'mobile-open' : ''}`}>
         <div>PostgreSQL: {healthData?.pgConnected ? '🟢 동기화 정상' : '🟡 대기/로컬모드'}</div>
         <div>Dual DB: SQLite + PG16</div>
         <div style={{ color: '#38bdf8', marginTop: '4px', fontSize: '10.5px' }}>
