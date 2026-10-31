@@ -1,5 +1,10 @@
 import { execFile } from 'node:child_process';
 import path from 'node:path';
+import { fileURLToPath } from 'node:url';
+
+const __filename = fileURLToPath(import.meta.url);
+const __dirname = path.dirname(__filename);
+const DEFAULT_ROOT = path.resolve(__dirname, '../..');
 
 /**
  * Node.js ⨉ Python 하이브리드 연동 브릿지 (PythonExecutorBridge)
@@ -7,9 +12,9 @@ import path from 'node:path';
  * - 실제 토스증권 API 주문 및 정밀 체결(Python Core Executor)을 수행
  */
 export class PythonExecutorBridge {
-  constructor(projectRoot) {
-    this.projectRoot = projectRoot;
-    this.scriptPath = path.join(projectRoot, 'backend', 'python', 'toss_executor.py');
+  constructor(projectRoot = DEFAULT_ROOT) {
+    this.projectRoot = projectRoot || DEFAULT_ROOT;
+    this.scriptPath = path.join(this.projectRoot, 'backend', 'python', 'toss_executor.py');
   }
 
   runCommand(action, params = {}) {
@@ -62,3 +67,4 @@ export class PythonExecutorBridge {
     return res.exchangeRate || 1340;
   }
 }
+
