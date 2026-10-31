@@ -61,6 +61,11 @@ export class KiwoomClient {
     this.lastRequestTime = 0;
     this.minIntervalMs = 250; // 250ms Rate Limit
     this.mockPriceOffsets = new Map();
+    this.tossClient = null; // 1안: 미국주식 실시간 시세 토스증권 클라이언트 위임
+  }
+
+  setTossClient(tossClient) {
+    this.tossClient = tossClient;
   }
 
   loadConfig() {
@@ -225,8 +230,18 @@ export class KiwoomClient {
     return { status: 'yellow', label: '키움증권 통신 대기/토큰 갱신 중', hasKeys: true };
   }
 
-  // 국내주식 현재가 및 1호가(매도 1호가 / 매수 1호가) 조회
+  // 국내주식 현재가 및 1호가(매도 1호가 / 매수 1호가) 조회 (미국주식은 1안에 따라 토스증권 실시간 API로 자동 라우팅)
   async getCurrentPrice(stockCode) {
+    const isUsStock = /^[A-Za-z.]+$/.test(stockCode);
+    if (isUsStock && this.tossClient) {
+      try {
+        const tossPrice = await this.tossClient.getCurrentPrice(stockCode);
+        if (tossPrice) return tossPrice;
+      } catch (e) {
+        console.warn(`[Kiwoom->Toss] 미국 주식 실시간 시세 위임 실패 (${stockCode}):`, e.message);
+      }
+    }
+
     const config = this.loadConfig();
     const token = await this.getAccessToken();
 

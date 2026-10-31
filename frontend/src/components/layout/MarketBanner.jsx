@@ -7,7 +7,7 @@ export default function MarketBanner({
 }) {
   return (
     <div className="top-briefing-box">
-      <span className="briefing-badge">Gemini AI 증시 브리핑 (키움 시세 & 토스 매매)</span>
+      <span className="briefing-badge">Gemini AI 증시 브리핑 (국내: 키움 시세 / 미국: 토스 실시간 시세)</span>
       <div className="briefing-text">
         {aiBriefingText || 'Gemini 2.5 Flash가 실시간 키움증권 호가 및 토스증권 매매 전략을 분석하여 실시간 브리핑을 제공합니다.'}
         {isBriefingStreaming && <span className="cursor-blink">|</span>}

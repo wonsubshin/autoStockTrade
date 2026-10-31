@@ -264,7 +264,7 @@ class TossPythonExecutor:
 
 def main():
     parser = argparse.ArgumentParser(description="Toss Securities Python Core Executor")
-    parser.add_argument('--action', required=True, choices=['balance', 'order', 'health', 'rate'], help="Action to execute")
+    parser.add_argument('--action', required=True, choices=['balance', 'order', 'health', 'rate', 'quote'], help="Action to execute")
     parser.add_argument('--params', default='{}', help="JSON string of order parameters")
     parser.add_argument('--root', default=os.path.dirname(os.path.dirname(os.path.dirname(os.path.abspath(__file__)))), help="Project root directory")
 
@@ -284,6 +284,13 @@ def main():
         elif args.action == 'rate':
             rate = executor.get_exchange_rate()
             print(json.dumps({'exchangeRate': rate}, ensure_ascii=False))
+
+        elif args.action == 'quote':
+            params = json.loads(args.params)
+            sym = str(params.get('symbol', 'AAPL')).strip().upper()
+            res = executor.fetch_with_auth(f'/api/v1/prices?symbols={sym}', method='GET', need_account_seq=False)
+            rate = executor.get_exchange_rate()
+            print(json.dumps({'quote': res.get('result', []), 'exchangeRate': rate}, ensure_ascii=False))
 
         elif args.action == 'order':
             params = json.loads(args.params)

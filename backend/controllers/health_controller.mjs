@@ -8,8 +8,10 @@ export class HealthController {
     return sendJson(res, 200, {
       ok: true,
       service: 'autoStockTrader',
-      architecture: '키움증권(시세) ⨉ Gemini LLM(판단) ⨉ Python/토스(소수점 매매)',
+      architecture: '국내(키움 실시간 시세) · 미국(토스 실시간 시세) ⨉ Gemini LLM ⨉ Python/토스(소수점 매매)',
       hybridModel: {
+        domesticQuotes: 'Kiwoom Open API (국내 실시간 호가/시세)',
+        usQuotes: 'Toss Securities Open API (미국 0초 지연 실시간 시세 & 환율)',
         llmEngine: 'Google Gemini (News/Catalyst AI Inference)',
         pythonExecutor: 'Python Core Toss Executor (Fractional & Unit Orders)',
         fractionalTrading: true,

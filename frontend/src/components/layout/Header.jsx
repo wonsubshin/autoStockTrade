@@ -44,26 +44,39 @@ export default function Header({
       {/* Real-time Status Panel */}
       <div className="status-panel">
         <div className="status-row">
-          <span className="status-label">키움 시세</span>
+          <span className="status-label">키움 시세(KR)</span>
           <span className={`status-pill ${healthData?.kiwoomHealth?.status || 'gray'}`}>
             ● {healthData?.kiwoomHealth?.status === 'green' ? '정상연결' : healthData?.kiwoomHealth?.status === 'yellow' ? '가상대기' : '미연결'}
           </span>
         </div>
         <div className="status-row">
-          <span className="status-label">토스 매매</span>
+          <span className="status-label">토스 시세/매매(US)</span>
           <span className={`status-pill ${healthData?.tossHealth?.status || 'gray'}`}>
-            ● {healthData?.tossHealth?.status === 'green' ? '정상연결' : healthData?.tossHealth?.status === 'yellow' ? '가상대기' : '미연결'}
+            ● {healthData?.tossHealth?.status === 'green' ? '실시간연동' : healthData?.tossHealth?.status === 'yellow' ? '가상대기' : '미연결'}
           </span>
         </div>
         <div className="status-row">
           <span className="status-label">국내 장운영</span>
           <span className="status-pill gray" style={{ fontSize: '10px' }}>
-            {marketStatus?.phase || 'CHECKING'}
+            {marketStatus?.kr?.phase || marketStatus?.phase || 'CHECKING'}
           </span>
         </div>
         <div style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '2px' }}>
-          {marketStatus?.badge || '장 상태 확인 중...'}
+          {marketStatus?.kr?.badge || marketStatus?.badge || '장 상태 확인 중...'}
         </div>
+        {marketStatus?.us && (
+          <>
+            <div className="status-row" style={{ marginTop: '4px' }}>
+              <span className="status-label">미국 장운영</span>
+              <span className={`status-pill ${marketStatus.us.color || 'gray'}`} style={{ fontSize: '10px' }}>
+                {marketStatus.us.phase || 'CLOSED'}
+              </span>
+            </div>
+            <div style={{ fontSize: '11px', color: '#cbd5e1', marginTop: '2px' }}>
+              {marketStatus.us.badge}
+            </div>
+          </>
+        )}
         <div className="status-row" style={{ marginTop: '4px' }}>
           <span className="status-label">시장 체제</span>
           <span className={`status-pill ${regime?.regime === 'NORMAL' ? 'green' : 'red'}`}>
