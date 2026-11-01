@@ -9,7 +9,7 @@ export default function TradesTable({ trades, activeTradeMode }) {
     <div className="board-card">
       <div className="card-title-row">
         <div className="card-title">
-          📋 1행 매칭 체결 및 실현 손익 내역 ({activeTradeMode === 'REAL' ? '토스증권 실전 매매' : activeTradeMode === 'VIRTUAL' ? '가상 매매' : '전체'})
+          📋 체결 및 실현 손익 내역 ({activeTradeMode === 'REAL' ? '토스증권 실전 매매' : '전체 내역'})
         </div>
         <span style={{ fontSize: '12px', color: '#94a3b8' }}>
           최근 {filteredTrades.length}건

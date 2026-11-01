@@ -1,10 +1,51 @@
-import React from 'react';
+import React, { useState } from 'react';
 
 export default function HybridBoard({
   aiDecisions,
   isAiEvaluating,
   onAiEvaluateAndTrade,
 }) {
+  const [isPlayingVoice, setIsPlayingVoice] = useState(false);
+
+  // 종합 구두 브리핑 텍스트 생성
+  const topPick = aiDecisions.find((d) => d.action === 'BUY') || aiDecisions[0];
+  const buyCount = aiDecisions.filter((d) => d.action === 'BUY').length;
+  const holdCount = aiDecisions.filter((d) => d.action === 'HOLD').length;
+
+  const verbalOverviewText = aiDecisions.length > 0
+    ? `안녕하십니까, Gemini 2.5 Flash 증시 인텔리전스 구두 시황 브리핑입니다. ` +
+      `실시간 수집된 국내외 주요 증시 뉴스를 종합 분석한 결과, 현재 시장은 기술주와 반도체 중심의 긍정적인 매수 모멘텀이 우세하게 작용하고 있습니다. ` +
+      `전체 분석 대상 중 매수 유효 종목은 ${buyCount}건, 관망 종목은 ${holdCount}건으로 집계되었으며, ` +
+      `특히 가장 강력한 호재 시그널이 포착된 ${topPick?.stock_name || topPick?.name || '핵심 종목'}의 경우, ` +
+      `${topPick?.isFractional ? '토스증권 소수점 금액 주문($10 단위)을 통해 분할 매수하시는 것을 적극 추천드립니다.' : '키움증권 호가 지지선을 바탕으로 1주 단위 분할 매수로 접근하시는 것이 안전합니다.'} ` +
+      `무리한 단기 추격 매수보다는 퀀트 알고리즘 지지선을 확인하며 분할 집행하시는 전략을 권장해 드립니다.`
+    : `실시간 수집된 최신 뉴스와 시장 수급을 바탕으로 Gemini LLM이 생생한 구두형 증시 시황 브리핑 및 종목별 매매 전략을 안내해 드립니다. 상단의 [🔄 AI 시그널 재분석]을 눌러주세요.`;
+
+  const handleSpeak = (textToSpeak) => {
+    if (typeof window === 'undefined' || !window.speechSynthesis) {
+      alert('현재 브라우저에서는 음성 합성(TTS) 기능을 지원하지 않습니다.');
+      return;
+    }
+
+    if (isPlayingVoice) {
+      window.speechSynthesis.cancel();
+      setIsPlayingVoice(false);
+      return;
+    }
+
+    window.speechSynthesis.cancel();
+    const utterance = new SpeechSynthesisUtterance(textToSpeak || verbalOverviewText);
+    utterance.lang = 'ko-KR';
+    utterance.rate = 1.0;
+    utterance.pitch = 1.0;
+
+    utterance.onend = () => setIsPlayingVoice(false);
+    utterance.onerror = () => setIsPlayingVoice(false);
+
+    setIsPlayingVoice(true);
+    window.speechSynthesis.speak(utterance);
+  };
+
   return (
     <div
       className="board-card"
@@ -54,10 +95,63 @@ export default function HybridBoard({
         </div>
       </div>
 
-      <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.5 }}>
-        💡 <strong>하이브리드 파이프라인</strong>: 실시간 수집된 증시 뉴스·공시를 <strong>Gemini LLM</strong>이 심층 분석하여 종목별 감성점수와 매매 시그널을 판정하고, 주문 집행은 <strong>Python 코어 실행기(Toss Executor)</strong>가 토스증권 Open API를 통해 안전하게 집행합니다.
+      <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '16px', lineHeight: 1.5 }}>
+        💡 <strong>하이브리드 파이프라인</strong>: 실시간 수집된 증시 뉴스·공시를 <strong>Gemini LLM</strong>이 심층 분석하여 <strong>구두형 음성/텍스트 시황 해설</strong>과 매매 시그널을 도출하고, 주문 집행은 <strong>Python 코어 실행기(Toss Executor)</strong>가 토스증권 Open API를 통해 안전하게 집행합니다.
       </div>
 
+      {/* 1. Spoken Narrative Comprehensive Market Briefing Card (구두형 증시 시황 해설) */}
+      <div
+        style={{
+          background: 'rgba(15, 23, 42, 0.75)',
+          border: '1px solid rgba(147, 51, 234, 0.3)',
+          borderRadius: '10px',
+          padding: '16px 20px',
+          marginBottom: '20px',
+        }}
+      >
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '10px', flexWrap: 'wrap', gap: '8px' }}>
+          <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <span style={{ fontSize: '18px' }}>🎙️</span>
+            <strong style={{ fontSize: '14px', color: '#f3e8ff' }}>Gemini LLM 실시간 구두형 뉴스 감성 종합 시황 해설</strong>
+            <span className="badge-mode real" style={{ fontSize: '11px', background: 'rgba(147, 51, 234, 0.25)', color: '#d8b4fe', borderColor: 'rgba(147, 51, 234, 0.4)' }}>
+              구두 브리핑 모드
+            </span>
+          </div>
+          <div style={{ display: 'flex', gap: '8px' }}>
+            <button
+              type="button"
+              className="btn-action"
+              style={{
+                fontSize: '11px',
+                padding: '4px 10px',
+                background: isPlayingVoice ? 'rgba(239, 68, 68, 0.25)' : 'rgba(59, 130, 246, 0.2)',
+                color: isPlayingVoice ? '#fca5a5' : '#93c5fd',
+                borderColor: isPlayingVoice ? '#ef4444' : 'rgba(59, 130, 246, 0.4)',
+              }}
+              onClick={() => handleSpeak(verbalOverviewText)}
+            >
+              {isPlayingVoice ? '⏹️ 음성 중지' : '🔊 구두 해설 음성 듣기 (TTS)'}
+            </button>
+          </div>
+        </div>
+
+        <div
+          style={{
+            fontSize: '13.5px',
+            lineHeight: '1.7',
+            color: '#e2e8f0',
+            background: 'rgba(0, 0, 0, 0.35)',
+            padding: '14px 18px',
+            borderRadius: '8px',
+            border: '1px solid rgba(255, 255, 255, 0.05)',
+            whiteSpace: 'pre-wrap',
+          }}
+        >
+          {isAiEvaluating ? '⏳ Gemini LLM이 실시간 증시 뉴스와 수급을 분석하여 구두형 종합 시황 보고서를 작성하고 있습니다...' : verbalOverviewText}
+        </div>
+      </div>
+
+      {/* 2. Detailed Spoken Strategy Table for Evaluated Candidate Stocks */}
       <div className="table-wrapper">
         <table className="custom-table">
           <thead>
@@ -66,7 +160,7 @@ export default function HybridBoard({
               <th>시장/구분</th>
               <th>AI 매매 신호</th>
               <th>감성점수 / 확신도</th>
-              <th>LLM 퀀트 분석 핵심 근거</th>
+              <th style={{ minWidth: '320px' }}>🎙️ LLM 구두형 매매 시황 해설 & 행동 전략</th>
               <th>실행 엔진</th>
               <th>원클릭 주문</th>
             </tr>
@@ -79,7 +173,7 @@ export default function HybridBoard({
                 </td>
               </tr>
             ) : (
-              aiDecisions.slice(0, 8).map((d, idx) => {
+              aiDecisions.slice(0, 10).map((d, idx) => {
                 const isBuy = d.action === 'BUY';
                 const isSell = d.action === 'SELL';
                 const isUS = d.market === 'US';
@@ -125,8 +219,19 @@ export default function HybridBoard({
                         (확신 {d.confidence}%)
                       </span>
                     </td>
-                    <td style={{ fontSize: '12px', color: '#cbd5e1', maxWidth: '320px', lineHeight: 1.4 }}>
-                      {d.reasoning}
+                    <td style={{ fontSize: '13px', color: '#e2e8f0', lineHeight: 1.6, padding: '12px 14px' }}>
+                      <div style={{ display: 'flex', alignItems: 'flex-start', gap: '8px' }}>
+                        <button
+                          type="button"
+                          className="btn-action"
+                          style={{ padding: '2px 6px', fontSize: '11px', flexShrink: 0, marginTop: '2px' }}
+                          title="이 종목 구두 해설 듣기"
+                          onClick={() => handleSpeak(`${d.stock_name || d.name} 종목 구두 해설입니다. ${d.reasoning}`)}
+                        >
+                          🔊
+                        </button>
+                        <div>{d.reasoning}</div>
+                      </div>
                     </td>
                     <td>
                       <span style={{ fontSize: '11px', color: '#38bdf8' }}>

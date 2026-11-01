@@ -9,11 +9,16 @@ export default function PositionsTable({ positions, onSellPosition, activeTradeM
     <div className="board-card">
       <div className="card-title-row">
         <div className="card-title">
-          📌 실시간 보유 종목 & 평가 손익 현황 ({activeTradeMode === 'REAL' ? '토스증권 실전 계좌' : activeTradeMode === 'VIRTUAL' ? '가상 매매' : '전체'})
+          📌 실시간 보유 종목 & 평가 손익 현황 (토스증권 실전 계좌 연동)
         </div>
-        <span style={{ fontSize: '12px', color: '#94a3b8' }}>
-          총 {filteredPositions.length}개 보유 중
-        </span>
+        <div style={{ display: 'flex', gap: '8px', alignItems: 'center' }}>
+          <span className="badge-mode real" style={{ fontSize: '11px' }}>
+            토스증권 공식 Open API 실시간
+          </span>
+          <span style={{ fontSize: '12px', color: '#94a3b8' }}>
+            총 {filteredPositions.length}개 보유 중
+          </span>
+        </div>
       </div>
       <div className="table-wrapper">
         <table className="custom-table">

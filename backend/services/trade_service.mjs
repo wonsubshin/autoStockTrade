@@ -28,6 +28,46 @@ export class TradeService {
 
   static async getPositions({ mode, botId }) {
     const db = getDb();
+
+    // 1. REAL 모드 요청 시: 토스증권 공식 실전 계좌의 실제 보유 종목(Holdings)을 100% 직접 연동하여 반환
+    if (mode === 'REAL') {
+      try {
+        const tossBal = await tossClient.getAccountBalance();
+        if (tossBal && !tossBal.isMock && Array.isArray(tossBal.holdings)) {
+          // DB에 기록된 실전 포지션 메타데이터(진입일시, bot_id 등) 매칭
+          const realDbPositions = db.prepare("SELECT * FROM bot_positions WHERE status = 'OPEN' AND trade_mode = 'REAL'").all();
+          const realPositions = tossBal.holdings.map((h) => {
+            const matched = realDbPositions.find((p) => p.stock_code === h.stockCode);
+            return {
+              id: matched?.id || `toss_${h.stockCode}`,
+              bot_id: matched?.bot_id || (botId || 'toss_real_account'),
+              trade_mode: 'REAL',
+              stock_code: h.stockCode,
+              stock_name: h.stockName,
+              order_no: matched?.order_no || `TOSS_HOLDING_${h.stockCode}`,
+              qty: h.qty,
+              avg_buy_price: h.avgBuyPrice,
+              currentPrice: h.currentPrice,
+              buy_amount: Math.round(h.avgBuyPrice * h.qty),
+              evalAmount: h.evalAmount,
+              unrealizedProfitKrw: h.unrealizedProfitKrw,
+              unrealizedProfitPct: h.unrealizedProfitPct,
+              created_at: matched?.created_at || new Date().toISOString(),
+              priceProvider: '토스증권(실전)',
+            };
+          });
+
+          if (botId) {
+            return realPositions.filter((p) => p.bot_id === botId);
+          }
+          return realPositions;
+        }
+      } catch (e) {
+        console.warn('[TradeService] 실전 토스 보유 종목 조회 오류:', e.message);
+      }
+    }
+
+    // 2. VIRTUAL 또는 ALL 모드 처리
     let query = "SELECT * FROM bot_positions WHERE status = 'OPEN'";
     const params = [];
 
@@ -47,10 +87,10 @@ export class TradeService {
     const enriched = await Promise.all(
       openPositions.map(async (pos) => {
         const priceInfo = await kiwoomClient.getCurrentPrice(pos.stock_code);
-        const currentPrice = priceInfo.currentPrice;
+        const currentPrice = priceInfo?.currentPrice || pos.avg_buy_price;
         const evalAmount = currentPrice * pos.qty;
         const unrealizedProfitKrw = evalAmount - pos.buy_amount - (pos.buy_fee || 0);
-        const unrealizedProfitPct = parseFloat(((unrealizedProfitKrw / pos.buy_amount) * 100).toFixed(2));
+        const unrealizedProfitPct = pos.buy_amount > 0 ? parseFloat(((unrealizedProfitKrw / pos.buy_amount) * 100).toFixed(2)) : 0;
 
         return {
           ...pos,
@@ -62,37 +102,6 @@ export class TradeService {
         };
       })
     );
-
-    // REAL 모드 조회 시 토스증권 실계좌 보유 주식(Holdings) 자동 병합
-    if (mode === 'REAL' || mode === 'ALL') {
-      try {
-        const tossBal = await tossClient.getAccountBalance();
-        if (tossBal && !tossBal.isMock && Array.isArray(tossBal.holdings)) {
-          for (const h of tossBal.holdings) {
-            const exists = enriched.some((p) => p.stock_code === h.stockCode);
-            if (!exists) {
-              enriched.push({
-                id: `toss_${h.stockCode}`,
-                bot_id: 'toss_real_account',
-                trade_mode: 'REAL',
-                stock_code: h.stockCode,
-                stock_name: h.stockName,
-                order_no: `TOSS_HOLDING_${h.stockCode}`,
-                qty: h.qty,
-                avg_buy_price: h.avgBuyPrice,
-                currentPrice: h.currentPrice,
-                buy_amount: Math.round(h.avgBuyPrice * h.qty),
-                evalAmount: h.evalAmount,
-                unrealizedProfitKrw: h.unrealizedProfitKrw,
-                unrealizedProfitPct: h.unrealizedProfitPct,
-                created_at: new Date().toISOString(),
-                priceProvider: '토스증권(실전)',
-              });
-            }
-          }
-        }
-      } catch (e) {}
-    }
 
     return enriched;
   }

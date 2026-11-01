@@ -91,7 +91,7 @@ export class VirtualPaperTradingEngine {
 
     const tradeRes = insertTrade.run(
       botId,
-      bot.trade_mode,
+      'VIRTUAL',
       stockCode,
       stockName || priceInfo.stockName,
       orderNo,
@@ -105,7 +105,7 @@ export class VirtualPaperTradingEngine {
 
     insertPosition.run(
       botId,
-      bot.trade_mode,
+      'VIRTUAL',
       stockCode,
       stockName || priceInfo.stockName,
       orderNo,
@@ -376,14 +376,14 @@ export class VirtualPaperTradingEngine {
 
     const trades = db.prepare(`
       SELECT * FROM trades
-      WHERE bot_id = ? AND trade_mode = ? AND status = 'CLOSED'
+      WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'CLOSED'
       ORDER BY id ASC
-    `).all(botId, bot.trade_mode);
+    `).all(botId);
 
     const openPositions = db.prepare(`
       SELECT * FROM bot_positions
-      WHERE bot_id = ? AND trade_mode = ? AND status = 'OPEN'
-    `).all(botId, bot.trade_mode);
+      WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
+    `).all(botId);
 
     const initialCapital = bot.allocated_capital || 10000000;
     const totalTrades = trades.length;
