@@ -222,7 +222,7 @@ export function migrateAndSeedTenBots(database = db) {
       strategy_type: 'VOLATILITY_BREAKOUT',
       description: '전일 변동폭(K=0.5) 돌파 및 거래량 200% 급증 시 추격 매수, 당일 종가 청산',
       stop_loss_pct: 2.0, take_profit_pct: 4.0,
-      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 50, real_allocated_capital: 5000000, real_available_krw: 5000000,
+      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 33.3, real_allocated_capital: 3330000, real_available_krw: 3330000,
       config_json: JSON.stringify({ k_factor: 0.5, vol_surge_ratio: 2.0 })
     },
     {
@@ -232,7 +232,7 @@ export function migrateAndSeedTenBots(database = db) {
       strategy_type: 'DUAL_MOMENTUM',
       description: '20일 수익률 상위 + 외인/기관 동반 순매수 + 20일선 정배열 추세 매매',
       stop_loss_pct: 3.0, take_profit_pct: 7.0,
-      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 50, real_allocated_capital: 5000000, real_available_krw: 5000000,
+      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 33.3, real_allocated_capital: 3330000, real_available_krw: 3330000,
       config_json: JSON.stringify({ lookback_days: 20, min_inst_streak: 3 })
     },
     {
@@ -242,7 +242,7 @@ export function migrateAndSeedTenBots(database = db) {
       strategy_type: 'MEAN_REVERSION',
       description: '볼린저 하단(-2σ) 이탈 후 양봉 복귀 및 RSI(14) 30 이하 과매도 탈출 매수',
       stop_loss_pct: 2.5, take_profit_pct: 3.5,
-      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 33.4, real_allocated_capital: 3340000, real_available_krw: 3340000,
       config_json: JSON.stringify({ bb_period: 20, bb_std: 2.0, rsi_low: 30 })
     },
     {

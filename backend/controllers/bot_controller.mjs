@@ -55,7 +55,7 @@ export class BotController {
       const bots = BotService.selectRealTradingBots(selectedBotIds);
       return sendJson(res, 200, {
         success: true,
-        message: `실전 거래 담당 봇(${selectedBotIds.length}개)이 성공적으로 선택 및 배정되었습니다.`,
+        message: '실전 거래 담당 봇 3개가 성공적으로 선택 및 지정되었습니다.',
         bots,
       });
     } catch (err) {

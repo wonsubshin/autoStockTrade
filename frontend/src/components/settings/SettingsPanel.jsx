@@ -163,18 +163,18 @@ export default function SettingsPanel({
       {/* 2. Dynamic Real Budget Allocation for Selected 1~3 Bots */}
       <div className="board-card" style={{ borderColor: 'rgba(59, 130, 246, 0.4)', marginBottom: '24px' }}>
         <div className="card-title-row">
-          <div className="card-title">🎯 선택된 실전 담당 봇 ({allocations.length}개) 동적 투자금 비율 설정</div>
+          <div className="card-title">🎯 선택된 실전 담당 봇 (3개) 동적 투자금 비율 설정</div>
           <span className="badge-mode real">
             실전 배분 엔진
           </span>
         </div>
         <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
-          가상 아레나에서 선발된 <strong>최소 1개 ~ 최대 3개의 실전 봇</strong>만 여기에 표시됩니다. 총 실전 예산과 각 봇의 비율을 설정하면 해당 비율대로 실전 매매 투자금이 실시간 배정됩니다.
+          가상 아레나에서 선발된 <strong>3개의 실전 담당 봇</strong>의 투자금 비율(합계 100%)을 설정합니다. 하단의 <strong>[확인 및 실전 매매 적용]</strong>을 누르면 설정이 저장되고 즉시 <strong>실전 매매 화면으로 이동</strong>하여 매매에 적용됩니다.
         </p>
 
         {allocations.length === 0 ? (
           <div style={{ padding: '20px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', color: '#fca5a5', fontSize: '13px' }}>
-            ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 1~3개의 봇을 먼저 체크 후 확정해주세요.
+            ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 3개의 봇을 먼저 체크 후 확정해주세요.
           </div>
         ) : (
           <>
@@ -304,7 +304,7 @@ export default function SettingsPanel({
                 disabled={!isAllocValid || realTotalBudget > tossAvailable}
                 onClick={() => onSaveRealAllocation && onSaveRealAllocation(realTotalBudget, allocations)}
               >
-                💾 실전 투자금 비율 저장 및 적용
+                💾 실전 투자금 비율 저장 및 실전 매매 적용 (확인)
               </button>
             </div>
           </>

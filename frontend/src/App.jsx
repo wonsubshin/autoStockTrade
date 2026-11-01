@@ -363,11 +363,22 @@ export default function App() {
   const handleResetVirtualAll = () => handleBotAction('RESET_VIRTUAL_ALL');
 
   const handleSelectRealBots = async (selectedBotIds) => {
+    if (!Array.isArray(selectedBotIds) || selectedBotIds.length !== 3) {
+      setModalInfo({
+        title: '선택 안내',
+        message: '실전 거래를 담당할 퀀트 봇을 정확히 3개 선택해주세요.',
+        type: 'warning',
+      });
+      return;
+    }
+
     try {
       const res = await api.selectRealBots(selectedBotIds);
+      // 가상 경쟁 아레나에서 확정 후 즉시 환경설정 화면으로 자동 이동
+      setActiveMenu('SETTINGS');
       setModalInfo({
-        title: '실전 담당 봇 확정 완료',
-        message: `선택하신 ${selectedBotIds.length}개의 봇이 실전 거래 담당 봇으로 확정되었습니다.\n\n[환경설정] 탭에서 실전 투자금 비율을 설정하시거나, [실전 매매] 탭에서 실전 거래를 가동하실 수 있습니다.`,
+        title: '실전 담당 봇 (3개) 확정 완료',
+        message: '선택하신 3개의 봇이 실전 거래 담당으로 지정되었습니다.\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.',
         type: 'success',
       });
       await fetchBots();
@@ -390,9 +401,11 @@ export default function App() {
   const handleSaveRealAllocation = async (totalBudget, allocs) => {
     try {
       const res = await api.saveRealAllocation(totalBudget, allocs);
+      // 환경설정에서 확인(저장) 후 즉시 실전 매매 화면으로 자동 이동 및 적용
+      setActiveMenu('REAL_TRADING');
       setModalInfo({
-        title: '실전 투자금 배분 저장 완료',
-        message: '선택된 실전 담당 봇들의 투자금 배분 비율이 성공적으로 저장 및 적용되었습니다.',
+        title: '실전 매매 적용 완료',
+        message: '선택하신 3개 봇의 투자금 배분 비율이 정상 저장되었습니다.\n\n[실전 매매] 화면으로 이동하였으며, 배정된 예산으로 실전 거래가 집행됩니다.',
         type: 'success',
       });
       await fetchBots();

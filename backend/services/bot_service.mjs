@@ -85,18 +85,18 @@ export class BotService {
     return db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
   }
 
-  // 1~3개 실전 담당 봇 선택 확정
+  // 3개 실전 담당 봇 선택 확정 (정확히 3개 필수)
   static selectRealTradingBots(selectedBotIds) {
-    if (!Array.isArray(selectedBotIds) || selectedBotIds.length < 1 || selectedBotIds.length > 3) {
-      throw new Error('실전 거래 담당 봇은 최소 1개에서 최대 3개까지 선택해야 합니다.');
+    if (!Array.isArray(selectedBotIds) || selectedBotIds.length !== 3) {
+      throw new Error('실전 거래 담당 봇은 정확히 3개를 선택해야 합니다.');
     }
 
     const db = getDb();
     const settingRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
     const realTotalBudget = Number(settingRow?.value || 10000000);
 
-    const cnt = selectedBotIds.length;
-    const baseRatio = Math.floor((100 / cnt) * 10) / 10;
+    const cnt = 3;
+    const baseRatio = 33.3;
     const nowIso = new Date().toISOString();
 
     db.exec('BEGIN');
@@ -150,10 +150,10 @@ export class BotService {
     }
   }
 
-  // 환경설정에서 선택된 1~3개 실전 봇의 동적 투자금 비율(%) 및 총 예산 저장
+  // 환경설정에서 선택된 3개 실전 봇의 동적 투자금 비율(%) 및 총 예산 저장
   static updateRealBudgetAllocations(realTotalBudget, allocations) {
-    if (!Array.isArray(allocations) || allocations.length === 0) {
-      throw new Error('배분할 실전 봇 목록이 비어 있습니다.');
+    if (!Array.isArray(allocations) || allocations.length !== 3) {
+      throw new Error('실전 거래 담당 봇 3개의 비율을 모두 설정해야 합니다.');
     }
 
     const sum = allocations.reduce((acc, cur) => acc + Number(cur.ratio || 0), 0);

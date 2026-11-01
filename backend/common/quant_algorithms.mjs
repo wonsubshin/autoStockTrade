@@ -135,3 +135,4 @@ export function evaluatePureQuantAlgorithm(bot, stock) {
     }
   }
 }
+

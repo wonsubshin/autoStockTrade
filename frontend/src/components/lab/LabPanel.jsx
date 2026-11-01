@@ -21,22 +21,18 @@ export default function LabPanel({
       .map((b) => b.bot_id);
     if (initSelected.length > 0) {
       setSelectedIds(initSelected);
-    } else if (bots.length >= 2) {
-      // Default initial selection
-      setSelectedIds([bots[0].bot_id, bots[1].bot_id]);
+    } else if (bots.length >= 3) {
+      // Default initial selection: exactly 3 bots
+      setSelectedIds([bots[0].bot_id, bots[1].bot_id, bots[2].bot_id]);
     }
   }, [bots]);
 
   const toggleBotSelection = (botId) => {
     if (selectedIds.includes(botId)) {
-      if (selectedIds.length <= 1) {
-        alert('실전 거래 담당 봇은 최소 1개 이상 선택해야 합니다.');
-        return;
-      }
       setSelectedIds(selectedIds.filter((id) => id !== botId));
     } else {
       if (selectedIds.length >= 3) {
-        alert('실전 거래 담당 봇은 최대 3개까지만 선택할 수 있습니다.');
+        alert('실전 거래 담당 봇은 정확히 3개까지만 선택할 수 있습니다. 기존 선택된 봇을 체크 해제한 후 다시 선택해주세요.');
         return;
       }
       setSelectedIds([...selectedIds, botId]);
@@ -64,17 +60,27 @@ export default function LabPanel({
             </div>
             <p style={{ fontSize: '12.5px', color: '#cbd5e1', marginTop: '6px', lineHeight: 1.6, marginBottom: 0 }}>
               • 10개 봇 모두 <strong>Gemini LLM 호출 없이 100% 순수 퀀트 수식 지표</strong>로 24시간 자율 가상 매매를 수행합니다.<br />
-              • 실시간 누적 수익률을 확인한 후 <strong>1~3개 봇을 체크하여 [실전 담당 봇으로 확정]</strong>하면 실전 매매 및 환경설정 투자금 배분에 즉시 연동됩니다.
+              • 실시간 누적 수익률을 확인한 후 <strong>실전을 담당할 3개의 봇을 체크하고 [실전 담당으로 확정]</strong>을 누르면, <strong>[환경설정] 화면으로 이동하여 비율을 설정</strong>하게 됩니다.
             </p>
           </div>
 
           <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
             <button
               className="btn-action success"
-              style={{ fontWeight: 700 }}
-              onClick={() => onSelectRealBots && onSelectRealBots(selectedIds)}
+              style={{
+                fontWeight: 700,
+                background: selectedIds.length === 3 ? 'linear-gradient(135deg, #10b981, #059669)' : undefined,
+                border: selectedIds.length === 3 ? '1px solid #34d399' : undefined,
+              }}
+              onClick={() => {
+                if (selectedIds.length !== 3) {
+                  alert(`실전 거래 담당 봇은 정확히 3개를 선택해야 합니다. (현재 ${selectedIds.length}개 선택됨)`);
+                  return;
+                }
+                onSelectRealBots && onSelectRealBots(selectedIds);
+              }}
             >
-              ✅ 선택한 {selectedIds.length}개 봇을 실전 담당으로 확정
+              ✅ 선택한 3개 봇 실전 담당 확정 및 설정 이동 ({selectedIds.length}/3)
             </button>
             <button
               className="btn-action"
@@ -99,8 +105,8 @@ export default function LabPanel({
       <div className="board-card" style={{ marginBottom: '24px' }}>
         <div className="card-title-row">
           <div className="card-title">🏆 10대 퀀트 알고리즘 실시간 수익률 리그 리더보드</div>
-          <span style={{ fontSize: '12px', color: '#a78bfa' }}>
-            실전 지정 봇: {selectedIds.length}개 / 최대 3개
+          <span style={{ fontSize: '12px', color: selectedIds.length === 3 ? '#34d399' : '#f59e0b', fontWeight: 600 }}>
+            실전 지정 봇: {selectedIds.length} / 3개 선택됨 {selectedIds.length === 3 ? '✓ 완료' : '(3개 선택 필요)'}
           </span>
         </div>
 
@@ -109,7 +115,7 @@ export default function LabPanel({
             <thead>
               <tr>
                 <th style={{ width: '50px' }}>순위</th>
-                <th style={{ width: '130px' }}>실전 담당 선택</th>
+                <th style={{ width: '140px' }}>실전 담당 선택 (3개)</th>
                 <th style={{ width: '110px' }}>가상 거래 상태</th>
                 <th>봇 이름 / 퀀트 알고리즘</th>
                 <th>가상 평가자산</th>
