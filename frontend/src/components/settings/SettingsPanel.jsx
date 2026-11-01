@@ -28,18 +28,25 @@ export default function SettingsPanel({
     }
   }, [budgetSettings?.realTotalBudget]);
 
+  const selectedBotIdsKey = selectedRealBots.map((b) => b.bot_id).sort().join(',');
+  const prevBotIdsKeyRef = React.useRef('');
+
   React.useEffect(() => {
     if (selectedRealBots.length > 0) {
-      setAllocations(
-        selectedRealBots.map((b) => ({
-          bot_id: b.bot_id,
-          name: b.name,
-          nickname: b.nickname,
-          ratio: Number(b.real_allocation_ratio || (100 / selectedRealBots.length).toFixed(1)),
-        }))
-      );
+      // 5초 주기 bots 폴링 시 슬라이더나 입력값이 초기화되지 않도록 선택된 봇 목록이 바뀔 때만 재설정
+      if (prevBotIdsKeyRef.current !== selectedBotIdsKey) {
+        prevBotIdsKeyRef.current = selectedBotIdsKey;
+        setAllocations(
+          selectedRealBots.map((b) => ({
+            bot_id: b.bot_id,
+            name: b.name,
+            nickname: b.nickname,
+            ratio: Number(b.real_allocation_ratio || (100 / selectedRealBots.length).toFixed(1)),
+          }))
+        );
+      }
     }
-  }, [bots]);
+  }, [selectedBotIdsKey, selectedRealBots]);
 
   const handleRatioChange = (botId, val) => {
     const num = Math.max(0, Math.min(100, Number(val)));

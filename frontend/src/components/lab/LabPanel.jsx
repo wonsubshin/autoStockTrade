@@ -4,6 +4,8 @@ import TradesTable from '../trading/TradesTable';
 
 export default function LabPanel({
   bots = [],
+  selectedIds: parentSelectedIds,
+  setSelectedIds: parentSetSelectedIds,
   virtualPositions = [],
   virtualTrades = [],
   onSelectRealBots,
@@ -13,19 +15,27 @@ export default function LabPanel({
   replayResult = null,
   onRefreshLeaderboard,
 }) {
-  const [selectedIds, setSelectedIds] = useState([]);
+  const [internalSelectedIds, setInternalSelectedIds] = useState([]);
+  const selectedIds = parentSelectedIds ?? internalSelectedIds;
+  const setSelectedIds = parentSetSelectedIds ?? setInternalSelectedIds;
 
+  // parentSelectedIds가 주어지지 않은 독립 실행 시에만 1회 초기화
+  const isInternalInitRef = React.useRef(false);
   useEffect(() => {
-    const initSelected = bots
-      .filter((b) => Number(b.is_real_selected) === 1)
-      .map((b) => b.bot_id);
-    if (initSelected.length > 0) {
-      setSelectedIds(initSelected);
-    } else if (bots.length >= 3) {
-      // Default initial selection: exactly 3 bots
-      setSelectedIds([bots[0].bot_id, bots[1].bot_id, bots[2].bot_id]);
+    if (parentSelectedIds !== undefined) return;
+    if (!isInternalInitRef.current && bots.length > 0) {
+      const initSelected = bots
+        .filter((b) => Number(b.is_real_selected) === 1)
+        .map((b) => b.bot_id);
+      if (initSelected.length === 3) {
+        setInternalSelectedIds(initSelected);
+        isInternalInitRef.current = true;
+      } else if (bots.length >= 3) {
+        setInternalSelectedIds([bots[0].bot_id, bots[1].bot_id, bots[2].bot_id]);
+        isInternalInitRef.current = true;
+      }
     }
-  }, [bots]);
+  }, [bots, parentSelectedIds]);
 
   const toggleBotSelection = (botId) => {
     if (selectedIds.includes(botId)) {

@@ -65,6 +65,8 @@ export default function App() {
   // 5. Trading & Bots State
   const [bots, setBots] = useState([]);
   const [selectedBotId, setSelectedBotId] = useState('');
+  const [arenaSelectedIds, setArenaSelectedIds] = useState([]);
+  const arenaInitRef = useRef(false);
   const [tradingModeFilter, setTradingModeFilter] = useState('AUTO'); // 'AUTO', 'VIRTUAL', 'REAL', 'ALL'
   const [trades, setTrades] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -143,6 +145,19 @@ export default function App() {
       const data = await api.getBots();
       const botList = data.bots || [];
       setBots(botList);
+
+      // 5초 주기 폴링 시에도 사용자가 체크한 3개 봇 상태가 초기화되지 않도록 최초 1회만 동기화
+      if (!arenaInitRef.current && botList.length > 0) {
+        const realSelected = botList.filter((b) => Number(b.is_real_selected) === 1).map((b) => b.bot_id);
+        if (realSelected.length === 3) {
+          setArenaSelectedIds(realSelected);
+          arenaInitRef.current = true;
+        } else if (botList.length >= 3) {
+          setArenaSelectedIds([botList[0].bot_id, botList[1].bot_id, botList[2].bot_id]);
+          arenaInitRef.current = true;
+        }
+      }
+
       if (!selectedBotId && botList.length > 0) {
         const realSelected = botList.find((b) => Number(b.is_real_selected) === 1);
         setSelectedBotId(realSelected ? realSelected.bot_id : botList[0].bot_id);
@@ -374,6 +389,8 @@ export default function App() {
 
     try {
       const res = await api.selectRealBots(selectedBotIds);
+      setArenaSelectedIds(selectedBotIds);
+      arenaInitRef.current = true;
       // 가상 경쟁 아레나에서 확정 후 즉시 환경설정 화면으로 자동 이동
       setActiveMenu('SETTINGS');
       setModalInfo({
@@ -835,6 +852,8 @@ export default function App() {
         {(activeMenu === 'VIRTUAL_ARENA' || activeMenu === 'LAB') && (
           <LabPanel
             bots={bots}
+            selectedIds={arenaSelectedIds}
+            setSelectedIds={setArenaSelectedIds}
             virtualPositions={positions.filter((p) => p.trade_mode === 'VIRTUAL')}
             virtualTrades={trades.filter((t) => t.trade_mode === 'VIRTUAL')}
             onSelectRealBots={handleSelectRealBots}
