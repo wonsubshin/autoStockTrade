@@ -33,7 +33,7 @@ export default function PositionsTable({ positions, onSellPosition, activeTradeM
               <th>평가손익</th>
               <th>수익률</th>
               <th>진입일시</th>
-              <th>청산</th>
+              <th>자동 청산 관리</th>
             </tr>
           </thead>
           <tbody>
@@ -41,8 +41,8 @@ export default function PositionsTable({ positions, onSellPosition, activeTradeM
               <tr>
                 <td colSpan="10" style={{ textAlign: 'center', padding: '28px', color: '#64748b', fontSize: '13px' }}>
                   {activeTradeMode === 'REAL'
-                    ? '💰 현재 실전 보유 중인 종목이 없습니다. (토스증권 실전 계좌 감시 진행 중)'
-                    : '🧪 현재 가상 보유 중인 종목이 없습니다. (키움 시세 감시 진행 중)'}
+                    ? '💰 현재 실전 보유 중인 종목이 없습니다. (토스증권 실전 계좌 자동 감시 진행 중)'
+                    : '🧪 현재 가상 보유 중인 종목이 없습니다. (키움 시세 자동 감시 진행 중)'}
                 </td>
               </tr>
             ) : (
@@ -77,13 +77,9 @@ export default function PositionsTable({ positions, onSellPosition, activeTradeM
                       {new Date(pos.created_at).toLocaleString()}
                     </td>
                     <td>
-                      <button
-                        className="btn-action danger"
-                        style={{ padding: '3px 8px', fontSize: '11px' }}
-                        onClick={() => onSellPosition(pos.id, pos.bot_id)}
-                      >
-                        청산
-                      </button>
+                      <span className="status-pill green" style={{ fontSize: '11px', padding: '3px 8px' }}>
+                        ● 자동 익절/손절 감시중
+                      </span>
                     </td>
                   </tr>
                 );

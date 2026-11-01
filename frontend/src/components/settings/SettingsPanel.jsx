@@ -44,54 +44,109 @@ export default function SettingsPanel({
 
   React.useEffect(() => {
     if (selectedRealBots.length > 0) {
-      // allocations가 비어있거나 선택된 봇 목록이 변경된 경우 재설정
       if (allocations.length === 0 || prevBotIdsKeyRef.current !== selectedBotIdsKey) {
         prevBotIdsKeyRef.current = selectedBotIdsKey;
+        const count = selectedRealBots.length;
+        const base = Math.floor(100 / count);
+        let rem = 100;
+        const initialRatios = selectedRealBots.map((b, idx) => {
+          const defaultRatio = idx === count - 1 ? rem : base;
+          rem -= base;
+          const userRatio = Math.round(Number(b.real_allocation_ratio));
+          return userRatio > 0 ? userRatio : defaultRatio;
+        });
+
+        const curSum = initialRatios.reduce((s, r) => s + r, 0);
+        if (curSum !== 100 && initialRatios.length > 0) {
+          initialRatios[initialRatios.length - 1] += (100 - curSum);
+        }
+
         setAllocations(
-          selectedRealBots.map((b) => ({
+          selectedRealBots.map((b, idx) => ({
             bot_id: b.bot_id,
             name: b.name,
             nickname: b.nickname,
-            ratio: Number(b.real_allocation_ratio || (100 / selectedRealBots.length).toFixed(1)),
+            ratio: initialRatios[idx],
           }))
         );
       }
     }
   }, [selectedBotIdsKey, selectedRealBots, allocations.length]);
 
-  const handleRatioChange = (botId, val) => {
-    const num = Math.max(0, Math.min(100, Number(val)));
-    if (allocations.length === 1) {
-      setAllocations([{ ...allocations[0], ratio: 100 }]);
+  const handleRatioChange = (targetBotId, val) => {
+    const rawVal = parseFloat(val);
+    const targetVal = isNaN(rawVal) ? 0 : Math.max(0, Math.min(100, Math.round(rawVal)));
+
+    if (allocations.length <= 1) {
+      setAllocations(allocations.map((a) => ({ ...a, ratio: 100 })));
       return;
     }
+
     if (allocations.length === 2) {
       setAllocations(
         allocations.map((a) =>
-          a.bot_id === botId ? { ...a, ratio: num } : { ...a, ratio: Number((100 - num).toFixed(1)) }
+          a.bot_id === targetBotId
+            ? { ...a, ratio: targetVal }
+            : { ...a, ratio: 100 - targetVal }
         )
       );
       return;
     }
-    setAllocations(allocations.map((a) => (a.bot_id === botId ? { ...a, ratio: num } : a)));
+
+    // 3개 봇 대상: 조작하지 않은 나머지 두 봇의 비율을 자동 조절하여 항상 합계 100% 엄격 유지
+    const otherBots = allocations.filter((a) => a.bot_id !== targetBotId);
+    const remaining = 100 - targetVal;
+    const otherSum = otherBots.reduce((sum, b) => sum + (Number(b.ratio) || 0), 0);
+
+    let updatedOthers;
+    if (otherSum <= 0) {
+      const split = Math.floor(remaining / otherBots.length);
+      let remAcc = remaining;
+      updatedOthers = otherBots.map((b, idx) => {
+        const r = idx === otherBots.length - 1 ? remAcc : split;
+        remAcc -= r;
+        return { ...b, ratio: Math.max(0, r) };
+      });
+    } else {
+      let remAcc = remaining;
+      updatedOthers = otherBots.map((b, idx) => {
+        if (idx === otherBots.length - 1) {
+          return { ...b, ratio: Math.max(0, remAcc) };
+        }
+        const weight = (Number(b.ratio) || 0) / otherSum;
+        const r = Math.max(0, Math.min(remAcc, Math.round(remaining * weight)));
+        remAcc -= r;
+        return { ...b, ratio: r };
+      });
+    }
+
+    setAllocations(
+      allocations.map((a) => {
+        if (a.bot_id === targetBotId) {
+          return { ...a, ratio: targetVal };
+        }
+        const found = updatedOthers.find((o) => o.bot_id === a.bot_id);
+        return found ? found : a;
+      })
+    );
   };
 
   const handleEqualSplit = () => {
     const n = allocations.length;
     if (!n) return;
-    const base = Math.floor((100 / n) * 10) / 10;
-    let acc = 0;
+    const base = Math.floor(100 / n);
+    let rem = 100;
     setAllocations(
       allocations.map((a, idx) => {
-        const r = idx === n - 1 ? Number((100 - acc).toFixed(1)) : base;
-        acc += r;
+        const r = idx === n - 1 ? rem : base;
+        rem -= base;
         return { ...a, ratio: r };
       })
     );
   };
 
   const totalAllocRatio = allocations.reduce((s, a) => s + Number(a.ratio || 0), 0);
-  const isAllocValid = Math.abs(totalAllocRatio - 100) <= 0.5;
+  const isAllocValid = totalAllocRatio === 100 || Math.abs(totalAllocRatio - 100) <= 0.5;
   const [localPriority, setLocalPriority] = useState(
     purchasePriority && purchasePriority.length === 3
       ? purchasePriority
@@ -325,8 +380,7 @@ export default function SettingsPanel({
             {/* Ratio Validation & Save Bar */}
             <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
               <span className={isAllocValid ? 'num-up' : 'num-down'} style={{ fontWeight: 700, fontSize: '13px' }}>
-                비율 합계: <strong>{totalAllocRatio.toFixed(1)}%</strong> / 100%
-                {!isAllocValid && ' (비율의 합이 100%가 되도록 조정해 주세요)'}
+                비율 합계: <strong>{totalAllocRatio}%</strong> / 100% {isAllocValid ? '✓ (자동 100% 균형 유지)' : '(비율 조정 필요)'}
               </span>
               <button
                 className="btn-primary"

@@ -1036,13 +1036,8 @@ export default function App() {
                 selectedBotId={currentRealBot?.bot_id}
                 setSelectedBotId={setSelectedBotId}
                 selectedBot={currentRealBot}
-                selectedStockCode={selectedStockCode}
-                setSelectedStockCode={setSelectedStockCode}
                 onBotAction={handleBotAction}
                 onRealToggle={handleRealToggle}
-                onManualTradeTest={handleVirtualTradeTest}
-                onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
-                isAiEvaluating={isAiEvaluating}
                 positionsCount={
                   positions.filter(
                     (p) =>

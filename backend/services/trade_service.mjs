@@ -12,7 +12,10 @@ export class TradeService {
     let query = 'SELECT * FROM trades WHERE 1=1';
     const params = [];
 
-    if (mode && mode !== 'ALL') {
+    if (mode === 'REAL') {
+      // 실전 모드는 가상 모의 주문(VORD)이 아닌 실제 계좌에서 집행된 실전 거래 내역만 엄격하게 조회
+      query += " AND trade_mode = 'REAL' AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)";
+    } else if (mode && mode !== 'ALL') {
       query += ' AND trade_mode = ?';
       params.push(mode);
     }

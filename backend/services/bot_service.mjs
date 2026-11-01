@@ -45,19 +45,19 @@ export class BotService {
       const lossTrades = totalTrades - winTrades;
       const winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
 
-      // 2. 실전 매매 거래 통계 집계
+      // 2. 실전 매매 거래 통계 집계 (실제 집행된 실전 거래만 엄격 반영)
       const rStats = db.prepare(`
         SELECT COUNT(*) as total_trades,
                COALESCE(SUM(profit_krw), 0) as realized_profit
         FROM trades
-        WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED'
+        WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED' AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)
       `).get(bot.bot_id);
 
       const rOpen = db.prepare(`
         SELECT COALESCE(SUM(buy_amount), 0) as open_amount,
                COUNT(*) as open_count
         FROM bot_positions
-        WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+        WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN' AND (order_no NOT LIKE 'VORD_%' OR order_no IS NULL)
       `).get(bot.bot_id);
 
       const ratio = bot.allocation_ratio || (Number(bot.real_allocation_ratio) / 100) || 0.1;

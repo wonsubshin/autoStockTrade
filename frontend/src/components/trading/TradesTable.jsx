@@ -33,8 +33,18 @@ export default function TradesTable({ trades, activeTradeMode }) {
           <tbody>
             {filteredTrades.length === 0 ? (
               <tr>
-                <td colSpan="9" style={{ textAlign: 'center', padding: '28px', color: '#64748b', fontSize: '13px' }}>
-                  체결 완료된 거래 내역이 없습니다.
+                <td colSpan="9" style={{ textAlign: 'center', padding: '36px 20px', color: '#94a3b8', fontSize: '13px', lineHeight: 1.6 }}>
+                  {activeTradeMode === 'REAL' ? (
+                    <div>
+                      <div style={{ fontSize: '26px', marginBottom: '8px' }}>💼</div>
+                      <strong style={{ color: '#f1f5f9', fontSize: '14px' }}>토스증권 실전 계좌에서 체결 및 청산 완료된 실현 손익 내역이 없습니다.</strong>
+                      <div style={{ fontSize: '12px', color: '#64748b', marginTop: '6px' }}>
+                        실전 자동매매 봇이 알고리즘 전략 조건에 따라 매수 및 청산을 집행하며, 실제 거래 완료 시 정확한 실현 손익이 이곳에 집계됩니다.
+                      </div>
+                    </div>
+                  ) : (
+                    '체결 완료된 가상 모의 거래 내역이 없습니다.'
+                  )}
                 </td>
               </tr>
             ) : (

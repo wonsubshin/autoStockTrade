@@ -162,7 +162,7 @@ export default function HybridBoard({
               <th>감성점수 / 확신도</th>
               <th style={{ minWidth: '320px' }}>🎙️ LLM 구두형 매매 시황 해설 & 행동 전략</th>
               <th>실행 엔진</th>
-              <th>원클릭 주문</th>
+              <th>자동 집행</th>
             </tr>
           </thead>
           <tbody>
@@ -239,13 +239,18 @@ export default function HybridBoard({
                       </span>
                     </td>
                     <td>
-                      <button
-                        className={`btn-action ${isBuy ? 'success' : 'secondary'}`}
-                        style={{ fontSize: '11px', padding: '3px 8px' }}
-                        onClick={() => onAiEvaluateAndTrade(true, d.symbol)}
+                      <span
+                        className="status-pill green"
+                        style={{
+                          fontSize: '11px',
+                          padding: '3px 8px',
+                          display: 'inline-flex',
+                          alignItems: 'center',
+                          gap: '4px',
+                        }}
                       >
-                        {isBuy ? '⚡ 즉시 집행' : '수동 집행'}
-                      </button>
+                        ● 자동 매매 반영
+                      </span>
                     </td>
                   </tr>
                 );
