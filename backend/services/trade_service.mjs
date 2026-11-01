@@ -331,17 +331,13 @@ export class TradeService {
     throw new Error('side는 BUY 또는 SELL이어야 합니다.');
   }
 
-  static getStats({ mode, period = 'daily' }) {
+  static getStats({ mode = 'REAL', period = 'daily' }) {
     const db = getDb();
     const baseDate = '2026-10-01';
 
-    let sql = "SELECT * FROM trades WHERE status = 'CLOSED' AND buy_date >= ?";
+    // 통계는 가상 매매를 완전히 제외하고 오직 실전 매매(REAL) 데이터만 엄격하게 집계 (모의 주문 VORD 제외)
+    let sql = "SELECT * FROM trades WHERE status = 'CLOSED' AND trade_mode = 'REAL' AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL) AND buy_date >= ? ORDER BY buy_date ASC";
     const params = [baseDate];
-    if (mode && mode !== 'ALL') {
-      sql += ' AND trade_mode = ?';
-      params.push(mode);
-    }
-    sql += ' ORDER BY buy_date ASC';
 
     const trades = db.prepare(sql).all(...params);
 

@@ -18,9 +18,9 @@ export class TradeController {
   }
 
   static getStats(req, res, urlObj) {
-    const mode = urlObj.searchParams.get('mode');
+    const mode = urlObj.searchParams.get('mode') || 'REAL';
     const period = urlObj.searchParams.get('period') || 'daily';
-    const stats = TradeService.getStats({ mode, period });
+    const stats = TradeService.getStats({ mode: 'REAL', period });
     return sendJson(res, 200, stats);
   }
 

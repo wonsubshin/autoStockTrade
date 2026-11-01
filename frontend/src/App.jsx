@@ -87,8 +87,8 @@ export default function App() {
   const [isReplaying, setIsReplaying] = useState(false);
   const [replayResult, setReplayResult] = useState(null);
 
-  // 9. Stats State
-  const [statsModeFilter, setStatsModeFilter] = useState('ALL');
+  // 9. Stats State (실전 매매 전용 통계)
+  const [statsModeFilter, setStatsModeFilter] = useState('REAL');
   const [statsPeriodTab, setStatsPeriodTab] = useState(
     () => localStorage.getItem('kis_stats_tab') || 'daily'
   );
@@ -215,12 +215,12 @@ export default function App() {
     } catch {}
   }, []);
 
-  const fetchStats = useCallback(async (mode = statsModeFilter, period = statsPeriodTab) => {
+  const fetchStats = useCallback(async (mode = 'REAL', period = statsPeriodTab) => {
     try {
-      const data = await api.getStats(mode, period);
+      const data = await api.getStats('REAL', period);
       setStatsData(data);
     } catch {}
-  }, [statsModeFilter, statsPeriodTab]);
+  }, [statsPeriodTab]);
 
   const fetchNews = useCallback(async (page = 1) => {
     try {
@@ -294,7 +294,7 @@ export default function App() {
     }
 
     if (activeMenu === 'STATS') {
-      fetchStats(statsModeFilter, statsPeriodTab);
+      fetchStats('REAL', statsPeriodTab);
     }
 
     if (activeMenu === 'NEWS') {
@@ -1092,7 +1092,7 @@ export default function App() {
         )}
 
         {/* ========================================================
-            MENU 3: 통계
+            MENU 3: 통계 (실전 매매 전용)
             ======================================================== */}
         {activeMenu === 'STATS' && (
           <StatsPanel
@@ -1102,8 +1102,6 @@ export default function App() {
               setStatsPeriodTab(tab);
               localStorage.setItem('kis_stats_tab', tab);
             }}
-            statsModeFilter={statsModeFilter}
-            setStatsModeFilter={setStatsModeFilter}
           />
         )}
 

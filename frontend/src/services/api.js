@@ -108,8 +108,8 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ seedCapital }),
     }),
-  getStats: (mode = 'ALL', period = 'daily') =>
-    request(`/api/stats?mode=${mode}&period=${period}`),
+  getStats: (mode = 'REAL', period = 'daily') =>
+    request(`/api/stats?mode=REAL&period=${period}`),
 
   // Market & Account
   getCandidates: () => request('/api/stocks/candidates'),

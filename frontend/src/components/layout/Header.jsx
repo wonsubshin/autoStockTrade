@@ -128,7 +128,7 @@ export default function Header({
           onClick={() => setActiveMenu('STATS')}
         >
           <span>📊</span>
-          <span>수익/통계</span>
+          <span>실전 수익/통계</span>
         </div>
         <div
           className={`nav-item ${activeMenu === 'NEWS' ? 'active' : ''}`}
