@@ -51,6 +51,9 @@ export class Router {
       if (pathname === '/api/budget/settings' && method === 'POST') {
         return await SettingsController.postBudgetSettings(req, res);
       }
+      if (pathname === '/api/budget/real-allocation' && method === 'POST') {
+        return await SettingsController.postRealAllocation(req, res);
+      }
       if (pathname === '/api/backup/export' && method === 'GET') {
         return SettingsController.exportBackup(req, res);
       }
@@ -61,6 +64,13 @@ export class Router {
       // 3. Bots
       if (pathname === '/api/bots' && method === 'GET') {
         return BotController.getBots(req, res);
+      }
+      if (pathname === '/api/bots/select-real' && method === 'POST') {
+        return await BotController.postSelectReal(req, res);
+      }
+      if (pathname.match(/^\/api\/bots\/([^/]+)\/real-toggle$/) && method === 'POST') {
+        const botId = pathname.split('/')[3];
+        return await BotController.postRealToggle(req, res, botId);
       }
       if (pathname.match(/^\/api\/bots\/([^/]+)\/action$/) && method === 'POST') {
         const botId = pathname.split('/')[3];

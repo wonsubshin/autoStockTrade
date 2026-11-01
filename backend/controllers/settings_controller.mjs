@@ -2,6 +2,7 @@ import fs from 'node:fs';
 import { getDb } from '../db/index.mjs';
 import { BROKER_CONFIG_PATH } from '../config/env.mjs';
 import { BudgetService } from '../services/budget_service.mjs';
+import { BotService } from '../services/bot_service.mjs';
 import { sendJson, sendError, parseJsonBody } from '../routes/router_helpers.mjs';
 
 export class SettingsController {
@@ -169,6 +170,20 @@ export class SettingsController {
     }
 
     return sendJson(res, 200, { success: true, message: '데이터가 성공적으로 복원되었습니다.' });
+  }
+
+  static async postRealAllocation(req, res) {
+    try {
+      const { realTotalBudget, allocations } = await parseJsonBody(req);
+      const bots = BotService.updateRealBudgetAllocations(realTotalBudget, allocations);
+      return sendJson(res, 200, {
+        success: true,
+        message: '선택된 실전 담당 봇들의 투자금 배분 비율이 성공적으로 저장되었습니다.',
+        bots,
+      });
+    } catch (err) {
+      return sendError(res, 400, err.message);
+    }
   }
 }
 

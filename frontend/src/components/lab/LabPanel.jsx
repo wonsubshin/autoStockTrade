@@ -1,151 +1,197 @@
-import React from 'react';
+import React, { useState, useEffect } from 'react';
+import PositionsTable from '../trading/PositionsTable';
+import TradesTable from '../trading/TradesTable';
 
 export default function LabPanel({
-  leaderboard,
+  bots = [],
+  virtualPositions = [],
+  virtualTrades = [],
+  onSelectRealBots,
   onFastReplay,
-  isReplaying,
-  replayResult,
-  onPromoteBot,
   onResetVirtualAll,
+  isReplaying = false,
+  replayResult = null,
   onRefreshLeaderboard,
 }) {
+  const [selectedIds, setSelectedIds] = useState([]);
+
+  useEffect(() => {
+    const initSelected = bots
+      .filter((b) => Number(b.is_real_selected) === 1)
+      .map((b) => b.bot_id);
+    if (initSelected.length > 0) {
+      setSelectedIds(initSelected);
+    } else if (bots.length >= 2) {
+      // Default initial selection
+      setSelectedIds([bots[0].bot_id, bots[1].bot_id]);
+    }
+  }, [bots]);
+
+  const toggleBotSelection = (botId) => {
+    if (selectedIds.includes(botId)) {
+      if (selectedIds.length <= 1) {
+        alert('실전 거래 담당 봇은 최소 1개 이상 선택해야 합니다.');
+        return;
+      }
+      setSelectedIds(selectedIds.filter((id) => id !== botId));
+    } else {
+      if (selectedIds.length >= 3) {
+        alert('실전 거래 담당 봇은 최대 3개까지만 선택할 수 있습니다.');
+        return;
+      }
+      setSelectedIds([...selectedIds, botId]);
+    }
+  };
+
+  const rankedBots = [...bots].sort(
+    (a, b) => Number(b.virtual_return_pct || 0) - Number(a.virtual_return_pct || 0)
+  );
+
   return (
-    <div>
-      <div className="section-header" style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '10px', flexWrap: 'wrap' }}>
-          <div className="section-title" style={{ margin: 0 }}>🧪 3대 퀀트 알고리즘 실시간 리더보드</div>
-          <span className="badge-live-pulse">
-            <span className="mode-pulse-dot virtual" style={{ width: '7px', height: '7px' }}></span>
-            실시간 집계 중 (5초 자동 갱신)
+    <div className="virtual-arena-wrap">
+      {/* Top Banner Card */}
+      <div className="board-card" style={{ borderColor: '#8b5cf6', background: 'linear-gradient(135deg, #101526, #1e1b4b)', marginBottom: '20px' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '14px' }}>
+          <div>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
+              <h2 style={{ fontSize: '18px', fontWeight: 800, margin: 0, color: '#f8fafc' }}>
+                ⚡ 10대 퀀트 봇 상시 가상 경쟁 아레나 (Pure Algorithm Only)
+              </h2>
+              <span className="badge-live-pulse">
+                <span className="mode-pulse-dot virtual" style={{ width: '7px', height: '7px' }}></span>
+                24시간 상시 가상 경쟁
+              </span>
+            </div>
+            <p style={{ fontSize: '12.5px', color: '#cbd5e1', marginTop: '6px', lineHeight: 1.6, marginBottom: 0 }}>
+              • 10개 봇 모두 <strong>Gemini LLM 호출 없이 100% 순수 퀀트 수식 지표</strong>로 24시간 자율 가상 매매를 수행합니다.<br />
+              • 실시간 누적 수익률을 확인한 후 <strong>1~3개 봇을 체크하여 [실전 담당 봇으로 확정]</strong>하면 실전 매매 및 환경설정 투자금 배분에 즉시 연동됩니다.
+            </p>
+          </div>
+
+          <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
+            <button
+              className="btn-action success"
+              style={{ fontWeight: 700 }}
+              onClick={() => onSelectRealBots && onSelectRealBots(selectedIds)}
+            >
+              ✅ 선택한 {selectedIds.length}개 봇을 실전 담당으로 확정
+            </button>
+            <button
+              className="btn-action"
+              onClick={onFastReplay}
+              disabled={isReplaying}
+            >
+              {isReplaying ? '⚡ 계산 중...' : '⚡ 30일 고속 시뮬레이션'}
+            </button>
+            {onRefreshLeaderboard && (
+              <button className="btn-action" onClick={onRefreshLeaderboard}>
+                🔄 새로고침
+              </button>
+            )}
+            <button className="btn-action danger" onClick={onResetVirtualAll}>
+              ⚠️ 가상 전체 초기화
+            </button>
+          </div>
+        </div>
+      </div>
+
+      {/* 10 Bots Arena Table */}
+      <div className="board-card" style={{ marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🏆 10대 퀀트 알고리즘 실시간 수익률 리그 리더보드</div>
+          <span style={{ fontSize: '12px', color: '#a78bfa' }}>
+            실전 지정 봇: {selectedIds.length}개 / 최대 3개
           </span>
         </div>
 
-        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap' }}>
-          {onRefreshLeaderboard && (
-            <button className="btn-action" onClick={onRefreshLeaderboard}>
-              🔄 랭킹 즉시 새로고침
-            </button>
-          )}
-          {onResetVirtualAll && (
-            <button className="btn-action danger" onClick={onResetVirtualAll}>
-              ⚠️ 가상 전체 리셋 및 새로 시작
-            </button>
-          )}
-          <button
-            className="btn-action success"
-            onClick={onFastReplay}
-            disabled={isReplaying}
-          >
-            {isReplaying ? '⚡ 30일 시뮬레이션 계산 중...' : '⚡ 최근 30일 데이터 즉시 시뮬레이션'}
-          </button>
+        <div className="table-wrapper">
+          <table className="custom-table">
+            <thead>
+              <tr>
+                <th style={{ width: '50px' }}>순위</th>
+                <th style={{ width: '130px' }}>실전 담당 선택</th>
+                <th style={{ width: '110px' }}>가상 거래 상태</th>
+                <th>봇 이름 / 퀀트 알고리즘</th>
+                <th>가상 평가자산</th>
+                <th>누적 수익률</th>
+                <th>실현 손익금</th>
+                <th>승률 (거래수)</th>
+                <th>익절 / 손절</th>
+              </tr>
+            </thead>
+            <tbody>
+              {rankedBots.map((bot, idx) => {
+                const isChecked = selectedIds.includes(bot.bot_id);
+                const ret = Number(bot.virtual_return_pct || 0);
+                const pKrw = Number(bot.virtual_profit_krw || 0);
+                const isTop1 = idx === 0;
+
+                return (
+                  <tr
+                    key={bot.bot_id}
+                    style={{
+                      background: isChecked ? 'rgba(59, 130, 246, 0.08)' : undefined,
+                      borderLeft: isChecked ? '3px solid #3b82f6' : '3px solid transparent',
+                    }}
+                  >
+                    <td>
+                      <strong style={{ color: isTop1 ? '#fbbf24' : '#94a3b8' }}>
+                        {isTop1 ? '👑 1' : `#${idx + 1}`}
+                      </strong>
+                    </td>
+                    <td>
+                      <label style={{ display: 'inline-flex', alignItems: 'center', gap: '6px', cursor: 'pointer', fontSize: '12px' }}>
+                        <input
+                          type="checkbox"
+                          checked={isChecked}
+                          onChange={() => toggleBotSelection(bot.bot_id)}
+                          style={{ cursor: 'pointer', accentColor: '#3b82f6' }}
+                        />
+                        <span style={{ color: isChecked ? '#60a5fa' : '#94a3b8', fontWeight: isChecked ? 700 : 400 }}>
+                          {isChecked ? '★ 실전 담당' : '선택'}
+                        </span>
+                      </label>
+                    </td>
+                    <td>
+                      <span className="status-pill green" style={{ fontSize: '11px', padding: '2px 7px' }}>
+                        ● 상시 거래중
+                      </span>
+                    </td>
+                    <td>
+                      <div style={{ fontWeight: 700, color: '#f8fafc' }}>
+                        {bot.name} <small style={{ color: '#818cf8' }}>({bot.nickname})</small>
+                      </div>
+                      <div style={{ fontSize: '11px', color: '#64748b', marginTop: '2px' }}>
+                        {bot.description}
+                      </div>
+                    </td>
+                    <td style={{ fontWeight: 600 }}>
+                      {Number(bot.virtual_total_assets || 10000000).toLocaleString()}원
+                    </td>
+                    <td className={ret >= 0 ? 'num-up' : 'num-down'} style={{ fontWeight: 700, fontSize: '13px' }}>
+                      {ret >= 0 ? `+${ret.toFixed(2)}%` : `${ret.toFixed(2)}%`}
+                    </td>
+                    <td className={pKrw >= 0 ? 'num-up' : 'num-down'}>
+                      {pKrw >= 0 ? `+${pKrw.toLocaleString()}원` : `${pKrw.toLocaleString()}원`}
+                    </td>
+                    <td>
+                      <span style={{ fontWeight: 600 }}>{bot.virtual_win_rate || 0}%</span>
+                      <small style={{ color: '#94a3b8', marginLeft: '4px' }}>({bot.virtual_trade_count || 0}건)</small>
+                    </td>
+                    <td style={{ fontSize: '11.5px', color: '#cbd5e1' }}>
+                      <span className="num-up">+{bot.take_profit_pct}%</span> / <span className="num-down">-{Math.abs(bot.stop_loss_pct)}%</span>
+                    </td>
+                  </tr>
+                );
+              })}
+            </tbody>
+          </table>
         </div>
-      </div>
-
-      {/* Guide Banner */}
-      <div
-        style={{
-          background: 'rgba(30, 41, 59, 0.6)',
-          border: '1px solid rgba(59, 130, 246, 0.25)',
-          borderRadius: '10px',
-          padding: '12px 16px',
-          marginBottom: '20px',
-          fontSize: '12px',
-          color: '#94a3b8',
-          lineHeight: '1.6',
-        }}
-      >
-        💡 <strong>실시간 랭킹 집계 안내</strong>: 가상 리셋 시 지금까지 체결된 모든 거래 기록이 완전히 삭제되며 0건부터 깨끗하게 다시 시작됩니다. 3대 자율 봇이 실시간 시세와 구매 우선순위(국내 온주 ➔ 미국 온주 ➔ 미국 소수점)에 따라 탐색 및 매매를 진행함에 따라, 승률·수익률·손익비 랭킹이 <strong>5초마다 실시간으로 자동 재집계</strong>되어 순위가 변동됩니다.
-      </div>
-
-      {/* Top 3 Battle Scorecards */}
-      <div className="leaderboard-grid">
-        {leaderboard.map((item) => {
-          const isRank1 = item.rank === 1;
-          const isRank2 = item.rank === 2;
-          const hasTrades = item.totalTrades > 0;
-          const isProfit = item.cumulativeReturnPct > 0;
-          const isLoss = item.cumulativeReturnPct < 0;
-
-          return (
-            <div key={item.botId} className={`leader-card ${isRank1 ? 'rank-1' : ''}`}>
-              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                <div className={`rank-badge ${isRank1 ? 'gold' : isRank2 ? 'silver' : 'bronze'}`} style={{ margin: 0 }}>
-                  {isRank1 ? '👑 1위 (최우수)' : isRank2 ? '🥈 2위' : '🥉 3위'}
-                </div>
-                <span
-                  style={{
-                    fontSize: '11px',
-                    padding: '2px 6px',
-                    borderRadius: '4px',
-                    background: item.isRunning ? 'rgba(16, 185, 129, 0.15)' : 'rgba(148, 163, 184, 0.15)',
-                    color: item.isRunning ? '#34d399' : '#94a3b8',
-                    border: item.isRunning ? '1px solid rgba(16, 185, 129, 0.3)' : '1px solid rgba(148, 163, 184, 0.3)',
-                  }}
-                >
-                  {item.isRunning ? '🟢 실시간 가동' : '⚪ 정지'}
-                </span>
-              </div>
-
-              <div className="leader-name">{item.nickname || item.name}</div>
-              <div className="leader-sub">{item.strategyType}</div>
-
-              <div className="leader-stats">
-                <div className="lstat-box">
-                  <div className="lstat-label">누적 수익률</div>
-                  <div className={`lstat-val ${isProfit ? 'num-up' : isLoss ? 'num-down' : ''}`}>
-                    {isProfit ? '+' : ''}{item.cumulativeReturnPct}%
-                  </div>
-                </div>
-                <div className="lstat-box">
-                  <div className="lstat-label">승률 (Win Rate)</div>
-                  <div className={`lstat-val ${hasTrades ? 'num-up' : ''}`}>
-                    {hasTrades ? `${item.winRate}%` : '-'}
-                  </div>
-                </div>
-                <div className="lstat-box">
-                  <div className="lstat-label">손익비 (Profit Factor)</div>
-                  <div className="lstat-val">{hasTrades ? item.profitFactor : '-'}</div>
-                </div>
-                <div className="lstat-box">
-                  <div className="lstat-label">최대 낙폭 (MDD)</div>
-                  <div className={`lstat-val ${item.mddPct > 0 ? 'num-down' : ''}`}>
-                    {item.mddPct > 0 ? `-${item.mddPct}%` : '0%'}
-                  </div>
-                </div>
-                <div className="lstat-box">
-                  <div className="lstat-label">샤프 지수 (Sharpe)</div>
-                  <div className="lstat-val">{hasTrades ? item.sharpeRatio : '-'}</div>
-                </div>
-                <div className="lstat-box">
-                  <div className="lstat-label">체결 건수 (보유)</div>
-                  <div className="lstat-val" style={{ fontSize: '13px' }}>
-                    {hasTrades ? `${item.totalTrades}회` : '0회'}
-                    {item.openPositionsCount > 0 ? ` (${item.openPositionsCount}건 보유)` : ''}
-                  </div>
-                </div>
-              </div>
-
-              <div style={{ fontSize: '11px', color: '#64748b', marginBottom: '12px', lineHeight: 1.4 }}>
-                상태: {item.lastStatusMsg || '실시간 전략 감시 중'}
-              </div>
-
-              <div style={{ marginTop: 'auto', paddingTop: '14px', borderTop: '1px solid var(--border-color)', display: 'flex', gap: '8px' }}>
-                <button
-                  className="btn-action success"
-                  style={{ flex: 1, justifyContent: 'center' }}
-                  onClick={() => onPromoteBot(item.botId)}
-                >
-                  🚀 실전 매매 모드로 승격
-                </button>
-              </div>
-            </div>
-          );
-        })}
       </div>
 
       {/* Fast Replay Result Box */}
       {replayResult && (
-        <div className="board-card" style={{ borderColor: '#3b82f6', background: 'linear-gradient(135deg, #131b2e, #1e293b)', marginTop: '20px' }}>
+        <div className="board-card" style={{ borderColor: '#3b82f6', background: 'linear-gradient(135deg, #131b2e, #1e293b)', marginBottom: '24px' }}>
           <div className="card-title-row">
             <div className="card-title">⚡ 30영업일 고속 시뮬레이션 성과 리포트</div>
             <span style={{ fontSize: '12px', color: '#60a5fa' }}>평가시각: {new Date(replayResult.evaluatedAt).toLocaleTimeString()}</span>
@@ -153,34 +199,20 @@ export default function LabPanel({
           <div style={{ padding: '14px', backgroundColor: 'rgba(59, 130, 246, 0.1)', borderRadius: '8px', marginBottom: '16px', fontWeight: 600, color: '#93c5fd' }}>
             {replayResult.recommendation}
           </div>
-          <div className="table-wrapper">
-            <table className="custom-table">
-              <thead>
-                <tr>
-                  <th>순위</th>
-                  <th>알고리즘 명</th>
-                  <th>시뮬레이션 누적 수익률</th>
-                  <th>실현 손익금</th>
-                  <th>승률</th>
-                  <th>체결 건수</th>
-                </tr>
-              </thead>
-              <tbody>
-                {replayResult.rankings?.map((r, i) => (
-                  <tr key={i}>
-                    <td>{i + 1}위</td>
-                    <td style={{ fontWeight: 600 }}>{r.botName}</td>
-                    <td className={r.returnPct > 0 ? 'num-up' : 'num-down'}>{r.returnPct > 0 ? '+' : ''}{r.returnPct}%</td>
-                    <td className={r.profitKrw > 0 ? 'num-up' : 'num-down'}>{r.profitKrw > 0 ? '+' : ''}{r.profitKrw.toLocaleString()}원</td>
-                    <td className="num-up">{r.winRate}%</td>
-                    <td>{r.tradesCount}건</td>
-                  </tr>
-                ))}
-              </tbody>
-            </table>
-          </div>
         </div>
       )}
+
+      {/* Real-time Virtual Positions Table */}
+      <PositionsTable
+        positions={virtualPositions}
+        activeTradeMode="VIRTUAL"
+      />
+
+      {/* Completed Virtual Trades Table */}
+      <TradesTable
+        trades={virtualTrades}
+        activeTradeMode="VIRTUAL"
+      />
     </div>
   );
 }

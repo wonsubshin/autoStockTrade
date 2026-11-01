@@ -48,9 +48,24 @@ export const api = {
       method: 'POST',
       body: JSON.stringify(payload),
     }),
+  saveRealAllocation: (realTotalBudget, allocations) =>
+    request('/api/budget/real-allocation', {
+      method: 'POST',
+      body: JSON.stringify({ realTotalBudget, allocations }),
+    }),
 
   // Bots
   getBots: () => request('/api/bots'),
+  selectRealBots: (selectedBotIds) =>
+    request('/api/bots/select-real', {
+      method: 'POST',
+      body: JSON.stringify({ selectedBotIds }),
+    }),
+  realToggleBot: (botId, is_real_running) =>
+    request(`/api/bots/${botId}/real-toggle`, {
+      method: 'POST',
+      body: JSON.stringify({ is_real_running }),
+    }),
   botAction: (botId, action, extra = {}) =>
     request(`/api/bots/${botId}/action`, {
       method: 'POST',

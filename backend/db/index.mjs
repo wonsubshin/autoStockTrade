@@ -45,6 +45,15 @@ export function initDatabase() {
       take_profit_pct REAL,
       config_json TEXT,
       last_status_msg TEXT,
+      is_virtual_running INTEGER DEFAULT 1,
+      virtual_initial_capital INTEGER DEFAULT 10000000,
+      virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중',
+      is_real_selected INTEGER DEFAULT 0,
+      is_real_running INTEGER DEFAULT 0,
+      real_allocation_ratio REAL DEFAULT 0,
+      real_allocated_capital INTEGER DEFAULT 0,
+      real_available_krw INTEGER DEFAULT 0,
+      real_status_msg TEXT DEFAULT '실전 대기 중',
       updated_at TEXT
     );
 
@@ -159,6 +168,7 @@ export function initDatabase() {
   `);
 
   seedInitialData();
+  migrateAndSeedTenBots(db);
   console.log('[DB] SQLite 스키마 및 초기 데이터 설정 완료');
   return db;
 }
@@ -173,6 +183,7 @@ export function seedInitialData() {
     { key: 'virtual_seed_money', value: '10000000' },
     { key: 'virtual_total_budget', value: '30000000' },
     { key: 'real_total_budget', value: '10000000' },
+    { key: 'purchase_priority', value: JSON.stringify(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']) },
     { key: 'stats_start_date', value: '2026-10-01' },
     { key: 'market_regime', value: 'NORMAL' },
   ];
@@ -185,76 +196,150 @@ export function seedInitialData() {
   for (const s of initSettings) {
     stmtSetting.run(s.key, s.value, nowIso);
   }
+}
 
-  // 3대 매매 봇 초기 등록
-  const initBots = [
+export function migrateAndSeedTenBots(database = db) {
+  const alterColumns = [
+    `ALTER TABLE bots ADD COLUMN is_virtual_running INTEGER DEFAULT 1`,
+    `ALTER TABLE bots ADD COLUMN virtual_initial_capital INTEGER DEFAULT 10000000`,
+    `ALTER TABLE bots ADD COLUMN virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중'`,
+    `ALTER TABLE bots ADD COLUMN is_real_selected INTEGER DEFAULT 0`,
+    `ALTER TABLE bots ADD COLUMN is_real_running INTEGER DEFAULT 0`,
+    `ALTER TABLE bots ADD COLUMN real_allocation_ratio REAL DEFAULT 0`,
+    `ALTER TABLE bots ADD COLUMN real_allocated_capital INTEGER DEFAULT 0`,
+    `ALTER TABLE bots ADD COLUMN real_available_krw INTEGER DEFAULT 0`,
+    `ALTER TABLE bots ADD COLUMN real_status_msg TEXT DEFAULT '실전 대기 중'`
+  ];
+  for (const sql of alterColumns) {
+    try { database.exec(sql); } catch (_) {}
+  }
+
+  const TEN_QUANT_BOTS = [
     {
-      bot_id: 'bot_kr_volatility_breakout',
-      name: '래리 윌리엄스 변동성 돌파 봇',
-      nickname: '변동성 돌파봇',
+      bot_id: 'bot_01_volatility_breakout',
+      name: '래리 윌리엄스 변동성 돌파',
+      nickname: 'VOL-BREAK #1',
       strategy_type: 'VOLATILITY_BREAKOUT',
-      trade_mode: 'VIRTUAL',
-      description: '당일 거래대금 상위 30위 중 전일 변동폭(고가-저가)*0.5+시가 돌파 & 5분봉 거래량 200% 급증 시 매수, 15:15 시간청산 또는 +4% 익절/-2% 손절',
-      allocation_ratio: 0.33,
-      allocated_capital: 10000000,
-      virtual_krw: 10000000,
-      is_running: 1,
-      min_volume_krw: 10000000000,
-      stop_loss_pct: 2.0,
-      take_profit_pct: 4.0,
-      config_json: JSON.stringify({ k: 0.5, volume_surge_pct: 200, close_time: '15:15' }),
-      last_status_msg: '대기 중 (장 개장 및 거래대금 상위 종목 감시)',
+      description: '전일 변동폭(K=0.5) 돌파 및 거래량 200% 급증 시 추격 매수, 당일 종가 청산',
+      stop_loss_pct: 2.0, take_profit_pct: 4.0,
+      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 50, real_allocated_capital: 5000000, real_available_krw: 5000000,
+      config_json: JSON.stringify({ k_factor: 0.5, vol_surge_ratio: 2.0 })
     },
     {
-      bot_id: 'bot_kr_inst_dual_momentum',
-      name: '외인·기관 양매수 듀얼 모멘텀 봇',
-      nickname: '수급 모멘텀봇',
-      strategy_type: 'INST_DUAL_MOMENTUM',
-      trade_mode: 'VIRTUAL',
-      description: '20거래일 수익률 상위 섹터 중 3거래일 연속 외인·기관 합산 순매수 유입 & 20일선 정배열 매수, 5일선 이탈 또는 +7% 익절/트레일링 -3% 청산',
-      allocation_ratio: 0.33,
-      allocated_capital: 10000000,
-      virtual_krw: 10000000,
-      is_running: 1,
-      min_volume_krw: 10000000000,
-      stop_loss_pct: 3.0,
-      take_profit_pct: 7.0,
-      config_json: JSON.stringify({ consecutive_days: 3, ma_period: 20, trailing_stop_pct: 3.0 }),
-      last_status_msg: '대기 중 (외인/기관 수급 연속 유입 종목 감시)',
+      bot_id: 'bot_02_inst_dual_momentum',
+      name: '외인·기관 양매수 듀얼 모멘텀',
+      nickname: 'INST-DUAL #2',
+      strategy_type: 'DUAL_MOMENTUM',
+      description: '20일 수익률 상위 + 외인/기관 동반 순매수 + 20일선 정배열 추세 매매',
+      stop_loss_pct: 3.0, take_profit_pct: 7.0,
+      is_real_selected: 1, is_real_running: 1, real_allocation_ratio: 50, real_allocated_capital: 5000000, real_available_krw: 5000000,
+      config_json: JSON.stringify({ lookback_days: 20, min_inst_streak: 3 })
     },
     {
-      bot_id: 'bot_kr_bb_rsi_reversion',
-      name: '볼린저 밴드 하단 + RSI 평균회귀 봇',
-      nickname: 'RSI 평균회귀봇',
-      strategy_type: 'BB_RSI_REVERSION',
-      trade_mode: 'VIRTUAL',
-      description: '우량 대형주 중 20일 볼린저밴드 하단(-2σ) 이탈 후 재진입 양봉 & RSI<=30 탈출 시 매수, 20일선/상단선 도달 시 +3.5% 익절/-2.5% 손절',
-      allocation_ratio: 0.34,
-      allocated_capital: 10000000,
-      virtual_krw: 10000000,
-      is_running: 1,
-      min_volume_krw: 10000000000,
-      stop_loss_pct: 2.5,
-      take_profit_pct: 3.5,
-      config_json: JSON.stringify({ bb_period: 20, bb_std: 2, rsi_period: 14, rsi_oversold: 30 }),
-      last_status_msg: '대기 중 (과매도 지표 반등 종목 감시)',
+      bot_id: 'bot_03_bb_rsi_reversion',
+      name: '볼린저 밴드 + RSI 평균회귀',
+      nickname: 'BB-RSI #3',
+      strategy_type: 'MEAN_REVERSION',
+      description: '볼린저 하단(-2σ) 이탈 후 양봉 복귀 및 RSI(14) 30 이하 과매도 탈출 매수',
+      stop_loss_pct: 2.5, take_profit_pct: 3.5,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ bb_period: 20, bb_std: 2.0, rsi_low: 30 })
     },
+    {
+      bot_id: 'bot_04_macd_volume_surge',
+      name: 'MACD 골든크로스 거래량 폭발',
+      nickname: 'MACD-SURGE #4',
+      strategy_type: 'MACD_VOLUME',
+      description: 'MACD(12,26,9) 시그널 상향 돌파 및 평균 거래량 300% 폭발 시 진입',
+      stop_loss_pct: 2.5, take_profit_pct: 5.5,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ fast: 12, slow: 26, signal: 9, vol_mult: 3.0 })
+    },
+    {
+      bot_id: 'bot_05_supertrend_atr',
+      name: '슈퍼트렌드 ATR 추세추종',
+      nickname: 'SUPER-ATR #5',
+      strategy_type: 'SUPERTREND',
+      description: 'ATR(10)*3 변동성 채널 상향 돌파 및 ADX 강세 추세 확인 시 진입',
+      stop_loss_pct: 3.0, take_profit_pct: 8.0,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ atr_period: 10, multiplier: 3.0, min_adx: 25 })
+    },
+    {
+      bot_id: 'bot_06_envelope_sniper',
+      name: '엔벨로프 낙폭과대 스나이퍼',
+      nickname: 'ENV-SNIPER #6',
+      strategy_type: 'ENVELOPE_REVERSAL',
+      description: '20일 이평선 대비 -7% 엔벨로프 하단선 터치 후 즉각 기술적 반등 노림',
+      stop_loss_pct: 2.0, take_profit_pct: 3.0,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ ma_period: 20, envelope_pct: -7.0 })
+    },
+    {
+      bot_id: 'bot_07_ichimoku_cloud',
+      name: '일목균형표 구름대 돌파',
+      nickname: 'ICHIMOKU #7',
+      strategy_type: 'ICHIMOKU_BREAKOUT',
+      description: '전환선/기준선 호전 및 선행스팬 양운(Cloud) 상향 돌파 시 중기 추세 진입',
+      stop_loss_pct: 2.8, take_profit_pct: 6.5,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ tenkan: 9, kijun: 26, senkou: 52 })
+    },
+    {
+      bot_id: 'bot_08_stoch_vwap_scalp',
+      name: '스토캐스틱 RSI + VWAP 초단타',
+      nickname: 'VWAP-SCALP #8',
+      strategy_type: 'VWAP_STOCH_SCALP',
+      description: '당일 VWAP 상단 지지 + Stoch RSI 과매도 골든크로스 결합 고속 스캘핑',
+      stop_loss_pct: 1.2, take_profit_pct: 2.5,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ stoch_k: 14, stoch_d: 3, vwap_margin: 0.002 })
+    },
+    {
+      bot_id: 'bot_09_keltner_squeeze',
+      name: '켈트너 채널 스퀴즈 폭발',
+      nickname: 'KELTNER #9',
+      strategy_type: 'KELTNER_SQUEEZE',
+      description: '볼린저밴드가 켈트너 채널 내 수축 후 에너지 응축 상단 돌파 시 매수',
+      stop_loss_pct: 2.5, take_profit_pct: 6.0,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ ema_period: 20, atr_mult: 1.5 })
+    },
+    {
+      bot_id: 'bot_10_ma_pullback_swing',
+      name: '20/60일 정배열 눌림목 스윙',
+      nickname: 'PULLBACK #10',
+      strategy_type: 'MA_PULLBACK',
+      description: '20일/60일선 정배열 상승 추세 중 20일선 지지선 눌림목 반등 매수',
+      stop_loss_pct: 2.2, take_profit_pct: 5.0,
+      is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
+      config_json: JSON.stringify({ fast_ma: 20, slow_ma: 60, pullback_tolerance: 0.8 })
+    }
   ];
 
-  const stmtBot = db.prepare(`
+  const upsertBot = database.prepare(`
     INSERT INTO bots (
-      bot_id, name, nickname, strategy_type, trade_mode, description,
-      allocation_ratio, allocated_capital, virtual_krw, is_running,
-      min_volume_krw, stop_loss_pct, take_profit_pct, config_json, last_status_msg, updated_at
-    ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
-    ON CONFLICT (bot_id) DO NOTHING
+      bot_id, name, nickname, strategy_type, description,
+      is_virtual_running, virtual_initial_capital, virtual_krw,
+      is_real_selected, is_real_running, real_allocation_ratio, real_allocated_capital, real_available_krw,
+      stop_loss_pct, take_profit_pct, config_json, trade_mode, is_running
+    ) VALUES (?, ?, ?, ?, ?, 1, 10000000, 10000000, ?, ?, ?, ?, ?, ?, ?, ?, 'VIRTUAL', 1)
+    ON CONFLICT(bot_id) DO UPDATE SET
+      name = excluded.name,
+      nickname = excluded.nickname,
+      strategy_type = excluded.strategy_type,
+      description = excluded.description,
+      is_virtual_running = 1,
+      stop_loss_pct = excluded.stop_loss_pct,
+      take_profit_pct = excluded.take_profit_pct,
+      config_json = excluded.config_json
   `);
 
-  for (const b of initBots) {
-    stmtBot.run(
-      b.bot_id, b.name, b.nickname, b.strategy_type, b.trade_mode, b.description,
-      b.allocation_ratio, b.allocated_capital, b.virtual_krw, b.is_running,
-      b.min_volume_krw, b.stop_loss_pct, b.take_profit_pct, b.config_json, b.last_status_msg, nowIso
+  for (const b of TEN_QUANT_BOTS) {
+    upsertBot.run(
+      b.bot_id, b.name, b.nickname, b.strategy_type, b.description,
+      b.is_real_selected, b.is_real_running, b.real_allocation_ratio, b.real_allocated_capital, b.real_available_krw,
+      b.stop_loss_pct, b.take_profit_pct, b.config_json
     );
   }
 }

@@ -48,5 +48,29 @@ export class BotController {
       return sendError(res, 400, err.message);
     }
   }
+
+  static async postSelectReal(req, res) {
+    try {
+      const { selectedBotIds } = await parseJsonBody(req);
+      const bots = BotService.selectRealTradingBots(selectedBotIds);
+      return sendJson(res, 200, {
+        success: true,
+        message: `실전 거래 담당 봇(${selectedBotIds.length}개)이 성공적으로 선택 및 배정되었습니다.`,
+        bots,
+      });
+    } catch (err) {
+      return sendError(res, 400, err.message);
+    }
+  }
+
+  static async postRealToggle(req, res, botId) {
+    try {
+      const { is_real_running } = await parseJsonBody(req);
+      const result = BotService.toggleRealRunning(botId, is_real_running);
+      return sendJson(res, 200, result);
+    } catch (err) {
+      return sendError(res, 400, err.message);
+    }
+  }
 }
 

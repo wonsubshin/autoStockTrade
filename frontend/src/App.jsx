@@ -53,8 +53,8 @@ export default function App() {
   // 1. Gate Authorization State (24시간 만료 검증)
   const [isAuthenticated, setIsAuthenticated] = useState(() => checkGateAuthentication());
 
-  // 2. Navigation State (5 Menus: TRADING, LAB, STATS, NEWS, SETTINGS)
-  const [activeMenu, setActiveMenu] = useState('TRADING');
+  // 2. Navigation State (5 Menus: REAL_TRADING, VIRTUAL_ARENA, STATS, NEWS, SETTINGS)
+  const [activeMenu, setActiveMenu] = useState('REAL_TRADING');
 
   // 3. Global Modal / Notification
   const [modalInfo, setModalInfo] = useState(null);
@@ -141,9 +141,11 @@ export default function App() {
   const fetchBots = useCallback(async () => {
     try {
       const data = await api.getBots();
-      setBots(data.bots || []);
-      if (!selectedBotId && data.bots?.length > 0) {
-        setSelectedBotId(data.bots[0].bot_id);
+      const botList = data.bots || [];
+      setBots(botList);
+      if (!selectedBotId && botList.length > 0) {
+        const realSelected = botList.find((b) => Number(b.is_real_selected) === 1);
+        setSelectedBotId(realSelected ? realSelected.bot_id : botList[0].bot_id);
       }
     } catch {}
   }, [selectedBotId]);
@@ -255,20 +257,23 @@ export default function App() {
   useEffect(() => {
     if (!isAuthenticated) return;
 
-    if (activeMenu === 'TRADING') {
-      fetchTradesAndPositions(activeTradeMode);
+    if (activeMenu === 'REAL_TRADING' || activeMenu === 'TRADING') {
+      fetchTradesAndPositions('REAL');
       const tInterval = setInterval(() => {
-        fetchTradesAndPositions(activeTradeMode);
+        fetchTradesAndPositions('REAL');
         fetchBots();
       }, 5000);
       return () => clearInterval(tInterval);
     }
 
-    if (activeMenu === 'LAB') {
+    if (activeMenu === 'VIRTUAL_ARENA' || activeMenu === 'LAB') {
+      fetchTradesAndPositions('VIRTUAL');
       fetchLeaderboard();
       const labInterval = setInterval(() => {
+        fetchTradesAndPositions('VIRTUAL');
+        fetchBots();
         fetchLeaderboard();
-      }, 5000); // 알고리즘 검증소 실시간 랭킹 5초 주기 자동 집계
+      }, 5000); // 10대 봇 가상 아레나 5초 주기 자동 갱신
       return () => clearInterval(labInterval);
     }
 
@@ -356,6 +361,46 @@ export default function App() {
   };
 
   const handleResetVirtualAll = () => handleBotAction('RESET_VIRTUAL_ALL');
+
+  const handleSelectRealBots = async (selectedBotIds) => {
+    try {
+      const res = await api.selectRealBots(selectedBotIds);
+      setModalInfo({
+        title: '실전 담당 봇 확정 완료',
+        message: `선택하신 ${selectedBotIds.length}개의 봇이 실전 거래 담당 봇으로 확정되었습니다.\n\n[환경설정] 탭에서 실전 투자금 비율을 설정하시거나, [실전 매매] 탭에서 실전 거래를 가동하실 수 있습니다.`,
+        type: 'success',
+      });
+      await fetchBots();
+      await fetchSettingsAndBalance();
+    } catch (err) {
+      setModalInfo({ title: '실전 봇 선택 실패', message: err.message, type: 'error' });
+    }
+  };
+
+  const handleRealToggle = async (botId, isRealRunning) => {
+    try {
+      const res = await api.realToggleBot(botId, isRealRunning);
+      setModalInfo({ title: '실전 가동 상태 변경', message: res.message, type: 'info' });
+      await fetchBots();
+    } catch (err) {
+      setModalInfo({ title: '가동 변경 실패', message: err.message, type: 'error' });
+    }
+  };
+
+  const handleSaveRealAllocation = async (totalBudget, allocs) => {
+    try {
+      const res = await api.saveRealAllocation(totalBudget, allocs);
+      setModalInfo({
+        title: '실전 투자금 배분 저장 완료',
+        message: '선택된 실전 담당 봇들의 투자금 배분 비율이 성공적으로 저장 및 적용되었습니다.',
+        type: 'success',
+      });
+      await fetchBots();
+      await fetchSettingsAndBalance();
+    } catch (err) {
+      setModalInfo({ title: '배분 저장 실패', message: err.message, type: 'error' });
+    }
+  };
 
   const handleVirtualTradeTest = async (side, stockCode = selectedStockCode) => {
     if (!selectedBotId) return;
@@ -678,79 +723,112 @@ export default function App() {
       {/* 80% Main Content Area */}
       <main className="main-content">
         {/* ========================================================
-            MENU 1: 거래현황
+            MENU 1: 실전 매매 (선택된 1~3개 실전 봇 전용)
             ======================================================== */}
-        {activeMenu === 'TRADING' && (
-          <div>
-            {/* Top Market AI Streaming Marquee Box */}
-            <MarketBanner
-              aiBriefingText={aiBriefingText}
-              isBriefingStreaming={isBriefingStreaming}
-              onStartBriefing={handleStartBriefing}
-            />
+        {(activeMenu === 'REAL_TRADING' || activeMenu === 'TRADING') && (() => {
+          const selectedRealBots = bots.filter((b) => Number(b.is_real_selected) === 1);
+          const currentRealBot = selectedRealBots.find((b) => b.bot_id === selectedBotId) || selectedRealBots[0];
 
-            {/* Mode Filter Bar, Mode Banner & Account Assets Summary */}
-            <BudgetBar
-              tradingModeFilter={tradingModeFilter}
-              setTradingModeFilter={setTradingModeFilter}
-              activeTradeMode={activeTradeMode}
-              selectedBot={selectedBot}
-              accountBalance={accountBalance}
-              onRefreshBalance={fetchSettingsAndBalance}
-            />
+          if (selectedRealBots.length === 0) {
+            return (
+              <div className="board-card" style={{ padding: '40px 24px', textAlign: 'center', borderColor: 'rgba(245, 158, 11, 0.4)', marginTop: '20px' }}>
+                <div style={{ fontSize: '42px', marginBottom: '14px' }}>🎯</div>
+                <h3 style={{ fontSize: '18px', color: '#f8fafc', marginBottom: '8px' }}>
+                  실전 매매를 담당할 퀀트 봇(1~3개)을 먼저 선택해주세요
+                </h3>
+                <p style={{ color: '#94a3b8', fontSize: '13px', maxWidth: '580px', margin: '0 auto 22px auto', lineHeight: 1.6 }}>
+                  10대 퀀트 알고리즘이 24시간 가상 경쟁 아레나에서 상시 모의 거래를 수행하고 있습니다.<br />
+                  <strong>[⚡ 가상 경쟁 아레나]</strong> 탭에서 실시간 누적 수익률을 확인하신 후, 실전을 담당할 1~3개의 봇을 체크하여 확정해주세요.
+                </p>
+                <button
+                  className="btn-primary"
+                  style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 700 }}
+                  onClick={() => setActiveMenu('VIRTUAL_ARENA')}
+                >
+                  ⚡ 가상 경쟁 아레나로 이동하여 실전 봇 선택하기
+                </button>
+              </div>
+            );
+          }
 
-            {/* Bot Tabs & Action Controls & Metrics */}
-            <BotCard
-              bots={bots}
-              selectedBotId={selectedBotId}
-              setSelectedBotId={setSelectedBotId}
-              selectedBot={selectedBot}
-              selectedStockCode={selectedStockCode}
-              setSelectedStockCode={setSelectedStockCode}
-              onBotAction={handleBotAction}
-              onManualTradeTest={handleVirtualTradeTest}
-              onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
-              isAiEvaluating={isAiEvaluating}
-              positionsCount={
-                positions.filter(
-                  (p) =>
-                    p.bot_id === selectedBot?.bot_id &&
-                    (activeTradeMode === 'ALL' || p.trade_mode === activeTradeMode)
-                ).length
-              }
-              activeTradeMode={activeTradeMode}
-            />
+          return (
+            <div>
+              {/* Top Market AI Streaming Marquee Box */}
+              <MarketBanner
+                aiBriefingText={aiBriefingText}
+                isBriefingStreaming={isBriefingStreaming}
+                onStartBriefing={handleStartBriefing}
+              />
 
-            {/* Hybrid Architecture Board (AI LLM Decisions & Python Executor) */}
-            <HybridBoard
-              aiDecisions={aiDecisions}
-              isAiEvaluating={isAiEvaluating}
-              onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
-            />
+              {/* Account Assets Summary Bar */}
+              <BudgetBar
+                tradingModeFilter="REAL"
+                setTradingModeFilter={() => {}}
+                activeTradeMode="REAL"
+                selectedBot={currentRealBot}
+                accountBalance={accountBalance}
+                onRefreshBalance={fetchSettingsAndBalance}
+              />
 
-            {/* Active Positions Table */}
-            <PositionsTable
-              positions={positions}
-              onSellPosition={handleSellPosition}
-              activeTradeMode={activeTradeMode}
-            />
+              {/* Real Bot Tabs & Action Controls & Metrics */}
+              <BotCard
+                bots={selectedRealBots}
+                selectedBotId={currentRealBot?.bot_id}
+                setSelectedBotId={setSelectedBotId}
+                selectedBot={currentRealBot}
+                selectedStockCode={selectedStockCode}
+                setSelectedStockCode={setSelectedStockCode}
+                onBotAction={handleBotAction}
+                onRealToggle={handleRealToggle}
+                onManualTradeTest={handleVirtualTradeTest}
+                onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
+                isAiEvaluating={isAiEvaluating}
+                positionsCount={
+                  positions.filter(
+                    (p) =>
+                      p.bot_id === currentRealBot?.bot_id &&
+                      p.trade_mode === 'REAL'
+                  ).length
+                }
+                activeTradeMode="REAL"
+              />
 
-            {/* Trades History Table */}
-            <TradesTable trades={trades} activeTradeMode={activeTradeMode} />
-          </div>
-        )}
+              {/* Hybrid Architecture Board (AI LLM Decisions & Python Executor) */}
+              <HybridBoard
+                aiDecisions={aiDecisions}
+                isAiEvaluating={isAiEvaluating}
+                onAiEvaluateAndTrade={handleAiEvaluateAndTrade}
+              />
+
+              {/* Active Real Positions Table */}
+              <PositionsTable
+                positions={positions.filter((p) => p.trade_mode === 'REAL')}
+                onSellPosition={handleSellPosition}
+                activeTradeMode="REAL"
+              />
+
+              {/* Closed Real Trades History Table */}
+              <TradesTable
+                trades={trades.filter((t) => t.trade_mode === 'REAL')}
+                activeTradeMode="REAL"
+              />
+            </div>
+          );
+        })()}
 
         {/* ========================================================
-            MENU 2: 알고리즘 성능 검증소 (가상 매매 전용 대시보드)
+            MENU 2: 가상 경쟁 아레나 (10대 봇 상시 거래 및 랭킹)
             ======================================================== */}
-        {activeMenu === 'LAB' && (
+        {(activeMenu === 'VIRTUAL_ARENA' || activeMenu === 'LAB') && (
           <LabPanel
-            leaderboard={leaderboard}
+            bots={bots}
+            virtualPositions={positions.filter((p) => p.trade_mode === 'VIRTUAL')}
+            virtualTrades={trades.filter((t) => t.trade_mode === 'VIRTUAL')}
+            onSelectRealBots={handleSelectRealBots}
             onFastReplay={handleFastReplay}
+            onResetVirtualAll={handleResetVirtualAll}
             isReplaying={isReplaying}
             replayResult={replayResult}
-            onPromoteBot={handlePromoteBot}
-            onResetVirtualAll={handleResetVirtualAll}
             onRefreshLeaderboard={fetchLeaderboard}
           />
         )}
@@ -816,6 +894,7 @@ export default function App() {
             setPurchasePriority={setPurchasePriority}
             onSavePriority={handleSavePurchasePriority}
             onSaveBudget={handleSaveBudget}
+            onSaveRealAllocation={handleSaveRealAllocation}
             onSaveKeys={handleSaveKeys}
             onExportBackup={handleExportBackup}
             onImportBackup={handleImportBackup}

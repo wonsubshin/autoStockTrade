@@ -110,39 +110,39 @@ export default function Header({
       {/* 5 Navigation Menus */}
       <nav className="nav-menu">
         <div
-          className={`nav-item ${activeMenu === 'TRADING' ? 'active' : ''}`}
-          onClick={() => setActiveMenu('TRADING')}
+          className={`nav-item ${activeMenu === 'REAL_TRADING' ? 'active' : ''}`}
+          onClick={() => setActiveMenu('REAL_TRADING')}
         >
-          <span>📊</span>
-          <span>거래현황</span>
+          <span>🔥</span>
+          <span>실전 매매</span>
         </div>
         <div
-          className={`nav-item ${activeMenu === 'LAB' ? 'active' : ''}`}
-          onClick={() => setActiveMenu('LAB')}
+          className={`nav-item ${activeMenu === 'VIRTUAL_ARENA' ? 'active' : ''}`}
+          onClick={() => setActiveMenu('VIRTUAL_ARENA')}
         >
-          <span>🧪</span>
-          <span>알고리즘 검증소</span>
+          <span>⚡</span>
+          <span>가상 경쟁 아레나</span>
         </div>
         <div
           className={`nav-item ${activeMenu === 'STATS' ? 'active' : ''}`}
           onClick={() => setActiveMenu('STATS')}
         >
-          <span>📈</span>
-          <span>통계</span>
+          <span>📊</span>
+          <span>수익/통계</span>
         </div>
         <div
           className={`nav-item ${activeMenu === 'NEWS' ? 'active' : ''}`}
           onClick={() => setActiveMenu('NEWS')}
         >
           <span>📰</span>
-          <span>증시뉴스 & 공시</span>
+          <span>AI 뉴스/시황</span>
         </div>
         <div
           className={`nav-item ${activeMenu === 'SETTINGS' ? 'active' : ''}`}
           onClick={() => setActiveMenu('SETTINGS')}
         >
           <span>⚙️</span>
-          <span>설정</span>
+          <span>환경설정</span>
         </div>
       </nav>
 

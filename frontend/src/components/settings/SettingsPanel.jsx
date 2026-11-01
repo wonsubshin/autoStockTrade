@@ -6,17 +6,74 @@ export default function SettingsPanel({
   setBudgetSettings,
   botRatios,
   setBotRatios,
-  bots,
+  bots = [],
   brokerConfig,
   purchasePriority,
   setPurchasePriority,
   onSavePriority,
   onSaveBudget,
+  onSaveRealAllocation,
   onSaveKeys,
   onExportBackup,
   onImportBackup,
 }) {
   const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
+  const selectedRealBots = bots.filter((b) => Number(b.is_real_selected) === 1);
+  const [realTotalBudget, setRealTotalBudget] = useState(budgetSettings?.realTotalBudget || 10000000);
+  const [allocations, setAllocations] = useState([]);
+
+  React.useEffect(() => {
+    if (budgetSettings?.realTotalBudget) {
+      setRealTotalBudget(budgetSettings.realTotalBudget);
+    }
+  }, [budgetSettings?.realTotalBudget]);
+
+  React.useEffect(() => {
+    if (selectedRealBots.length > 0) {
+      setAllocations(
+        selectedRealBots.map((b) => ({
+          bot_id: b.bot_id,
+          name: b.name,
+          nickname: b.nickname,
+          ratio: Number(b.real_allocation_ratio || (100 / selectedRealBots.length).toFixed(1)),
+        }))
+      );
+    }
+  }, [bots]);
+
+  const handleRatioChange = (botId, val) => {
+    const num = Math.max(0, Math.min(100, Number(val)));
+    if (allocations.length === 1) {
+      setAllocations([{ ...allocations[0], ratio: 100 }]);
+      return;
+    }
+    if (allocations.length === 2) {
+      setAllocations(
+        allocations.map((a) =>
+          a.bot_id === botId ? { ...a, ratio: num } : { ...a, ratio: Number((100 - num).toFixed(1)) }
+        )
+      );
+      return;
+    }
+    setAllocations(allocations.map((a) => (a.bot_id === botId ? { ...a, ratio: num } : a)));
+  };
+
+  const handleEqualSplit = () => {
+    const n = allocations.length;
+    if (!n) return;
+    const base = Math.floor((100 / n) * 10) / 10;
+    let acc = 0;
+    setAllocations(
+      allocations.map((a, idx) => {
+        const r = idx === n - 1 ? Number((100 - acc).toFixed(1)) : base;
+        acc += r;
+        return { ...a, ratio: r };
+      })
+    );
+  };
+
+  const totalAllocRatio = allocations.reduce((s, a) => s + Number(a.ratio || 0), 0);
+  const isAllocValid = Math.abs(totalAllocRatio - 100) <= 0.5;
   const [localPriority, setLocalPriority] = useState(
     purchasePriority && purchasePriority.length === 3
       ? purchasePriority
@@ -103,162 +160,184 @@ export default function SettingsPanel({
         </div>
       </div>
 
-      {/* 2. Budget & Bot Allocation Management */}
+      {/* 2. Dynamic Real Budget Allocation for Selected 1~3 Bots */}
       <div className="board-card" style={{ borderColor: 'rgba(59, 130, 246, 0.4)', marginBottom: '24px' }}>
         <div className="card-title-row">
-          <div className="card-title">💰 가상 / 실제 사용 예산 및 봇별 자금 배분 비율 설정</div>
-          <span className="badge-mode" style={{ background: 'rgba(59, 130, 246, 0.15)', color: '#60a5fa', borderColor: 'rgba(59, 130, 246, 0.3)' }}>
-            예산 초과 매매 방지 락
+          <div className="card-title">🎯 선택된 실전 담당 봇 ({allocations.length}개) 동적 투자금 비율 설정</div>
+          <span className="badge-mode real">
+            실전 배분 엔진
           </span>
         </div>
-        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '20px', lineHeight: 1.5 }}>
-          각 봇은 여기서 설정된 배분 비율에 따른 예산 한도 내에서만 매매를 집행하며, <strong>실제 사용 예산은 토스증권 실시간 주문 가능 예수금을 초과하여 설정할 수 없습니다.</strong>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
+          가상 아레나에서 선발된 <strong>최소 1개 ~ 최대 3개의 실전 봇</strong>만 여기에 표시됩니다. 총 실전 예산과 각 봇의 비율을 설정하면 해당 비율대로 실전 매매 투자금이 실시간 배정됩니다.
         </p>
 
-        <div className="form-row">
-          {/* Virtual Total Budget */}
-          <div className="form-group">
-            <label className="form-label">🧪 가상 매매 총 운용 예산 (KRW)</label>
-            <input
-              type="number"
-              className="input-field"
-              value={budgetSettings.virtualTotalBudget}
-              onChange={(e) => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: parseInt(e.target.value, 10) || 0 })}
-            />
-            <div className="budget-quick-btns">
-              <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 10000000 })}>1천만</button>
-              <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 30000000 })}>3천만</button>
-              <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 50000000 })}>5천만</button>
-              <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 100000000 })}>1억</button>
-            </div>
+        {allocations.length === 0 ? (
+          <div style={{ padding: '20px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', color: '#fca5a5', fontSize: '13px' }}>
+            ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 1~3개의 봇을 먼저 체크 후 확정해주세요.
           </div>
-
-          {/* Real Total Budget (Capped at Toss Balance) */}
-          <div className="form-group">
-            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-              <label className="form-label">🚨 실제 사용 총 예산 (토스증권 실전 한도)</label>
-              <span style={{ fontSize: '11px', color: '#34d399', fontWeight: 600 }}>
-                토스 예수금: {tossAvailable.toLocaleString()}원
-              </span>
-            </div>
-            <input
-              type="number"
-              className="input-field"
-              style={{ borderColor: budgetSettings.realTotalBudget > tossAvailable ? '#ef4444' : undefined }}
-              value={budgetSettings.realTotalBudget}
-              onChange={(e) => setBudgetSettings({ ...budgetSettings, realTotalBudget: parseInt(e.target.value, 10) || 0 })}
-            />
-            <div className="budget-quick-btns">
-              <button
-                type="button"
-                className="budget-quick-btn"
-                onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: tossAvailable })}
-              >
-                전액 (100%)
-              </button>
-              <button
-                type="button"
-                className="budget-quick-btn"
-                onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: Math.floor(tossAvailable * 0.7) })}
-              >
-                70%
-              </button>
-              <button
-                type="button"
-                className="budget-quick-btn"
-                onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: Math.floor(tossAvailable * 0.5) })}
-              >
-                50%
-              </button>
-              <button
-                type="button"
-                className="budget-quick-btn"
-                onClick={() => setBudgetSettings({ ...budgetSettings, realTotalBudget: Math.floor(tossAvailable * 0.3) })}
-              >
-                30%
-              </button>
-            </div>
-            {budgetSettings.realTotalBudget > tossAvailable && (
-              <div className="budget-error-msg">
-                ❌ 실제 사용 예산({budgetSettings.realTotalBudget.toLocaleString()}원)은 현재 토스증권 예수금({tossAvailable.toLocaleString()}원)을 초과할 수 없습니다.
-              </div>
-            )}
-          </div>
-        </div>
-
-        {/* Bot Allocation Ratios */}
-        <div style={{ marginTop: '24px', marginBottom: '14px', display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
-          <div style={{ fontWeight: 700, color: '#f1f5f9', fontSize: '14px' }}>
-            📊 각 봇별 예산 배분 비율 (%) 및 할당 금액
-          </div>
-          {(() => {
-            const sumRatio = Object.values(botRatios).reduce((acc, v) => acc + (Number(v) || 0), 0);
-            const is100 = sumRatio === 100;
-            return (
-              <span style={{ fontSize: '12px', fontWeight: 700, color: is100 ? '#34d399' : '#f59e0b' }}>
-                배분율 합계: {sumRatio}% {is100 ? '(정상 100%)' : '(경고: 합계가 100%가 되도록 조정해주세요)'}
-              </span>
-            );
-          })()}
-        </div>
-
-        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(300px, 1fr))', gap: '14px', marginBottom: '20px' }}>
-          {bots.map((b) => {
-            const ratio = botRatios[b.bot_id] ?? Math.round((b.allocation_ratio || 0.33) * 100);
-            const virtAmt = Math.floor((budgetSettings.virtualTotalBudget || 0) * (ratio / 100));
-            const realAmt = Math.floor((budgetSettings.realTotalBudget || 0) * (ratio / 100));
-
-            return (
-              <div key={b.bot_id} className="bot-allocation-card">
-                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                  <span style={{ fontWeight: 700, fontSize: '13.5px', color: '#fff' }}>{b.nickname || b.name}</span>
-                  <span className={`badge-mode ${b.trade_mode === 'REAL' ? 'real' : 'virtual'}`}>
-                    {b.trade_mode === 'REAL' ? '💰 실전' : '🧪 가상'}
+        ) : (
+          <>
+            {/* Real Total Budget Setup */}
+            <div className="form-group" style={{ marginBottom: '20px' }}>
+              <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                <label className="form-label">🚨 총 실전 투자 예산 (KRW)</label>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <span style={{ fontSize: '11px', color: '#34d399', fontWeight: 600 }}>
+                    토스 예수금: {tossAvailable.toLocaleString()}원
                   </span>
-                </div>
-                <div style={{ fontSize: '11px', color: '#94a3b8', marginBottom: '12px', minHeight: '32px' }}>
-                  {b.description}
-                </div>
-
-                <div style={{ display: 'flex', alignItems: 'center', gap: '10px', marginBottom: '10px' }}>
-                  <input
-                    type="range"
-                    min="0"
-                    max="100"
-                    step="1"
-                    style={{ flex: 1 }}
-                    value={ratio}
-                    onChange={(e) => setBotRatios({ ...botRatios, [b.bot_id]: Number(e.target.value) })}
-                  />
-                  <div style={{ width: '60px', display: 'flex', alignItems: 'center' }}>
-                    <input
-                      type="number"
-                      min="0"
-                      max="100"
-                      className="input-field"
-                      style={{ padding: '4px 6px', fontSize: '12px', textAlign: 'center' }}
-                      value={ratio}
-                      onChange={(e) => setBotRatios({ ...botRatios, [b.bot_id]: Number(e.target.value) })}
-                    />
-                    <span style={{ fontSize: '12px', color: '#cbd5e1', marginLeft: '3px' }}>%</span>
-                  </div>
-                </div>
-
-                <div style={{ display: 'flex', justifyContent: 'space-between', fontSize: '11.5px', background: 'rgba(0,0,0,0.3)', padding: '6px 10px', borderRadius: '6px' }}>
-                  <span>가상 배분: <strong style={{ color: '#34d399' }}>{virtAmt.toLocaleString()}원</strong></span>
-                  <span>실전 배분: <strong style={{ color: '#fca5a5' }}>{realAmt.toLocaleString()}원</strong></span>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    style={{ fontSize: '11px', padding: '3px 8px' }}
+                    onClick={handleEqualSplit}
+                  >
+                    ⚖️ 균등 배분 ({allocations.length}등분)
+                  </button>
                 </div>
               </div>
-            );
-          })}
-        </div>
+              <input
+                type="number"
+                className="input-field"
+                step="100000"
+                style={{ borderColor: realTotalBudget > tossAvailable ? '#ef4444' : undefined }}
+                value={realTotalBudget}
+                onChange={(e) => setRealTotalBudget(parseInt(e.target.value, 10) || 0)}
+              />
+              <div className="budget-quick-btns">
+                <button
+                  type="button"
+                  className="budget-quick-btn"
+                  onClick={() => setRealTotalBudget(tossAvailable)}
+                >
+                  전액 (100%)
+                </button>
+                <button
+                  type="button"
+                  className="budget-quick-btn"
+                  onClick={() => setRealTotalBudget(Math.floor(tossAvailable * 0.7))}
+                >
+                  70%
+                </button>
+                <button
+                  type="button"
+                  className="budget-quick-btn"
+                  onClick={() => setRealTotalBudget(Math.floor(tossAvailable * 0.5))}
+                >
+                  50%
+                </button>
+                <button
+                  type="button"
+                  className="budget-quick-btn"
+                  onClick={() => setRealTotalBudget(Math.floor(tossAvailable * 0.3))}
+                >
+                  30%
+                </button>
+              </div>
+              {realTotalBudget > tossAvailable && (
+                <div className="budget-error-msg" style={{ marginTop: '8px' }}>
+                  ❌ 실제 사용 예산({realTotalBudget.toLocaleString()}원)은 현재 토스증권 예수금({tossAvailable.toLocaleString()}원)을 초과할 수 없습니다.
+                </div>
+              )}
+            </div>
 
+            {/* Dynamic Allocation List */}
+            <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '18px' }}>
+              {allocations.map((item) => {
+                const allocatedKrw = Math.floor(realTotalBudget * (item.ratio / 100));
+                return (
+                  <div
+                    key={item.bot_id}
+                    style={{
+                      padding: '14px 18px',
+                      background: 'rgba(0, 0, 0, 0.3)',
+                      border: '1px solid rgba(59, 130, 246, 0.25)',
+                      borderRadius: '8px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                      <div>
+                        <strong style={{ fontSize: '14px', color: '#f8fafc' }}>{item.name}</strong>
+                        <span style={{ color: '#818cf8', marginLeft: '6px', fontSize: '12px' }}>({item.nickname})</span>
+                      </div>
+                      <span className="badge-mode real" style={{ fontSize: '12px', padding: '3px 8px' }}>
+                        실전 배정금: <strong>{allocatedKrw.toLocaleString()}원</strong> ({item.ratio}%)
+                      </span>
+                    </div>
+
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                      <input
+                        type="range"
+                        min="0"
+                        max="100"
+                        step="1"
+                        style={{ flex: 1, accentColor: '#3b82f6' }}
+                        value={item.ratio}
+                        onChange={(e) => handleRatioChange(item.bot_id, e.target.value)}
+                      />
+                      <div style={{ width: '75px', display: 'flex', alignItems: 'center' }}>
+                        <input
+                          type="number"
+                          min="0"
+                          max="100"
+                          className="input-field"
+                          style={{ padding: '5px 8px', fontSize: '13px', textAlign: 'center' }}
+                          value={item.ratio}
+                          onChange={(e) => handleRatioChange(item.bot_id, e.target.value)}
+                        />
+                        <span style={{ fontSize: '13px', color: '#cbd5e1', marginLeft: '4px' }}>%</span>
+                      </div>
+                    </div>
+                  </div>
+                );
+              })}
+            </div>
+
+            {/* Ratio Validation & Save Bar */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <span className={isAllocValid ? 'num-up' : 'num-down'} style={{ fontWeight: 700, fontSize: '13px' }}>
+                비율 합계: <strong>{totalAllocRatio.toFixed(1)}%</strong> / 100%
+                {!isAllocValid && ' (비율의 합이 100%가 되도록 조정해 주세요)'}
+              </span>
+              <button
+                className="btn-primary"
+                disabled={!isAllocValid || realTotalBudget > tossAvailable}
+                onClick={() => onSaveRealAllocation && onSaveRealAllocation(realTotalBudget, allocations)}
+              >
+                💾 실전 투자금 비율 저장 및 적용
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 2-1. Virtual Budget Configuration */}
+      <div className="board-card" style={{ borderColor: 'rgba(16, 185, 129, 0.4)', marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🧪 가상 매매 총 운용 예산 설정 (10대 봇 아레나)</div>
+          <span className="badge-mode virtual">가상 아레나</span>
+        </div>
+        <div className="form-group">
+          <label className="form-label">가상 매매 총 운용 자본금 (KRW)</label>
+          <input
+            type="number"
+            className="input-field"
+            value={budgetSettings.virtualTotalBudget}
+            onChange={(e) => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: parseInt(e.target.value, 10) || 0 })}
+          />
+          <div className="budget-quick-btns">
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 10000000 })}>1천만</button>
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 30000000 })}>3천만</button>
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 50000000 })}>5천만</button>
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 100000000 })}>1억</button>
+          </div>
+        </div>
         <button
-          className="btn-primary"
+          className="btn-action success"
+          style={{ marginTop: '14px' }}
           onClick={onSaveBudget}
-          disabled={budgetSettings.realTotalBudget > tossAvailable}
         >
-          💾 투자 예산 및 봇 배분 설정 저장
+          💾 가상 예산 저장
         </button>
       </div>
 
