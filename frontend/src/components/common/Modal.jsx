@@ -31,22 +31,41 @@ export default function Modal({ modalInfo, onClose }) {
         <div className="modal-footer">
           {type === 'confirm' ? (
             <>
-              <button className="btn-action" onClick={onClose}>
-                취소
+              <button
+                className="btn-action"
+                style={{ padding: '8px 16px', fontSize: '13px' }}
+                onClick={onClose}
+              >
+                {modalInfo.cancelText || '취소'}
               </button>
               <button
-                className="btn-primary"
+                className={
+                  modalInfo.confirmColor === 'danger'
+                    ? 'btn-action danger'
+                    : modalInfo.confirmColor === 'success'
+                    ? 'btn-action success'
+                    : 'btn-primary'
+                }
+                style={{
+                  fontWeight: 700,
+                  padding: '8px 18px',
+                  fontSize: '13px',
+                }}
                 onClick={() => {
                   if (onConfirm) onConfirm();
                   onClose();
                 }}
               >
-                확인 진행
+                {modalInfo.confirmText || '확인 진행'}
               </button>
             </>
           ) : (
-            <button className="btn-primary" onClick={onClose}>
-              확인
+            <button
+              className="btn-primary"
+              style={{ padding: '8px 22px', fontSize: '13px', fontWeight: 700 }}
+              onClick={onClose}
+            >
+              {modalInfo.okText || '확인'}
             </button>
           )}
         </div>

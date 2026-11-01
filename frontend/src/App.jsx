@@ -333,11 +333,13 @@ export default function App() {
   const handleBotAction = async (action, extra = {}) => {
     if (!selectedBotId && action !== 'RESET_VIRTUAL_ALL') return;
 
-    // 가상 계좌 리셋 시 확인 Alert 모달
+    // 1. 가상 계좌 리셋 시 확인 Alert 모달
     if (action === 'RESET_VIRTUAL' || action === 'RESET_VIRTUAL_ALL') {
       const isAll = action === 'RESET_VIRTUAL_ALL';
       setModalInfo({
         type: 'confirm',
+        confirmColor: 'danger',
+        confirmText: '⚠️ 초기화 진행',
         title: isAll ? '⚠️ 가상 전체 초기화 및 새로 시작' : '⚠️ 가상 계좌 초기화',
         message: isAll
           ? '모든 가상 봇(10개)의 보유 포지션 및 누적 거래내역이 완전히 삭제됩니다.\n\n각 봇의 초기 자본금이 100만 원(총 1,000만 원)으로 재설정되며, 모든 성과 지표(누적 수익률, 실현 손익금, 승률, 익절/손절)가 0으로 초기화된 상태에서 새로운 자율 퀀트 경쟁을 시작합니다.\n\n정말 가상 데이터를 전체 초기화하시겠습니까?'
@@ -361,19 +363,77 @@ export default function App() {
       return;
     }
 
-    try {
-      const res = await api.botAction(selectedBotId, action, extra);
-      setModalInfo({ title: '봇 제어 완료', message: res.message, type: 'info' });
-      await fetchBots();
-      if (action === 'TOGGLE_MODE' && res.newMode) {
-        fetchTradesAndPositions(res.newMode);
-      } else {
-        fetchTradesAndPositions();
+    const executeAction = async () => {
+      try {
+        const res = await api.botAction(selectedBotId, action, extra);
+        setModalInfo({
+          title: action === 'START' ? '거래 시작 완료' : action === 'STOP' ? '거래 중지 완료' : '봇 제어 완료',
+          message: res.message,
+          type: 'info',
+        });
+        await fetchBots();
+        if (action === 'TOGGLE_MODE' && res.newMode) {
+          fetchTradesAndPositions(res.newMode);
+        } else {
+          fetchTradesAndPositions();
+        }
+        fetchSettingsAndBalance();
+      } catch (err) {
+        setModalInfo({ title: '오류', message: err.message, type: 'error' });
       }
-      fetchSettingsAndBalance();
-    } catch (err) {
-      setModalInfo({ title: '오류', message: err.message, type: 'error' });
+    };
+
+    const isReal = selectedBot?.is_real_selected === 1 || selectedBot?.trade_mode === 'REAL';
+    const botName = selectedBot ? `${selectedBot.name} (${selectedBot.nickname})` : selectedBotId;
+
+    // 실전매매 / 가상매매 거래중지 시 반드시 실행 전 confirm 모달
+    if (action === 'STOP') {
+      setModalInfo({
+        type: 'confirm',
+        confirmColor: 'danger',
+        confirmText: '⏹ 거래 중지',
+        title: isReal ? '⚠️ 실전 거래 중지 확인' : '⏹ 거래 중지 확인',
+        message: isReal
+          ? `[${botName}]의 실전 자동매매를 일시 중지하시겠습니까?\n\n• 대상: 실전 매매 담당 봇\n• 상태: 거래 중지 대기\n• 안내: 중지 중에는 신규 실전 매수/매도 주문이 전송되지 않습니다.\n\n정말 실전 거래를 중지하시겠습니까?`
+          : `[${botName}]의 자동 거래를 중지하시겠습니까?`,
+        onConfirm: () => {
+          executeAction();
+        },
+      });
+      return;
     }
+
+    // 실전매매 / 가상매매 거래시작(실행) 시 반드시 실행 전 confirm 모달
+    if (action === 'START') {
+      setModalInfo({
+        type: 'confirm',
+        confirmColor: 'success',
+        confirmText: '▶ 거래 시작',
+        title: isReal ? '🚨 실전 거래 시작(가동) 확인' : '▶ 거래 시작 확인',
+        message: isReal
+          ? `[${botName}]의 실전 자동매매를 시작(가동)하시겠습니까?\n\n• 상태: 실전 거래 가동 중 (키움/토스 실계좌 직접 연동)\n• 배정 예산: ${(selectedBot?.real_allocated_capital || selectedBot?.allocated_capital || 0).toLocaleString()}원\n• 가용 예수금: ${(selectedBot?.real_available_krw || 0).toLocaleString()}원\n• 안내: 퀀트 알고리즘 신호에 따라 실제 증권사 계좌 주문이 즉시 집행될 수 있습니다.\n\n정말 실전 거래를 시작하시겠습니까?`
+          : `[${botName}]의 자동 거래를 시작하시겠습니까?`,
+        onConfirm: () => {
+          executeAction();
+        },
+      });
+      return;
+    }
+
+    if (action === 'TOGGLE_MODE') {
+      const nextMode = selectedBot?.trade_mode === 'VIRTUAL' ? '실전 매매 (REAL)' : '가상 매매 (VIRTUAL)';
+      setModalInfo({
+        type: 'confirm',
+        title: '🔄 거래 모드 전환 확인',
+        message: `[${botName}]의 거래 모드를 [${nextMode}]로 전환하시겠습니까?`,
+        onConfirm: () => {
+          executeAction();
+        },
+      });
+      return;
+    }
+
+    executeAction();
   };
 
   const handleResetVirtualAll = () => handleBotAction('RESET_VIRTUAL_ALL');
@@ -389,62 +449,110 @@ export default function App() {
     }
 
     if (isSelectingRealBots) return; // 더블클릭 중복 요청 방지
-    setIsSelectingRealBots(true);
 
-    try {
-      const res = await api.selectRealBots(selectedBotIds);
-      // 서버에서 갱신된 봇 목록을 즉시 상위 state에 주입하여 환경설정 화면 마운트 시 봇 목록 누락 방지
-      if (res.bots && res.bots.length > 0) {
-        setBots(res.bots);
-      }
-      setArenaSelectedIds(selectedBotIds);
-      arenaInitRef.current = true;
+    const selectedBotNames = selectedBotIds
+      .map((id) => {
+        const b = bots.find((x) => x.bot_id === id);
+        return b ? `${b.name} (${b.nickname})` : id;
+      })
+      .join('\n• ');
 
-      // 가상 경쟁 아레나에서 확정 후 즉시 환경설정 화면으로 자동 이동
-      setActiveMenu('SETTINGS');
-      setModalInfo({
-        title: '실전 담당 봇 (3개) 확정 완료',
-        message: '선택하신 3개의 봇이 실전 거래 담당으로 지정되었습니다.\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.',
-        type: 'success',
-      });
-      await fetchBots();
-      await fetchSettingsAndBalance();
-    } catch (err) {
-      setModalInfo({ title: '실전 봇 선택 실패', message: err.message, type: 'error' });
-    } finally {
-      setIsSelectingRealBots(false);
-    }
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '✅ 3개 봇 실전 확정',
+      title: '🎯 실전 거래 담당 봇 (3개) 지정 확인',
+      message: `선택하신 3개의 퀀트 봇을 실전 매매 담당으로 확정하시겠습니까?\n\n• ${selectedBotNames}\n\n'확인'을 누르면 확정 후 [환경설정] 화면으로 이동하여 투자금 배분 비율(%)을 설정하게 됩니다.`,
+      onConfirm: async () => {
+        setIsSelectingRealBots(true);
+        try {
+          const res = await api.selectRealBots(selectedBotIds);
+          if (res.bots && res.bots.length > 0) {
+            setBots(res.bots);
+          }
+          setArenaSelectedIds(selectedBotIds);
+          arenaInitRef.current = true;
+
+          setActiveMenu('SETTINGS');
+          setModalInfo({
+            title: '실전 담당 봇 (3개) 확정 완료',
+            message: '선택하신 3개의 봇이 실전 거래 담당으로 지정되었습니다.\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.',
+            type: 'success',
+          });
+          await fetchBots();
+          await fetchSettingsAndBalance();
+        } catch (err) {
+          setModalInfo({ title: '실전 봇 선택 실패', message: err.message, type: 'error' });
+        } finally {
+          setIsSelectingRealBots(false);
+        }
+      },
+    });
   };
 
-  const handleRealToggle = async (botId, isRealRunning) => {
-    try {
-      const res = await api.realToggleBot(botId, isRealRunning);
-      setModalInfo({ title: '실전 가동 상태 변경', message: res.message, type: 'info' });
-      await fetchBots();
-    } catch (err) {
-      setModalInfo({ title: '가동 변경 실패', message: err.message, type: 'error' });
-    }
+  const handleRealToggle = (botId, isRealRunning) => {
+    const targetBot = bots.find((b) => b.bot_id === botId);
+    const botName = targetBot ? `${targetBot.name} (${targetBot.nickname})` : botId;
+    const isStart = !!isRealRunning;
+
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: isStart ? 'success' : 'danger',
+      confirmText: isStart ? '▶ 실전 가동 시작' : '⏹ 실전 거래 중지',
+      title: isStart ? '🚨 실전 거래 시작(가동) 확인' : '⚠️ 실전 거래 중지 확인',
+      message: isStart
+        ? `[${botName}]의 실전 자동매매를 시작(가동)하시겠습니까?\n\n• 상태: 실전 거래 가동 중 (키움/토스 실계좌 직접 연동)\n• 배정 예산: ${(targetBot?.real_allocated_capital || targetBot?.allocated_capital || 0).toLocaleString()}원\n• 가용 예수금: ${(targetBot?.real_available_krw || 0).toLocaleString()}원\n• 매매 대상: 국내 대표주 1주 온주 및 미국 우량주 소수점\n\n'▶ 실전 가동 시작'을 누르면 실시간 퀀트 알고리즘 신호에 따라 실제 증권사 계좌로 즉시 매수/매도 주문이 집행됩니다.`
+        : `[${botName}]의 실전 자동매매를 일시 중지하시겠습니까?\n\n• 상태: 실전 거래 중지 대기\n• 안내: 중지 상태에서는 해당 봇의 신규 실전 매수/매도 주문이 전송되지 않습니다.\n\n'⏹ 실전 거래 중지'를 누르면 해당 봇의 실전 거래가 즉시 중지됩니다.`,
+      onConfirm: async () => {
+        try {
+          const res = await api.realToggleBot(botId, isStart);
+          setModalInfo({
+            title: isStart ? '실전 거래 가동 완료' : '실전 거래 중지 완료',
+            message: res.message,
+            type: isStart ? 'success' : 'info',
+          });
+          await fetchBots();
+        } catch (err) {
+          setModalInfo({ title: '가동 변경 실패', message: err.message, type: 'error' });
+        }
+      },
+    });
   };
 
-  const handleSaveRealAllocation = async (totalBudget, allocs) => {
-    try {
-      const res = await api.saveRealAllocation(totalBudget, allocs);
-      // 서버에서 갱신된 봇 목록을 즉시 setBots에 주입하여 실전 매매 화면 즉시 반영
-      if (res.bots && res.bots.length > 0) {
-        setBots(res.bots);
-      }
-      // 환경설정에서 확인(저장) 후 즉시 실전 매매 화면으로 자동 이동 및 적용
-      setActiveMenu('REAL_TRADING');
-      setModalInfo({
-        title: '실전 매매 적용 완료',
-        message: '선택하신 3개 봇의 투자금 배분 비율이 정상 저장되었습니다.\n\n[실전 매매] 화면으로 이동하였으며, 배정된 예산으로 실전 거래가 집행됩니다.',
-        type: 'success',
-      });
-      await fetchBots();
-      await fetchSettingsAndBalance();
-    } catch (err) {
-      setModalInfo({ title: '배분 저장 실패', message: err.message, type: 'error' });
-    }
+  const handleSaveRealAllocation = (totalBudget, allocs) => {
+    const summary = allocs
+      .map((a) => {
+        const b = bots.find((x) => x.bot_id === a.bot_id);
+        const name = b ? `${b.name} (${b.nickname})` : a.bot_id;
+        return `• ${name}: ${a.ratio}% (배정 예산: ${Math.floor(totalBudget * (a.ratio / 100)).toLocaleString()}원)`;
+      })
+      .join('\n');
+
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '💾 배분 확정 및 실전 적용',
+      title: '💾 실전 투자금 배분 저장 및 실전 매매 적용 확인',
+      message: `설정한 투자금 및 배분 비율을 실전 거래에 적용하시겠습니까?\n\n총 실전 예산: ${Number(totalBudget).toLocaleString()}원\n\n${summary}\n\n'확인 진행'을 누르면 실전 계좌 잔고를 기준으로 즉시 실전 매매에 적용됩니다.`,
+      onConfirm: async () => {
+        try {
+          const res = await api.saveRealAllocation(totalBudget, allocs);
+          if (res.bots && res.bots.length > 0) {
+            setBots(res.bots);
+          }
+          setActiveMenu('REAL_TRADING');
+          setModalInfo({
+            title: '실전 매매 적용 완료',
+            message: '선택하신 3개 봇의 투자금 배분 비율이 정상 저장되었습니다.\n\n[실전 매매] 화면으로 이동하였으며, 배정된 예산으로 실전 거래가 집행됩니다.',
+            type: 'success',
+          });
+          await fetchBots();
+          await fetchSettingsAndBalance();
+        } catch (err) {
+          setModalInfo({ title: '배분 저장 실패', message: err.message, type: 'error' });
+        }
+      },
+    });
   };
 
   const handleVirtualTradeTest = async (side, stockCode = selectedStockCode) => {
@@ -453,6 +561,7 @@ export default function App() {
     const code = stockCode;
     const stockName = CANDIDATE_NAMES[code] || code;
     const isUs = /^[A-Za-z.]+$/.test(code);
+    const isReal = selectedBot?.is_real_selected === 1 || selectedBot?.trade_mode === 'REAL';
     const sideText = side === 'BUY' ? '🛒 실전 매수' : '📉 실전 매도';
 
     const proceedManualTrade = async () => {
@@ -468,12 +577,13 @@ export default function App() {
       }
     };
 
-    // 파이썬 실전 즉시 매매 시 확인 Alert 모달
-    if (selectedBot?.trade_mode === 'REAL') {
+    if (isReal) {
       setModalInfo({
         type: 'confirm',
+        confirmColor: side === 'BUY' ? 'success' : 'danger',
+        confirmText: side === 'BUY' ? '🛒 실전 매수 집행' : '📉 실전 매도 집행',
         title: '🚨 Python 실전 즉시 매매 확인',
-        message: `Python 코어 실행기를 통해 실제 브로커 주문을 즉시 집행하시겠습니까?\n\n• 주문 구분: ${sideText}\n• 대상 종목: ${stockName} (${code})\n• 실행 봇: ${selectedBot?.nickname || selectedBot?.name}\n• 거래 시장: ${isUs ? '🇺🇸 미국주식 (토스증권 실계좌 API)' : '🇰🇷 국내주식 (키움 연동)'}\n• 실행 엔진: 🐍 Python Core Executor (toss_executor.py)\n\n'확인 진행'을 누르시면 실제 계좌로 주문이 전송됩니다.`,
+        message: `Python 코어 실행기를 통해 실제 증권사 계좌 주문을 즉시 집행하시겠습니까?\n\n• 주문 구분: ${sideText}\n• 대상 종목: ${stockName} (${code})\n• 실행 봇: ${selectedBot?.nickname || selectedBot?.name}\n• 거래 시장: ${isUs ? '🇺🇸 미국주식 (토스증권 실계좌 API)' : '🇰🇷 국내주식 (키움 연동)'}\n• 실행 엔진: 🐍 Python Core Executor (toss_executor.py)\n\n'확인 진행'을 누르시면 실제 증권사 계좌로 즉시 주문이 전송됩니다.`,
         onConfirm: () => {
           proceedManualTrade();
         },
@@ -481,7 +591,16 @@ export default function App() {
       return;
     }
 
-    proceedManualTrade();
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: side === 'BUY' ? 'success' : 'danger',
+      confirmText: side === 'BUY' ? '🛒 가상 매수 집행' : '📉 가상 매도 집행',
+      title: `🧪 가상 즉시 ${side === 'BUY' ? '매수' : '매도'} 확인`,
+      message: `가상 체결 엔진을 통해 모의 ${side === 'BUY' ? '매수' : '매도'} 주문을 집행하시겠습니까?\n\n• 주문 구분: ${side === 'BUY' ? '🛒 가상 매수' : '📉 가상 매도'}\n• 대상 종목: ${stockName} (${code})\n• 실행 봇: ${selectedBot?.nickname || selectedBot?.name}\n\n'확인 진행'을 누르시면 가상 잔고 및 모의 포지션에 반영됩니다.`,
+      onConfirm: () => {
+        proceedManualTrade();
+      },
+    });
   };
 
   const handleSellPosition = async (positionId, botId) => {
@@ -491,7 +610,7 @@ export default function App() {
     const proceedSell = async () => {
       try {
         const res = await api.botVirtualTrade(targetBot, { side: 'SELL', positionId });
-        setModalInfo({ title: '매도 완료', message: res.message, type: 'info' });
+        setModalInfo({ title: '매도 청산 완료', message: res.message, type: 'info' });
         fetchBots();
         fetchTradesAndPositions();
         fetchLeaderboard();
@@ -501,20 +620,22 @@ export default function App() {
       }
     };
 
-    // 파이썬 실전 포지션 청산 시 확인 Alert 모달
-    if (targetPos?.trade_mode === 'REAL') {
-      setModalInfo({
-        type: 'confirm',
-        title: '🚨 Python 실전 즉시 청산(매도) 확인',
-        message: `실전 보유 종목을 시장가로 즉시 청산(매도)하시겠습니까?\n\n• 대상 종목: ${targetPos.stock_name} (${targetPos.stock_code})\n• 매도 수량: ${targetPos.qty}주\n• 실행 엔진: 🐍 Python Core Executor (토스증권 Open API)\n\n'확인 진행'을 누르시면 토스증권 실계좌로 즉시 매도 주문이 집행됩니다.`,
-        onConfirm: () => {
-          proceedSell();
-        },
-      });
-      return;
-    }
+    const isReal = targetPos?.trade_mode === 'REAL';
+    const posName = targetPos ? `${targetPos.stock_name} (${targetPos.stock_code})` : `포지션 #${positionId}`;
+    const posQty = targetPos?.qty ?? '전량';
 
-    proceedSell();
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'danger',
+      confirmText: '📉 즉시 청산(매도)',
+      title: isReal ? '🚨 Python 실전 즉시 청산(매도) 확인' : '🧪 가상 보유 종목 매도(청산) 확인',
+      message: isReal
+        ? `실전 보유 종목을 시장가로 즉시 청산(매도)하시겠습니까?\n\n• 대상 종목: ${posName}\n• 매도 수량: ${posQty}주\n• 실행 엔진: 🐍 Python Core Executor (토스증권 Open API)\n\n'확인 진행'을 누르시면 토스증권 실계좌로 즉시 매도 주문이 집행됩니다.`
+        : `가상 보유 종목을 시장가로 매도(청산)하시겠습니까?\n\n• 대상 종목: ${posName}\n• 매도 수량: ${posQty}주\n\n'확인 진행'을 누르시면 가상 계좌로 매도 대금이 환원됩니다.`,
+      onConfirm: () => {
+        proceedSell();
+      },
+    });
   };
 
   const handleAiEvaluateAndTrade = async (executeTrade = false, targetCode = null) => {
@@ -561,6 +682,8 @@ export default function App() {
     if (executeTrade) {
       setModalInfo({
         type: 'confirm',
+        confirmColor: 'success',
+        confirmText: '🤖 AI 즉시 매매 집행',
         title: '🚨 Python 즉시 매매 실행 확인',
         message: `AI 실시간 판단 결과에 따라 Python 실행기를 통해 즉시 매매를 집행하시겠습니까?\n\n• 대상 종목: ${stockName} (${code})\n• 거래 시장: ${isUs ? '🇺🇸 미국주식 (토스 소수점/온주)' : '🇰🇷 국내주식 (키움 시세)'}\n• 실행 모드: ${modeText}\n• 실행 엔진: 🐍 Python Core Executor (toss_executor.py)\n\n'확인 진행'을 누르시면 즉시 브로커 주문이 전송됩니다.`,
         onConfirm: () => {
@@ -574,17 +697,31 @@ export default function App() {
   };
 
   const handleFastReplay = async () => {
-    setIsReplaying(true);
-    setReplayResult(null);
-    try {
-      const res = await api.fastReplay(10000000);
-      setReplayResult(res.result);
-      fetchLeaderboard();
-    } catch (err) {
-      setModalInfo({ title: '시뮬레이션 실패', message: err.message, type: 'error' });
-    } finally {
-      setIsReplaying(false);
-    }
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '⚡ 시뮬레이션 시작',
+      title: '⚡ 30영업일 고속 시뮬레이션 실행 확인',
+      message: '최근 30영업일 시장 데이터(코스피/코스닥/나스닥)를 기반으로 10대 알고리즘의 성과 백테스팅 및 추천 봇 선별을 진행하시겠습니까?\n\n약 1~2초가 소요됩니다.',
+      onConfirm: async () => {
+        setIsReplaying(true);
+        setReplayResult(null);
+        try {
+          const res = await api.fastReplay(1000000);
+          setReplayResult(res.result);
+          fetchLeaderboard();
+          setModalInfo({
+            title: '고속 시뮬레이션 완료',
+            message: '최근 30영업일 시뮬레이션 분석이 완료되었습니다.\n\n아레나 하단의 성과 리포트와 최적 알고리즘 추천 내역을 확인해 주세요.',
+            type: 'success',
+          });
+        } catch (err) {
+          setModalInfo({ title: '시뮬레이션 실패', message: err.message, type: 'error' });
+        } finally {
+          setIsReplaying(false);
+        }
+      },
+    });
   };
 
   const handlePromoteBot = async (botId) => {
@@ -599,63 +736,130 @@ export default function App() {
   };
 
   const handleSaveBudget = async () => {
-    const allocations = bots.map((b) => ({
-      bot_id: b.bot_id,
-      ratio: botRatios[b.bot_id] ?? Math.round((b.allocation_ratio || 0.33) * 100),
-    }));
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '💾 예산 저장',
+      title: '💾 가상 운용 예산 저장 확인',
+      message: `가상 매매 총 운용 자본금을 ${Number(budgetSettings.virtualTotalBudget || 10000000).toLocaleString()}원으로 저장하시겠습니까?`,
+      onConfirm: async () => {
+        const allocations = bots.map((b) => ({
+          bot_id: b.bot_id,
+          ratio: botRatios[b.bot_id] ?? Math.round((b.allocation_ratio || 0.1) * 100),
+        }));
 
-    try {
-      const res = await api.saveBudgetSettings({
-        virtualTotalBudget: budgetSettings.virtualTotalBudget,
-        realTotalBudget: budgetSettings.realTotalBudget,
-        botAllocations: allocations,
-      });
-      setModalInfo({ title: '예산 저장 완료', message: res.message, type: 'success' });
-      fetchSettingsAndBalance();
-      fetchBots();
-    } catch (err) {
-      setModalInfo({ title: '설정 저장 실패', message: err.message, type: 'error' });
-    }
+        try {
+          const res = await api.saveBudgetSettings({
+            virtualTotalBudget: budgetSettings.virtualTotalBudget,
+            realTotalBudget: budgetSettings.realTotalBudget,
+            botAllocations: allocations,
+          });
+          setModalInfo({ title: '예산 저장 완료', message: res.message, type: 'success' });
+          fetchSettingsAndBalance();
+          fetchBots();
+        } catch (err) {
+          setModalInfo({ title: '설정 저장 실패', message: err.message, type: 'error' });
+        }
+      },
+    });
   };
 
   const handleSavePurchasePriority = async (newPriority) => {
-    try {
-      await api.saveSettings({
-        settings: {
-          purchase_priority: JSON.stringify(newPriority),
-        },
-      });
-      setPurchasePriority(newPriority);
-      const labels = {
-        KR_UNIT: '국내 주식 1주 (온주)',
-        US_UNIT: '미국 주식 1주 (온주)',
-        US_FRACTIONAL: '미국 주식 소수점 금액',
-      };
-      const textList = newPriority.map((p, i) => `${i + 1}순위: ${labels[p] || p}`).join('\n');
-      setModalInfo({
-        title: '구매 우선순위 저장 완료',
-        message: `주식 구매 우선순위가 성공적으로 저장되었습니다.\n\n${textList}`,
-        type: 'success',
-      });
-      fetchSettingsAndBalance();
-    } catch (err) {
-      setModalInfo({ title: '우선순위 저장 실패', message: err.message, type: 'error' });
-    }
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '💾 우선순위 저장',
+      title: '🎯 주식 구매 우선순위 저장 확인',
+      message: '변경하신 주식 구매 우선순위(1~3순위)를 저장하여 향후 자동/전략 매매에 적용하시겠습니까?',
+      onConfirm: async () => {
+        try {
+          await api.saveSettings({
+            settings: {
+              purchase_priority: JSON.stringify(newPriority),
+            },
+          });
+          setPurchasePriority(newPriority);
+          const labels = {
+            KR_UNIT: '국내 주식 1주 (온주)',
+            US_UNIT: '미국 주식 1주 (온주)',
+            US_FRACTIONAL: '미국 주식 소수점 금액',
+          };
+          const textList = newPriority.map((p, i) => `${i + 1}순위: ${labels[p] || p}`).join('\n');
+          setModalInfo({
+            title: '구매 우선순위 저장 완료',
+            message: `주식 구매 우선순위가 성공적으로 저장되었습니다.\n\n${textList}`,
+            type: 'success',
+          });
+          fetchSettingsAndBalance();
+        } catch (err) {
+          setModalInfo({ title: '우선순위 저장 실패', message: err.message, type: 'error' });
+        }
+      },
+    });
   };
 
   const handleSaveKeys = async (form, onSuccess) => {
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '🔑 설정 저장',
+      title: '🔑 API 인증키 변경 확인',
+      message: '입력하신 신규 증권사 Open API 및 Gemini API 키 설정을 저장하시겠습니까?\n\n기존 설정 파일이 갱신됩니다.',
+      onConfirm: async () => {
+        try {
+          const res = await api.saveSettings({ brokerConfig: form });
+          setModalInfo({ title: '키 갱신 완료', message: res.message, type: 'success' });
+          if (onSuccess) onSuccess();
+          fetchSettingsAndBalance();
+        } catch (err) {
+          setModalInfo({ title: '오류', message: err.message, type: 'error' });
+        }
+      },
+    });
+  };
+
+  const handleExportBackup = () => {
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '📦 백업 다운로드',
+      title: '📦 데이터베이스 백업 내보내기',
+      message: '현재 SQLite 데이터베이스 및 모든 설정/거래 원장을 백업 파일로 다운로드하시겠습니까?',
+      onConfirm: () => {
+        window.open('/api/backup/export', '_blank');
+        setModalInfo({
+          title: '백업 다운로드 시작',
+          message: '데이터베이스 백업 파일 생성을 완료했습니다.\n\n브라우저 다운로드 폴더를 확인해 주세요.',
+          type: 'info',
+        });
+      },
+    });
+  };
+
+  const handleUserRefreshBalance = async () => {
     try {
-      const res = await api.saveSettings({ brokerConfig: form });
-      setModalInfo({ title: '키 갱신 완료', message: res.message, type: 'success' });
-      if (onSuccess) onSuccess();
-      fetchSettingsAndBalance();
+      await fetchSettingsAndBalance();
+      setModalInfo({
+        title: '실전 계좌 동기화 완료',
+        message: '토스증권 실전 계좌의 실시간 예수금 및 보유 주식 평가 정보가 최신 상태로 갱신되었습니다.',
+        type: 'info',
+      });
     } catch (err) {
-      setModalInfo({ title: '오류', message: err.message, type: 'error' });
+      setModalInfo({ title: '동기화 실패', message: err.message, type: 'error' });
     }
   };
 
-  const handleExportBackup = async () => {
-    window.open('/api/backup/export', '_blank');
+  const handleUserRefreshLeaderboard = async () => {
+    try {
+      await Promise.all([fetchLeaderboard(), fetchBots()]);
+      setModalInfo({
+        title: '아레나 리더보드 갱신 완료',
+        message: '10대 퀀트 알고리즘의 실시간 누적 수익률, 거래 건수, 손익 지표가 최신 시세 기준으로 갱신되었습니다.',
+        type: 'info',
+      });
+    } catch (err) {
+      setModalInfo({ title: '갱신 실패', message: err.message, type: 'error' });
+    }
   };
 
   const handleImportBackup = async (e) => {
@@ -823,7 +1027,7 @@ export default function App() {
                 activeTradeMode="REAL"
                 selectedBot={currentRealBot}
                 accountBalance={accountBalance}
-                onRefreshBalance={fetchSettingsAndBalance}
+                onRefreshBalance={handleUserRefreshBalance}
               />
 
               {/* Real Bot Tabs & Action Controls & Metrics */}
@@ -888,7 +1092,7 @@ export default function App() {
             onResetVirtualAll={handleResetVirtualAll}
             isReplaying={isReplaying}
             replayResult={replayResult}
-            onRefreshLeaderboard={fetchLeaderboard}
+            onRefreshLeaderboard={handleUserRefreshLeaderboard}
           />
         )}
 
@@ -928,8 +1132,15 @@ export default function App() {
             onRefreshNews={async () => {
               try {
                 await api.refreshNews();
-                fetchNews(1);
-              } catch {}
+                await fetchNews(1);
+                setModalInfo({
+                  title: '증시 뉴스 최신화 완료',
+                  message: '국내외 주요 언론사의 실시간 증시 뉴스 및 공시 피드를 성공적으로 새로고침했습니다.',
+                  type: 'info',
+                });
+              } catch (err) {
+                setModalInfo({ title: '뉴스 갱신 실패', message: err.message, type: 'error' });
+              }
             }}
             isAiNewsStreaming={isAiNewsStreaming}
             aiNewsText={aiNewsText}
