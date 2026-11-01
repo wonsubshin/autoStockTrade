@@ -6,6 +6,7 @@ export default function LabPanel({
   bots = [],
   selectedIds: parentSelectedIds,
   setSelectedIds: parentSetSelectedIds,
+  isSelecting = false,
   virtualPositions = [],
   virtualTrades = [],
   onSelectRealBots,
@@ -81,8 +82,12 @@ export default function LabPanel({
                 fontWeight: 700,
                 background: selectedIds.length === 3 ? 'linear-gradient(135deg, #10b981, #059669)' : undefined,
                 border: selectedIds.length === 3 ? '1px solid #34d399' : undefined,
+                opacity: isSelecting ? 0.7 : 1,
+                cursor: isSelecting ? 'not-allowed' : 'pointer',
               }}
+              disabled={isSelecting}
               onClick={() => {
+                if (isSelecting) return;
                 if (selectedIds.length !== 3) {
                   alert(`실전 거래 담당 봇은 정확히 3개를 선택해야 합니다. (현재 ${selectedIds.length}개 선택됨)`);
                   return;
@@ -90,7 +95,9 @@ export default function LabPanel({
                 onSelectRealBots && onSelectRealBots(selectedIds);
               }}
             >
-              ✅ 선택한 3개 봇 실전 담당 확정 및 설정 이동 ({selectedIds.length}/3)
+              {isSelecting
+                ? '⚡ 3개 봇 실전 확정 및 설정 이동 중...'
+                : `✅ 선택한 3개 봇 실전 담당 확정 및 설정 이동 (${selectedIds.length}/3)`}
             </button>
             <button
               className="btn-action"

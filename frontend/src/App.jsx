@@ -67,6 +67,7 @@ export default function App() {
   const [selectedBotId, setSelectedBotId] = useState('');
   const [arenaSelectedIds, setArenaSelectedIds] = useState([]);
   const arenaInitRef = useRef(false);
+  const [isSelectingRealBots, setIsSelectingRealBots] = useState(false);
   const [tradingModeFilter, setTradingModeFilter] = useState('AUTO'); // 'AUTO', 'VIRTUAL', 'REAL', 'ALL'
   const [trades, setTrades] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -387,10 +388,18 @@ export default function App() {
       return;
     }
 
+    if (isSelectingRealBots) return; // 더블클릭 중복 요청 방지
+    setIsSelectingRealBots(true);
+
     try {
       const res = await api.selectRealBots(selectedBotIds);
+      // 서버에서 갱신된 봇 목록을 즉시 상위 state에 주입하여 환경설정 화면 마운트 시 봇 목록 누락 방지
+      if (res.bots && res.bots.length > 0) {
+        setBots(res.bots);
+      }
       setArenaSelectedIds(selectedBotIds);
       arenaInitRef.current = true;
+
       // 가상 경쟁 아레나에서 확정 후 즉시 환경설정 화면으로 자동 이동
       setActiveMenu('SETTINGS');
       setModalInfo({
@@ -402,6 +411,8 @@ export default function App() {
       await fetchSettingsAndBalance();
     } catch (err) {
       setModalInfo({ title: '실전 봇 선택 실패', message: err.message, type: 'error' });
+    } finally {
+      setIsSelectingRealBots(false);
     }
   };
 
@@ -418,6 +429,10 @@ export default function App() {
   const handleSaveRealAllocation = async (totalBudget, allocs) => {
     try {
       const res = await api.saveRealAllocation(totalBudget, allocs);
+      // 서버에서 갱신된 봇 목록을 즉시 setBots에 주입하여 실전 매매 화면 즉시 반영
+      if (res.bots && res.bots.length > 0) {
+        setBots(res.bots);
+      }
       // 환경설정에서 확인(저장) 후 즉시 실전 매매 화면으로 자동 이동 및 적용
       setActiveMenu('REAL_TRADING');
       setModalInfo({
@@ -770,13 +785,24 @@ export default function App() {
                   10대 퀀트 알고리즘이 24시간 가상 경쟁 아레나에서 상시 모의 거래를 수행하고 있습니다.<br />
                   <strong>[⚡ 가상 경쟁 아레나]</strong> 탭에서 실시간 누적 수익률을 확인하신 후, 실전을 담당할 1~3개의 봇을 체크하여 확정해주세요.
                 </p>
-                <button
-                  className="btn-primary"
-                  style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 700 }}
-                  onClick={() => setActiveMenu('VIRTUAL_ARENA')}
-                >
-                  ⚡ 가상 경쟁 아레나로 이동하여 실전 봇 선택하기
-                </button>
+                <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
+                  <button
+                    className="btn-primary"
+                    style={{ padding: '10px 24px', fontSize: '14px', fontWeight: 700 }}
+                    onClick={() => setActiveMenu('VIRTUAL_ARENA')}
+                  >
+                    ⚡ 가상 경쟁 아레나로 이동하여 실전 봇 선택하기
+                  </button>
+                  {bots.length >= 3 && (
+                    <button
+                      className="btn-action success"
+                      style={{ padding: '10px 20px', fontSize: '14px', fontWeight: 700 }}
+                      onClick={() => handleSelectRealBots([bots[0].bot_id, bots[1].bot_id, bots[2].bot_id])}
+                    >
+                      👑 상위 3개 봇으로 자동 지정하기
+                    </button>
+                  )}
+                </div>
               </div>
             );
           }
@@ -854,6 +880,7 @@ export default function App() {
             bots={bots}
             selectedIds={arenaSelectedIds}
             setSelectedIds={setArenaSelectedIds}
+            isSelecting={isSelectingRealBots}
             virtualPositions={positions.filter((p) => p.trade_mode === 'VIRTUAL')}
             virtualTrades={trades.filter((t) => t.trade_mode === 'VIRTUAL')}
             onSelectRealBots={handleSelectRealBots}
@@ -930,6 +957,7 @@ export default function App() {
             onSaveKeys={handleSaveKeys}
             onExportBackup={handleExportBackup}
             onImportBackup={handleImportBackup}
+            onGoToArena={() => setActiveMenu('VIRTUAL_ARENA')}
           />
         )}
       </main>

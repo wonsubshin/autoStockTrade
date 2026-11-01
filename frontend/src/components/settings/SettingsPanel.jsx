@@ -16,11 +16,22 @@ export default function SettingsPanel({
   onSaveKeys,
   onExportBackup,
   onImportBackup,
+  onGoToArena,
 }) {
   const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
   const selectedRealBots = bots.filter((b) => Number(b.is_real_selected) === 1);
   const [realTotalBudget, setRealTotalBudget] = useState(budgetSettings?.realTotalBudget || 10000000);
-  const [allocations, setAllocations] = useState([]);
+  const [allocations, setAllocations] = useState(() => {
+    if (selectedRealBots.length > 0) {
+      return selectedRealBots.map((b) => ({
+        bot_id: b.bot_id,
+        name: b.name,
+        nickname: b.nickname,
+        ratio: Number(b.real_allocation_ratio || (100 / selectedRealBots.length).toFixed(1)),
+      }));
+    }
+    return [];
+  });
 
   React.useEffect(() => {
     if (budgetSettings?.realTotalBudget) {
@@ -29,12 +40,12 @@ export default function SettingsPanel({
   }, [budgetSettings?.realTotalBudget]);
 
   const selectedBotIdsKey = selectedRealBots.map((b) => b.bot_id).sort().join(',');
-  const prevBotIdsKeyRef = React.useRef('');
+  const prevBotIdsKeyRef = React.useRef(selectedBotIdsKey);
 
   React.useEffect(() => {
     if (selectedRealBots.length > 0) {
-      // 5초 주기 bots 폴링 시 슬라이더나 입력값이 초기화되지 않도록 선택된 봇 목록이 바뀔 때만 재설정
-      if (prevBotIdsKeyRef.current !== selectedBotIdsKey) {
+      // allocations가 비어있거나 선택된 봇 목록이 변경된 경우 재설정
+      if (allocations.length === 0 || prevBotIdsKeyRef.current !== selectedBotIdsKey) {
         prevBotIdsKeyRef.current = selectedBotIdsKey;
         setAllocations(
           selectedRealBots.map((b) => ({
@@ -46,7 +57,7 @@ export default function SettingsPanel({
         );
       }
     }
-  }, [selectedBotIdsKey, selectedRealBots]);
+  }, [selectedBotIdsKey, selectedRealBots, allocations.length]);
 
   const handleRatioChange = (botId, val) => {
     const num = Math.max(0, Math.min(100, Number(val)));
@@ -181,7 +192,19 @@ export default function SettingsPanel({
 
         {allocations.length === 0 ? (
           <div style={{ padding: '20px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', color: '#fca5a5', fontSize: '13px' }}>
-            ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 3개의 봇을 먼저 체크 후 확정해주세요.
+            <div style={{ marginBottom: '12px' }}>
+              ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 3개의 봇을 먼저 체크 후 확정해주세요.
+            </div>
+            {onGoToArena && (
+              <button
+                type="button"
+                className="btn-action success"
+                style={{ fontWeight: 700, padding: '7px 16px' }}
+                onClick={onGoToArena}
+              >
+                ⚡ 가상 경쟁 아레나로 이동하여 3개 봇 선택하기
+              </button>
+            )}
           </div>
         ) : (
           <>
@@ -207,7 +230,7 @@ export default function SettingsPanel({
                 type="number"
                 className="input-field"
                 step="100000"
-                style={{ borderColor: realTotalBudget > tossAvailable ? '#ef4444' : undefined }}
+                style={{ borderColor: tossAvailable > 0 && realTotalBudget > tossAvailable ? '#ef4444' : undefined }}
                 value={realTotalBudget}
                 onChange={(e) => setRealTotalBudget(parseInt(e.target.value, 10) || 0)}
               />
@@ -215,35 +238,35 @@ export default function SettingsPanel({
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(tossAvailable)}
+                  onClick={() => setRealTotalBudget(tossAvailable || 10000000)}
                 >
                   전액 (100%)
                 </button>
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(Math.floor(tossAvailable * 0.7))}
+                  onClick={() => setRealTotalBudget(Math.floor((tossAvailable || 10000000) * 0.7))}
                 >
                   70%
                 </button>
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(Math.floor(tossAvailable * 0.5))}
+                  onClick={() => setRealTotalBudget(Math.floor((tossAvailable || 10000000) * 0.5))}
                 >
                   50%
                 </button>
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(Math.floor(tossAvailable * 0.3))}
+                  onClick={() => setRealTotalBudget(Math.floor((tossAvailable || 10000000) * 0.3))}
                 >
                   30%
                 </button>
               </div>
-              {realTotalBudget > tossAvailable && (
+              {tossAvailable > 0 && realTotalBudget > tossAvailable && (
                 <div className="budget-error-msg" style={{ marginTop: '8px' }}>
-                  ❌ 실제 사용 예산({realTotalBudget.toLocaleString()}원)은 현재 토스증권 예수금({tossAvailable.toLocaleString()}원)을 초과할 수 없습니다.
+                  ⚠️ 실제 사용 예산({realTotalBudget.toLocaleString()}원)은 현재 토스증권 예수금({tossAvailable.toLocaleString()}원)을 초과할 수 없습니다.
                 </div>
               )}
             </div>
@@ -308,7 +331,7 @@ export default function SettingsPanel({
               </span>
               <button
                 className="btn-primary"
-                disabled={!isAllocValid || realTotalBudget > tossAvailable}
+                disabled={!isAllocValid || (tossAvailable > 0 && realTotalBudget > tossAvailable)}
                 onClick={() => onSaveRealAllocation && onSaveRealAllocation(realTotalBudget, allocations)}
               >
                 💾 실전 투자금 비율 저장 및 실전 매매 적용 (확인)
