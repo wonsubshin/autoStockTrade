@@ -16,7 +16,7 @@ export class BotService {
     const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
     const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
     const realTotal = realBudgetRow ? parseInt(realBudgetRow.value, 10) : 10000000;
-    const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
+    const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 10000000;
 
     const rawBots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
 
@@ -37,10 +37,13 @@ export class BotService {
         WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
       `).get(bot.bot_id);
 
-      const initCap = Number(bot.virtual_initial_capital || 10000000);
+      const initCap = Number(bot.virtual_initial_capital || 1000000);
       const totalEval = Number(bot.virtual_krw || 0) + Number(vOpen.open_amount || 0);
       const returnPct = ((totalEval - initCap) / initCap) * 100;
-      const winRate = vStats.total_trades > 0 ? (vStats.wins / vStats.total_trades) * 100 : 0;
+      const totalTrades = Number(vStats?.total_trades || 0);
+      const winTrades = Number(vStats?.wins || 0);
+      const lossTrades = totalTrades - winTrades;
+      const winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
 
       // 2. 실전 매매 거래 통계 집계
       const rStats = db.prepare(`
@@ -57,18 +60,21 @@ export class BotService {
         WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
       `).get(bot.bot_id);
 
-      const ratio = bot.allocation_ratio || (Number(bot.real_allocation_ratio) / 100) || 0.33;
-      const realAllocated = bot.real_allocated_capital || Math.floor(realTotal * ratio);
-      const virtualAllocated = Math.floor(virtTotal * ratio);
+      const ratio = bot.allocation_ratio || (Number(bot.real_allocation_ratio) / 100) || 0.1;
+      const realAllocated = bot.real_allocated_capital || Math.floor(realTotal * (Number(bot.real_allocation_ratio || 33.3) / 100));
+      const virtualAllocated = bot.virtual_initial_capital || 1000000;
 
       return {
         ...bot,
         is_virtual_running: 1, // 상시 가상 거래 상태 보장
+        virtual_initial_capital: initCap,
         virtual_total_assets: totalEval,
         virtual_return_pct: Number(returnPct.toFixed(2)),
-        virtual_profit_krw: Number(vStats.realized_profit),
+        virtual_profit_krw: Number(vStats?.realized_profit || 0),
         virtual_win_rate: Number(winRate.toFixed(1)),
-        virtual_trade_count: Number(vStats.total_trades),
+        virtual_trade_count: totalTrades,
+        virtual_win_trades: winTrades,
+        virtual_loss_trades: lossTrades,
         virtual_open_count: Number(vOpen.open_count || 0),
         real_profit_krw: Number(rStats.realized_profit),
         real_trade_count: Number(rStats.total_trades),
@@ -226,10 +232,11 @@ export class BotService {
 
     // 1. 전체 가상 봇 및 거래내역 일괄 초기화
     if (botId === 'all' || action === 'RESET_VIRTUAL_ALL') {
-      const res = virtualEngine.resetAllVirtual(seedCapital);
+      const targetSeed = seedCapital ? Number(seedCapital) : 1000000;
+      const res = virtualEngine.resetAllVirtual(targetSeed);
       return {
         success: true,
-        message: `전체 가상 봇(${res.count}개)의 보유 포지션 및 누적 거래내역이 완전히 삭제되었습니다. 초기 자본금으로 새로운 거래를 시작합니다.`,
+        message: `전체 10대 가상 봇의 보유 포지션 및 누적 거래내역이 완전히 삭제되었습니다. 각 봇 초기 자본금 100만 원, 모든 성과 지표(수익률, 손익, 승률, 익절/손절) 0으로 신규 경쟁을 시작합니다.`,
       };
     }
 

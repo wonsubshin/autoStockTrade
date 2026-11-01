@@ -10,7 +10,7 @@ export class BudgetService {
     const bots = db.prepare('SELECT bot_id, name, nickname, trade_mode, allocation_ratio, allocated_capital, virtual_krw, is_running FROM bots ORDER BY bot_id ASC').all();
 
     return {
-      virtualTotalBudget: vRow ? parseInt(vRow.value, 10) : 30000000,
+      virtualTotalBudget: vRow ? parseInt(vRow.value, 10) : 10000000,
       realTotalBudget: rRow ? parseInt(rRow.value, 10) : 10000000,
       tossAvailableCash: tossBal.availableCash || 0,
       tossTotalAssetAmount: tossBal.totalAssetAmount || 0,

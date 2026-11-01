@@ -189,7 +189,10 @@ export default function LabPanel({
                       </div>
                     </td>
                     <td style={{ fontWeight: 600 }}>
-                      {Number(bot.virtual_total_assets || 10000000).toLocaleString()}원
+                      <div>{Number(bot.virtual_total_assets || 1000000).toLocaleString()}원</div>
+                      <div style={{ fontSize: '11px', color: '#64748b' }}>
+                        평가손익: {pKrw >= 0 ? `+${pKrw.toLocaleString()}원` : `${pKrw.toLocaleString()}원`}
+                      </div>
                     </td>
                     <td className={ret >= 0 ? 'num-up' : 'num-down'} style={{ fontWeight: 700, fontSize: '13px' }}>
                       {ret >= 0 ? `+${ret.toFixed(2)}%` : `${ret.toFixed(2)}%`}
@@ -201,8 +204,11 @@ export default function LabPanel({
                       <span style={{ fontWeight: 600 }}>{bot.virtual_win_rate || 0}%</span>
                       <small style={{ color: '#94a3b8', marginLeft: '4px' }}>({bot.virtual_trade_count || 0}건)</small>
                     </td>
-                    <td style={{ fontSize: '11.5px', color: '#cbd5e1' }}>
-                      <span className="num-up">+{bot.take_profit_pct}%</span> / <span className="num-down">-{Math.abs(bot.stop_loss_pct)}%</span>
+                    <td>
+                      <span className="num-up">{bot.virtual_win_trades || 0}건</span> / <span className="num-down">{bot.virtual_loss_trades || 0}건</span>
+                      <div style={{ fontSize: '10.5px', color: '#64748b', marginTop: '2px' }}>
+                        목표: +{bot.take_profit_pct}% / -{Math.abs(bot.stop_loss_pct)}%
+                      </div>
                     </td>
                   </tr>
                 );

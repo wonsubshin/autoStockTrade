@@ -46,7 +46,7 @@ export function initDatabase() {
       config_json TEXT,
       last_status_msg TEXT,
       is_virtual_running INTEGER DEFAULT 1,
-      virtual_initial_capital INTEGER DEFAULT 10000000,
+      virtual_initial_capital INTEGER DEFAULT 1000000,
       virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중',
       is_real_selected INTEGER DEFAULT 0,
       is_real_running INTEGER DEFAULT 0,
@@ -180,8 +180,8 @@ export function seedInitialData() {
   const initSettings = [
     { key: 'gate_passcode', value: 'sws@2129' },
     { key: 'total_capital', value: '30000000' },
-    { key: 'virtual_seed_money', value: '10000000' },
-    { key: 'virtual_total_budget', value: '30000000' },
+    { key: 'virtual_seed_money', value: '1000000' },
+    { key: 'virtual_total_budget', value: '10000000' },
     { key: 'real_total_budget', value: '10000000' },
     { key: 'purchase_priority', value: JSON.stringify(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']) },
     { key: 'stats_start_date', value: '2026-10-01' },
@@ -201,7 +201,7 @@ export function seedInitialData() {
 export function migrateAndSeedTenBots(database = db) {
   const alterColumns = [
     `ALTER TABLE bots ADD COLUMN is_virtual_running INTEGER DEFAULT 1`,
-    `ALTER TABLE bots ADD COLUMN virtual_initial_capital INTEGER DEFAULT 10000000`,
+    `ALTER TABLE bots ADD COLUMN virtual_initial_capital INTEGER DEFAULT 1000000`,
     `ALTER TABLE bots ADD COLUMN virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중'`,
     `ALTER TABLE bots ADD COLUMN is_real_selected INTEGER DEFAULT 0`,
     `ALTER TABLE bots ADD COLUMN is_real_running INTEGER DEFAULT 0`,
@@ -323,7 +323,7 @@ export function migrateAndSeedTenBots(database = db) {
       is_virtual_running, virtual_initial_capital, virtual_krw,
       is_real_selected, is_real_running, real_allocation_ratio, real_allocated_capital, real_available_krw,
       stop_loss_pct, take_profit_pct, config_json, trade_mode, is_running
-    ) VALUES (?, ?, ?, ?, ?, 1, 10000000, 10000000, ?, ?, ?, ?, ?, ?, ?, ?, 'VIRTUAL', 1)
+    ) VALUES (?, ?, ?, ?, ?, 1, 1000000, 1000000, ?, ?, ?, ?, ?, ?, ?, ?, 'VIRTUAL', 1)
     ON CONFLICT(bot_id) DO UPDATE SET
       name = excluded.name,
       nickname = excluded.nickname,

@@ -109,7 +109,7 @@ export default function App() {
   // 11. Budget & Settings State
   const [accountBalance, setAccountBalance] = useState(null);
   const [budgetSettings, setBudgetSettings] = useState({
-    virtualTotalBudget: 30000000,
+    virtualTotalBudget: 10000000,
     realTotalBudget: 10000000,
     tossAvailableCash: 0,
     tossTotalAssetAmount: 0,
@@ -340,12 +340,12 @@ export default function App() {
         type: 'confirm',
         title: isAll ? '⚠️ 가상 전체 초기화 및 새로 시작' : '⚠️ 가상 계좌 초기화',
         message: isAll
-          ? '모든 가상 봇의 보유 포지션 및 누적 거래내역이 완전히 삭제됩니다.\n\n시드머니(3,000만 원)로 원복되며, 0건부터 새로운 자율 전략 거래를 다시 시작합니다.\n\n정말 모든 가상 데이터를 초기화하시겠습니까?'
-          : `[${selectedBot?.nickname || selectedBot?.name}]의 모든 가상 보유 포지션과 지금까지 거래한 내역이 모두 삭제됩니다.\n\n초기 자본금으로 원복되어 처음부터 새롭게 거래를 시작합니다.\n\n정말 초기화하시겠습니까?`,
+          ? '모든 가상 봇(10개)의 보유 포지션 및 누적 거래내역이 완전히 삭제됩니다.\n\n각 봇의 초기 자본금이 100만 원(총 1,000만 원)으로 재설정되며, 모든 성과 지표(누적 수익률, 실현 손익금, 승률, 익절/손절)가 0으로 초기화된 상태에서 새로운 자율 퀀트 경쟁을 시작합니다.\n\n정말 가상 데이터를 전체 초기화하시겠습니까?'
+          : `[${selectedBot?.nickname || selectedBot?.name}]의 모든 가상 보유 포지션과 지금까지 거래한 내역이 모두 삭제됩니다.\n\n초기 자본금(100만 원)으로 원복되어 처음부터 새롭게 거래를 시작합니다.\n\n정말 초기화하시겠습니까?`,
         onConfirm: async () => {
           try {
             const targetId = isAll ? 'all' : selectedBotId;
-            const res = isAll ? await api.resetVirtualAll() : await api.botAction(targetId, action, extra);
+            const res = isAll ? await api.resetVirtualAll(1000000) : await api.botAction(targetId, action, { ...extra, seedCapital: 1000000 });
             setModalInfo({ title: '초기화 완료', message: res.message, type: 'success' });
             await Promise.all([
               fetchBots(),

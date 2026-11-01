@@ -85,7 +85,7 @@ export const api = {
     request(`/api/bots/${botId}/promote`, {
       method: 'POST',
     }),
-  resetVirtualAll: (seedCapital) =>
+  resetVirtualAll: (seedCapital = 1000000) =>
     request('/api/bots/reset-virtual-all', {
       method: 'POST',
       body: JSON.stringify({ action: 'RESET_VIRTUAL_ALL', seedCapital }),

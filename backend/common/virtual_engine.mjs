@@ -28,35 +28,26 @@ export class VirtualPaperTradingEngine {
     const minRequired = isFractional ? 1000 : Math.ceil(executionPrice * (1 + BROKERAGE_FEE_RATE));
 
     if (virtualKrw < minRequired) {
-      // 잔고 부족: 봇 비활성화 및 상태 업데이트
-      db.prepare(`
-        UPDATE bots
-        SET is_running = 0,
-            last_status_msg = ?,
-            updated_at = ?
-        WHERE bot_id = ?
-      `).run(
-        `🚨 가상 예수금 부족 (${virtualKrw.toLocaleString()}원 < 최소 ${minRequired.toLocaleString()}원) - 봇 자동 중지`,
-        new Date().toISOString(),
-        botId
-      );
       throw new Error(`가상 예수금이 부족하여 주문할 수 없습니다. (보유: ${virtualKrw.toLocaleString()}원, 필요: ${minRequired.toLocaleString()}원)`);
     }
 
-    // 2. 봇별 할당 예산 한도 검증 및 가용 예산 산출
+    // 2. 봇별 할당 예산 한도 검증 및 가용 예산 산출 (가상 모드는 항상 virtual_initial_capital 100만원 기준)
     const openPosRow = db.prepare("SELECT COALESCE(SUM(buy_amount), 0) as used FROM bot_positions WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'").get(botId);
     const usedBudget = openPosRow ? openPosRow.used : 0;
-    const allocatedBudget = bot.allocated_capital || bot.virtual_krw || 10000000;
+    const allocatedBudget = Number(bot.virtual_initial_capital || 1000000);
     const remainingBudget = Math.max(0, allocatedBudget - usedBudget);
 
     if (remainingBudget < minRequired) {
-      throw new Error(`봇 [${bot.nickname || bot.name}]에 할당된 예산 한도(${allocatedBudget.toLocaleString()}원)에 도달하였습니다. (현재 보유: ${usedBudget.toLocaleString()}원)`);
+      throw new Error(`봇 [${bot.nickname || bot.name}]에 할당된 가상 예산 한도(${allocatedBudget.toLocaleString()}원)에 도달하였습니다. (현재 보유: ${usedBudget.toLocaleString()}원)`);
     }
 
     // 3. 가용 예산 산출 (미국 주식은 소수점 수량, 국내 주식은 1주 단위 정수 수량)
     const maxBudget = Math.min(virtualKrw, requestedBudget || virtualKrw, remainingBudget);
     const rawQty = maxBudget / (executionPrice * (1 + BROKERAGE_FEE_RATE));
-    const qty = isFractional ? parseFloat(rawQty.toFixed(6)) : Math.floor(rawQty);
+    let qty = isFractional ? parseFloat(rawQty.toFixed(6)) : Math.floor(rawQty);
+    if (!isFractional && qty <= 0 && virtualKrw >= minRequired && remainingBudget >= minRequired) {
+      qty = 1;
+    }
     if (qty <= 0) {
       throw new Error('주문 가능 수량이 0입니다.');
     }
@@ -236,7 +227,7 @@ export class VirtualPaperTradingEngine {
   }
 
   // 가상 계좌 단일 봇 초기화 (포지션, 체결내역, 성과로그 완전 삭제 후 초기화)
-  resetVirtualBalance(botId, seedCapital = 10000000) {
+  resetVirtualBalance(botId, seedCapital = 1000000) {
     const db = this.getDb();
     if (!db) return;
 
@@ -250,18 +241,20 @@ export class VirtualPaperTradingEngine {
     db.prepare(`
       UPDATE bots
       SET virtual_krw = ?,
-          allocated_capital = ?,
-          is_running = 1,
-          last_status_msg = '가상 리셋 완료 - 초기 자본금으로 새로운 전략 거래 시작',
+          virtual_initial_capital = ?,
+          allocated_capital = CASE WHEN is_real_selected = 1 THEN allocated_capital ELSE ? END,
+          is_virtual_running = 1,
+          virtual_status_msg = '가상 리셋 완료 - 초기 자본금 100만원으로 신규 경쟁 시작',
+          last_status_msg = '가상 리셋 완료 - 초기 자본금 100만원으로 신규 경쟁 시작',
           updated_at = ?
       WHERE bot_id = ?
-    `).run(seedCapital, seedCapital, nowIso, botId);
+    `).run(seedCapital, seedCapital, seedCapital, nowIso, botId);
 
     return { botId, seedCapital };
   }
 
   // 가상 계좌 전체 봇 및 거래내역 일괄 초기화 (완전 삭제 후 0부터 재시작)
-  resetAllVirtual(seedCapital = 10000000) {
+  resetAllVirtual(seedCapital = 1000000) {
     const db = this.getDb();
     if (!db) return { count: 0 };
 
@@ -272,22 +265,28 @@ export class VirtualPaperTradingEngine {
     db.prepare("DELETE FROM trades WHERE trade_mode = 'VIRTUAL'").run();
     db.prepare("DELETE FROM virtual_performance_logs").run();
 
-    // 2. 가상 총 예산 로드 및 각 봇별 할당 금액 계산
-    const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
-    const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 30000000;
+    // 2. 가상 총 예산 갱신 (10개 봇 * 100만원 = 1,000만원)
+    const totalVirtBudget = seedCapital * 10;
+    db.prepare(`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES ('virtual_total_budget', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+    `).run(String(totalVirtBudget), nowIso);
 
-    const bots = db.prepare("SELECT * FROM bots WHERE trade_mode = 'VIRTUAL'").all();
+    // 3. 10대 봇 전원의 가상 잔고 및 지표를 100만원과 0으로 완벽 초기화
+    const bots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
     for (const b of bots) {
-      const cap = Math.floor(virtTotal * (b.allocation_ratio || 0.33)) || seedCapital;
       db.prepare(`
         UPDATE bots
         SET virtual_krw = ?,
-            allocated_capital = ?,
-            is_running = 1,
-            last_status_msg = '가상 전체 리셋 완료 - 초기 자본금으로 새로운 전략 거래 시작',
+            virtual_initial_capital = ?,
+            allocated_capital = CASE WHEN is_real_selected = 1 THEN allocated_capital ELSE ? END,
+            is_virtual_running = 1,
+            virtual_status_msg = '가상 전체 초기화 완료 - 초기 자본금 100만원으로 신규 경쟁 시작',
+            last_status_msg = '가상 전체 초기화 완료 - 초기 자본금 100만원으로 신규 경쟁 시작',
             updated_at = ?
         WHERE bot_id = ?
-      `).run(cap, cap, nowIso, b.bot_id);
+      `).run(seedCapital, seedCapital, seedCapital, nowIso, b.bot_id);
     }
 
     return { success: true, count: bots.length };
@@ -298,9 +297,9 @@ export class VirtualPaperTradingEngine {
     const db = this.getDb();
     if (!db) {
       return {
-        availableCash: 30000000,
+        availableCash: 10000000,
         stockEvalAmount: 0,
-        totalAssetAmount: 30000000,
+        totalAssetAmount: 10000000,
         totalProfitKrw: 0,
         profitRate: 0.0,
         holdings: [],
@@ -352,7 +351,7 @@ export class VirtualPaperTradingEngine {
     const totalAssetAmount = availableCash + stockEvalAmount;
 
     const seedSetting = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
-    const initialSeed = seedSetting ? parseInt(seedSetting.value, 10) : 30000000;
+    const initialSeed = seedSetting ? parseInt(seedSetting.value, 10) : 10000000;
     const profitRate = initialSeed > 0 ? parseFloat(((totalProfitKrw / initialSeed) * 100).toFixed(2)) : 0.0;
 
     return {
@@ -385,11 +384,12 @@ export class VirtualPaperTradingEngine {
       WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
     `).all(botId);
 
-    const initialCapital = bot.allocated_capital || 10000000;
+    const initialCapital = Number(bot.virtual_initial_capital || 1000000);
     const totalTrades = trades.length;
 
     let totalProfitKrw = 0;
     let winningTrades = 0;
+    let losingTrades = 0;
     let grossProfit = 0;
     let grossLoss = 0;
     const returns = [];
@@ -416,6 +416,7 @@ export class VirtualPaperTradingEngine {
         winningTrades++;
         grossProfit += pKrw;
       } else if (pKrw < 0) {
+        losingTrades++;
         grossLoss += Math.abs(pKrw);
       }
 
@@ -459,12 +460,16 @@ export class VirtualPaperTradingEngine {
       mddPct: parseFloat(maxDrawdownPct.toFixed(2)),
       sharpeRatio,
       totalTrades,
+      winningTrades,
+      losingTrades,
+      winTrades: winningTrades,
+      lossTrades: losingTrades,
       openPositionsCount: openPositions.length,
       lastStatusMsg: bot.last_status_msg,
     };
   }
 
-  // Top 3 알고리즘 실시간 리더보드
+  // Top 10 알고리즘 실시간 리더보드
   getLeaderboard() {
     const db = this.getDb();
     if (!db) return [];
@@ -493,7 +498,7 @@ export class VirtualPaperTradingEngine {
   }
 
   // ⚡ 최근 30일 데이터 기반 3대 알고리즘 즉시 고속 시뮬레이션 (Fast Replay Test)
-  async runFastReplayTest(seedCapital = 10000000) {
+  async runFastReplayTest(seedCapital = 1000000) {
     const db = this.getDb();
     if (!db) throw new Error('DB가 초기화되지 않았습니다.');
 
