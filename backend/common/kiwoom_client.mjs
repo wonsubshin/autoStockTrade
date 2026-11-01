@@ -60,6 +60,7 @@ export class KiwoomClient {
     this.tokenExpiresAt = 0;
     this.lastRequestTime = 0;
     this.minIntervalMs = 250; // 250ms Rate Limit
+    this.priceCache = new Map();
     this.mockPriceOffsets = new Map();
     this.tossClient = null; // 1안: 미국주식 실시간 시세 토스증권 클라이언트 위임
   }
@@ -232,13 +233,24 @@ export class KiwoomClient {
 
   // 국내주식 현재가 및 1호가(매도 1호가 / 매수 1호가) 조회 (미국주식은 1안에 따라 토스증권 실시간 API로 자동 라우팅)
   async getCurrentPrice(stockCode) {
-    const isUsStock = /^[A-Za-z.]+$/.test(stockCode);
+    const symbol = String(stockCode || '').trim();
+    if (!symbol) return null;
+
+    const cached = this.priceCache.get(symbol);
+    if (cached && Date.now() - cached.ts < 3500) {
+      return cached.data;
+    }
+
+    const isUsStock = /^[A-Za-z.]+$/.test(symbol);
     if (isUsStock && this.tossClient) {
       try {
-        const tossPrice = await this.tossClient.getCurrentPrice(stockCode);
-        if (tossPrice) return tossPrice;
+        const tossPrice = await this.tossClient.getCurrentPrice(symbol);
+        if (tossPrice) {
+          this.priceCache.set(symbol, { ts: Date.now(), data: tossPrice });
+          return tossPrice;
+        }
       } catch (e) {
-        console.warn(`[Kiwoom->Toss] 미국 주식 실시간 시세 위임 실패 (${stockCode}):`, e.message);
+        console.warn(`[Kiwoom->Toss] 미국 주식 실시간 시세 위임 실패 (${symbol}):`, e.message);
       }
     }
 
@@ -264,9 +276,9 @@ export class KiwoomClient {
             const currentPrice = parseInt(out.stck_prpr || out.price, 10);
             const askPrice1 = parseInt(out.askp1 || out.stck_prpr || out.price, 10);
             const bidPrice1 = parseInt(out.bidp1 || out.stck_prpr || out.price, 10);
-            return {
-              stockCode,
-              stockName: out.stock_name || out.hts_kor_isnm || stockCode,
+            const resObj = {
+              stockCode: symbol,
+              stockName: out.stock_name || out.hts_kor_isnm || symbol,
               currentPrice: adjustKRXTickSize(currentPrice),
               askPrice1: adjustKRXTickSize(askPrice1),
               bidPrice1: adjustKRXTickSize(bidPrice1),
@@ -276,15 +288,19 @@ export class KiwoomClient {
               provider: '키움증권',
               isMock: false,
             };
+            this.priceCache.set(symbol, { ts: Date.now(), data: resObj });
+            return resObj;
           }
         }
       } catch (e) {
-        console.warn(`[Kiwoom] 시세 조회 실패 (${stockCode}):`, e.message);
+        console.warn(`[Kiwoom] 시세 조회 실패 (${symbol}):`, e.message);
       }
     }
 
     // High fidelity realistic fallback simulation price
-    return this.getMockPrice(stockCode);
+    const mockObj = this.getMockPrice(symbol);
+    this.priceCache.set(symbol, { ts: Date.now(), data: mockObj });
+    return mockObj;
   }
 
   getMockPrice(stockCode) {

@@ -48,10 +48,43 @@ class TossPythonExecutor:
             'base_url': 'https://openapi.tossinvest.com'
         }
 
+    def get_token_file_path(self) -> str:
+        return os.path.join(self.project_root, 'config', '.toss_token.json')
+
+    def load_cached_token(self) -> Optional[str]:
+        path = self.get_token_file_path()
+        if os.path.exists(path):
+            try:
+                with open(path, 'r', encoding='utf-8') as f:
+                    data = json.load(f)
+                    now_ms = time.time() * 1000
+                    if data.get('access_token') and data.get('expires_at', 0) > (now_ms + 60000):
+                        self.token = data['access_token']
+                        self.token_expires_at = data['expires_at'] / 1000.0
+                        return self.token
+            except Exception:
+                pass
+        return None
+
+    def save_cached_token(self, token: str, expires_in_sec: int):
+        path = self.get_token_file_path()
+        try:
+            expires_at = int((time.time() + expires_in_sec) * 1000)
+            with open(path, 'w', encoding='utf-8') as f:
+                json.dump({'access_token': token, 'expires_at': expires_at}, f)
+            self.token = token
+            self.token_expires_at = time.time() + expires_in_sec
+        except Exception:
+            pass
+
     def get_auth_token(self, force_refresh: bool = False) -> Optional[str]:
         now = time.time()
-        if not force_refresh and self.token and self.token_expires_at > (now + 60):
-            return self.token
+        if not force_refresh:
+            if self.token and self.token_expires_at > (now + 60):
+                return self.token
+            cached = self.load_cached_token()
+            if cached:
+                return cached
 
         if not self.config['api_key'] or not self.config['api_secret']:
             raise ValueError("토스증권 API Key 또는 Secret이 설정되지 않았습니다.")
@@ -74,7 +107,7 @@ class TossPythonExecutor:
                 data = json.loads(resp.read().decode('utf-8'))
                 self.token = data.get('access_token')
                 expires_in = int(data.get('expires_in', 86400))
-                self.token_expires_at = now + expires_in
+                self.save_cached_token(self.token, expires_in)
                 return self.token
         except urllib.error.HTTPError as e:
             err_body = e.read().decode('utf-8')

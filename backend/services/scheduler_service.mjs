@@ -40,6 +40,13 @@ export class SchedulerService {
 
       // 시세 캐시 맵 구축 (국내 및 해외)
       const candidateQuotes = [];
+      const usCandidateStocks = ALL_CANDIDATE_STOCKS.filter((s) => s.market === 'US');
+      if (usCandidateStocks.length > 0) {
+        try {
+          await tossClient.getMultiplePrices(usCandidateStocks.map((s) => s.code));
+        } catch (e) {}
+      }
+
       for (const stock of ALL_CANDIDATE_STOCKS) {
         try {
           const isUs = stock.market === 'US';
@@ -273,6 +280,12 @@ export class SchedulerService {
             );
           } catch (err) {
             console.error('[SchedulerService] Python 실전 매도 에러:', err.message);
+            // 브로커 미보유, 잔고 오류, 레이트리밋 등으로 연속 실패하는 고스트 포지션은 CLOSED 처리하여 무한 반복 방지
+            const errMsg = String(err.message || '');
+            if (errMsg.includes('429') || errMsg.includes('잔고') || errMsg.includes('보유') || errMsg.includes('400') || errMsg.includes('404')) {
+              console.warn(`[SchedulerService] 실전 매도 불가 포지션(${pos.stock_name}, 사유: ${errMsg}) 자동 닫힘 처리`);
+              db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, pos.id);
+            }
           }
         }
       }

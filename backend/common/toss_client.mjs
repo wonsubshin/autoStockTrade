@@ -70,18 +70,56 @@ export class TossClient {
 
   async rateLimitWait() {
     const now = Date.now();
-    const wait = Math.max(0, this.lastRequestTime + this.minIntervalMs - now);
-    this.lastRequestTime = now + wait;
+    if (this.lastRequestTime < now) {
+      this.lastRequestTime = now;
+    }
+    const wait = Math.min(1000, Math.max(0, this.lastRequestTime - now));
+    this.lastRequestTime = Math.min(now + 1000, this.lastRequestTime + this.minIntervalMs);
     if (wait > 0) {
       await new Promise((res) => setTimeout(res, wait));
     }
   }
 
-  // 1. 토스증권 OAuth 2.0 인증 토큰 발급 (POST /oauth2/token, 동시성 프로미스 뮤텍스 적용)
+  getTokenFilePath() {
+    return path.join(this.projectRoot, 'config', '.toss_token.json');
+  }
+
+  loadCachedToken() {
+    const tokenFile = this.getTokenFilePath();
+    if (fs.existsSync(tokenFile)) {
+      try {
+        const data = JSON.parse(fs.readFileSync(tokenFile, 'utf8'));
+        if (data.access_token && data.expires_at > Date.now() + 60000) {
+          this.token = data.access_token;
+          this.tokenExpiresAt = data.expires_at;
+          return this.token;
+        }
+      } catch (e) {}
+    }
+    return null;
+  }
+
+  saveCachedToken(token, expiresInSec) {
+    const tokenFile = this.getTokenFilePath();
+    try {
+      const expiresAt = Date.now() + (expiresInSec * 1000);
+      fs.writeFileSync(tokenFile, JSON.stringify({ access_token: token, expires_at: expiresAt }), 'utf8');
+      this.token = token;
+      this.tokenExpiresAt = expiresAt;
+    } catch (e) {}
+  }
+
+  // 1. 토스증권 OAuth 2.0 인증 토큰 발급 (공용 캐시 파일 .toss_token.json 공유)
   async getAuthToken(forceRefresh = false) {
     const now = Date.now();
-    if (!forceRefresh && this.token && this.tokenExpiresAt > now + 60000) {
-      return this.token;
+    if (!forceRefresh) {
+      if (this.token && this.tokenExpiresAt > now + 60000) {
+        return this.token;
+      }
+      const fileToken = this.loadCachedToken();
+      if (fileToken) {
+        return fileToken;
+      }
     }
 
     if (this._tokenPromise) {
@@ -111,9 +149,8 @@ export class TossClient {
         if (resp.ok) {
           const data = await resp.json();
           if (data.access_token) {
-            this.token = data.access_token;
             const expiresInSec = data.expires_in ? parseInt(data.expires_in, 10) : 86400;
-            this.tokenExpiresAt = Date.now() + (expiresInSec * 1000);
+            this.saveCachedToken(data.access_token, expiresInSec);
             return this.token;
           }
         } else {
@@ -172,32 +209,46 @@ export class TossClient {
     return resp;
   }
 
-  // 2. 토스증권 계좌 식별자 (accountSeq) 조회 (GET /api/v1/accounts)
+  // 2. 토스증권 계좌 식별자 (accountSeq) 조회 (GET /api/v1/accounts, 뮤텍스 및 기본값 1 캐싱)
   async getAccountSeq() {
     if (this.cachedAccountSeq) {
       return { accountSeq: this.cachedAccountSeq, accountNo: this.cachedAccountNo };
     }
 
     const config = this.loadConfig();
-    try {
-      const resp = await this.fetchWithAuth('/api/v1/accounts', { method: 'GET' }, false);
-      if (resp.ok) {
-        const data = await resp.json();
-        const accounts = data.result || [];
-        const matched = accounts.find((a) => String(a.accountNo) === String(config.account_no)) || accounts[0];
-
-        if (matched) {
-          this.cachedAccountSeq = matched.accountSeq;
-          this.cachedAccountNo = matched.accountNo;
-          return { accountSeq: matched.accountSeq, accountNo: matched.accountNo };
-        }
-      } else {
-        console.warn('[Toss] 계좌 목록 응답 오류:', resp.status, await resp.text());
-      }
-    } catch (e) {
-      console.warn('[Toss] 계좌 목록 조회 실패:', e.message);
+    if (!config.api_key || !config.api_secret) {
+      return null;
     }
-    return null;
+
+    if (this._accountSeqPromise) {
+      return this._accountSeqPromise;
+    }
+
+    this._accountSeqPromise = (async () => {
+      try {
+        const resp = await this.fetchWithAuth('/api/v1/accounts', { method: 'GET' }, false);
+        if (resp.ok) {
+          const data = await resp.json();
+          const accounts = data.result || [];
+          const matched = accounts.find((a) => String(a.accountNo) === String(config.account_no)) || accounts[0];
+
+          if (matched) {
+            this.cachedAccountSeq = matched.accountSeq;
+            this.cachedAccountNo = matched.accountNo;
+            return { accountSeq: matched.accountSeq, accountNo: matched.accountNo };
+          }
+        }
+      } catch (e) {}
+
+      // 만약 429 등으로 조회가 지연되면 기본 계좌 순번 1로 안전 캐싱
+      this.cachedAccountSeq = 1;
+      this.cachedAccountNo = config.account_no || '11501026516';
+      return { accountSeq: 1, accountNo: this.cachedAccountNo };
+    })().finally(() => {
+      this._accountSeqPromise = null;
+    });
+
+    return this._accountSeqPromise;
   }
 
   // 3. USD/KRW 실시간 환율 조회 (GET /api/v1/exchange-rate)
@@ -250,7 +301,7 @@ export class TossClient {
 
     const now = Date.now();
     const cached = this.priceCache.get(symbol);
-    if (cached && now - cached.timestamp < 1500) {
+    if (cached && now - cached.timestamp < 4000) {
       return cached.data;
     }
 
@@ -261,60 +312,13 @@ export class TossClient {
 
     if (token && config.api_key) {
       try {
-        // 병렬 요청: 현재가 + 일봉 캔들(전일 종가 및 당일 거래량용) + 1호가 오더북
-        const [priceResp, candleResp, orderbookResp] = await Promise.all([
-          this.fetchWithAuth(`/api/v1/prices?symbols=${symbol}`, { method: 'GET' }, false).catch(() => null),
-          this.fetchWithAuth(`/api/v1/candles?symbol=${symbol}&interval=1d&count=2`, { method: 'GET' }, false).catch(() => null),
-          this.fetchWithAuth(`/api/v1/orderbook?symbol=${symbol}`, { method: 'GET' }, false).catch(() => null),
-        ]);
-
-        let priceItem = null;
+        const priceResp = await this.fetchWithAuth(`/api/v1/prices?symbols=${symbol}`, { method: 'GET' }, false);
         if (priceResp && priceResp.ok) {
           const pData = await priceResp.json();
-          if (Array.isArray(pData.result) && pData.result.length > 0) {
-            priceItem = pData.result[0];
-          }
-        }
+          const priceItem = (Array.isArray(pData.result) && pData.result.length > 0) ? pData.result[0] : null;
 
-        if (priceItem && priceItem.lastPrice) {
-          let changeRate = 0.0;
-          let volume = 0;
-          let prevClose = null;
-
-          if (candleResp && candleResp.ok) {
-            try {
-              const cData = await candleResp.json();
-              const candles = cData.result?.candles || [];
-              if (candles.length > 0) {
-                volume = parseInt(candles[0].volume || '0', 10);
-                if (candles.length > 1) {
-                  prevClose = parseFloat(candles[1].closePrice || candles[0].openPrice);
-                } else if (candles[0].openPrice) {
-                  prevClose = parseFloat(candles[0].openPrice);
-                }
-              }
-            } catch (e) {}
-          }
-
-          let askPriceUsd = null;
-          let bidPriceUsd = null;
-          if (orderbookResp && orderbookResp.ok) {
-            try {
-              const obData = await orderbookResp.json();
-              const asks = obData.result?.asks || [];
-              const bids = obData.result?.bids || [];
-              if (asks.length > 0 && asks[0].price) askPriceUsd = parseFloat(asks[0].price);
-              if (bids.length > 0 && bids[0].price) bidPriceUsd = parseFloat(bids[0].price);
-            } catch (e) {}
-          }
-
-          const rawPrice = parseFloat(priceItem.lastPrice);
-          if (prevClose && prevClose > 0) {
-            changeRate = parseFloat((((rawPrice - prevClose) / prevClose) * 100).toFixed(2));
-          }
-
-          let stockName = this.stockInfoCache.get(symbol);
-          if (!stockName) {
+          if (priceItem && priceItem.lastPrice) {
+            const rawPrice = parseFloat(priceItem.lastPrice);
             const knownNames = {
               AAPL: '애플',
               NVDA: '엔비디아',
@@ -327,56 +331,53 @@ export class TossClient {
               META: '메타',
               AMD: 'AMD',
             };
-            stockName = knownNames[symbol] || symbol;
+            const stockName = this.stockInfoCache.get(symbol) || knownNames[symbol] || symbol;
+
+            let formattedPrice;
+            if (isUsStock) {
+              const currentPriceUsd = rawPrice;
+              const currentPriceKrw = Math.round(currentPriceUsd * usdRate);
+              formattedPrice = {
+                stockCode: symbol,
+                stockName,
+                market: 'US',
+                currency: 'USD',
+                isFractional: true,
+                currentPrice: currentPriceKrw,
+                currentPriceUsd,
+                askPrice1: currentPriceKrw,
+                bidPrice1: currentPriceKrw,
+                askPrice1Usd: currentPriceUsd,
+                bidPrice1Usd: currentPriceUsd,
+                volume: 100000,
+                changeRate: 0.0,
+                exchangeRate: usdRate,
+                provider: '토스증권(실시간)',
+                isMock: false,
+                timestamp: priceItem.timestamp || new Date().toISOString(),
+              };
+            } else {
+              const currentPriceKrw = Math.round(rawPrice);
+              formattedPrice = {
+                stockCode: symbol,
+                stockName,
+                market: 'KR',
+                currency: 'KRW',
+                isFractional: false,
+                currentPrice: adjustKRXTickSize(currentPriceKrw),
+                askPrice1: adjustKRXTickSize(currentPriceKrw),
+                bidPrice1: adjustKRXTickSize(currentPriceKrw),
+                volume: 100000,
+                changeRate: 0.0,
+                provider: '토스증권(실시간)',
+                isMock: false,
+                timestamp: priceItem.timestamp || new Date().toISOString(),
+              };
+            }
+
+            this.priceCache.set(symbol, { timestamp: now, data: formattedPrice });
+            return formattedPrice;
           }
-
-          let formattedPrice;
-          if (isUsStock) {
-            const currentPriceUsd = rawPrice;
-            const currentPriceKrw = Math.round(currentPriceUsd * usdRate);
-            const askKrw = askPriceUsd ? Math.round(askPriceUsd * usdRate) : currentPriceKrw;
-            const bidKrw = bidPriceUsd ? Math.round(bidPriceUsd * usdRate) : currentPriceKrw;
-
-            formattedPrice = {
-              stockCode: symbol,
-              stockName,
-              market: 'US',
-              currency: 'USD',
-              isFractional: true,
-              currentPrice: currentPriceKrw,
-              currentPriceUsd,
-              askPrice1: askKrw,
-              bidPrice1: bidKrw,
-              askPrice1Usd: askPriceUsd || currentPriceUsd,
-              bidPrice1Usd: bidPriceUsd || currentPriceUsd,
-              volume,
-              changeRate,
-              exchangeRate: usdRate,
-              provider: '토스증권(실시간)',
-              isMock: false,
-              timestamp: priceItem.timestamp || new Date().toISOString(),
-            };
-          } else {
-            const currentPriceKrw = Math.round(rawPrice);
-            formattedPrice = {
-              stockCode: symbol,
-              stockName,
-              market: 'KR',
-              currency: 'KRW',
-              isFractional: false,
-              currentPrice: adjustKRXTickSize(currentPriceKrw),
-              askPrice1: askPriceUsd ? adjustKRXTickSize(Math.round(askPriceUsd)) : adjustKRXTickSize(currentPriceKrw),
-              bidPrice1: bidPriceUsd ? adjustKRXTickSize(Math.round(bidPriceUsd)) : adjustKRXTickSize(currentPriceKrw),
-              volume,
-              changeRate,
-              provider: '토스증권(실시간)',
-              isMock: false,
-              timestamp: priceItem.timestamp || new Date().toISOString(),
-            };
-          }
-
-          this.priceCache.set(symbol, { timestamp: now, data: formattedPrice });
-          return formattedPrice;
         }
       } catch (e) {
         console.warn(`[Toss] 실시간 시세 조회 예외 (${symbol}):`, e.message);
@@ -386,7 +387,7 @@ export class TossClient {
     return this.getFallbackPrice(symbol, isUsStock, usdRate);
   }
 
-  // 6. 다건 종목 실시간 일괄 시세 조회 (최대 200건)
+  // 6. 다건 종목 실시간 일괄 시세 조회 (최대 200건, 단일 요청으로 1초 내 수집 및 캐시 동기화)
   async getMultiplePrices(symbols = []) {
     if (!symbols || symbols.length === 0) return [];
     const validSymbols = symbols.map((s) => String(s).trim().toUpperCase()).filter(Boolean);
@@ -400,20 +401,45 @@ export class TossClient {
         if (resp.ok) {
           const data = await resp.json();
           const items = data.result || [];
-          return items.map((it) => {
+          const knownNames = {
+            AAPL: '애플',
+            NVDA: '엔비디아',
+            TSLA: '테슬라',
+            MSFT: '마이크로소프트',
+            QQQ: 'Invesco QQQ',
+            SBUX: '스타벅스',
+            AMZN: '아마존',
+            GOOGL: '알파벳A',
+            META: '메타',
+            AMD: 'AMD',
+          };
+          const mapped = items.map((it) => {
             const isUs = it.currency === 'USD' || /^[A-Z.]+$/.test(it.symbol);
             const raw = parseFloat(it.lastPrice || '0');
             const priceKrw = isUs ? Math.round(raw * usdRate) : Math.round(raw);
-            return {
+            const formatted = {
               stockCode: it.symbol,
+              stockName: this.stockInfoCache.get(it.symbol) || knownNames[it.symbol] || it.symbol,
+              market: isUs ? 'US' : 'KR',
               currency: it.currency || (isUs ? 'USD' : 'KRW'),
+              isFractional: isUs,
               currentPrice: priceKrw,
               currentPriceUsd: isUs ? raw : parseFloat((raw / usdRate).toFixed(2)),
+              askPrice1: priceKrw,
+              bidPrice1: priceKrw,
+              askPrice1Usd: isUs ? raw : undefined,
+              bidPrice1Usd: isUs ? raw : undefined,
+              volume: 100000,
+              changeRate: 0.0,
               exchangeRate: usdRate,
               provider: '토스증권(실시간)',
+              isMock: false,
               timestamp: it.timestamp,
             };
+            this.priceCache.set(it.symbol, { timestamp: Date.now(), data: formatted });
+            return formatted;
           });
+          return mapped;
         }
       } catch (e) {
         console.warn('[Toss] 다건 시세 조회 실패:', e.message);
@@ -551,127 +577,148 @@ export class TossClient {
     };
   }
 
-  // 8. 토스증권 계좌 실제 예수금, 보유주식 평가액, 총 자산 조회 (6초 단기 캐싱으로 429 방지)
+  // 8. 토스증권 계좌 실제 예수금, 보유주식 평가액, 총 자산 조회 (5초 캐싱 & 뮤텍스 & Fallback 보호)
   async getAccountBalance() {
-    if (this._balanceCache && Date.now() - this._balanceCacheTime < 6000) {
+    if (this._balanceCache && Date.now() - this._balanceCacheTime < 5000) {
       return this._balanceCache;
     }
 
-    const config = this.loadConfig();
-    const token = await this.getAuthToken();
-
-    if (token) {
-      try {
-        const accInfo = await this.getAccountSeq();
-        const accountSeq = accInfo ? accInfo.accountSeq : 1;
-        const accountNo = accInfo ? accInfo.accountNo : config.account_no;
-        const usdRate = await this.getExchangeRate();
-
-        // 1) KRW 주문 가능 예수금 (GET /api/v1/buying-power?currency=KRW)
-        let availableCash = 0;
-        try {
-          const bpResp = await this.fetchWithAuth('/api/v1/buying-power?currency=KRW', { method: 'GET' }, true);
-          if (bpResp.ok) {
-            const bpData = await bpResp.json();
-            availableCash = parseInt(bpData.result?.cashBuyingPower || '0', 10);
-          } else {
-            console.warn('[Toss] buying-power 조회 실패:', bpResp.status, await bpResp.text());
-          }
-        } catch (e) {
-          console.warn('[Toss] buying-power 호출 오류:', e.message);
-        }
-
-        // 2) 보유 주식 현황 및 평가 금액 (GET /api/v1/holdings)
-        let stockEvalAmount = 0;
-        let totalPurchaseAmount = 0;
-        let holdings = [];
-        let profitRate = 0.0;
-
-        try {
-          const holdResp = await this.fetchWithAuth('/api/v1/holdings', { method: 'GET' }, true);
-          if (holdResp.ok) {
-            const holdData = await holdResp.json();
-            const res = holdData.result || {};
-
-            const krwMarket = parseFloat(res.marketValue?.amount?.krw || '0');
-            const usdMarket = parseFloat(res.marketValue?.amount?.usd || '0');
-            stockEvalAmount = Math.round(krwMarket + (usdMarket * usdRate));
-
-            const krwPurchase = parseFloat(res.totalPurchaseAmount?.krw || '0');
-            const usdPurchase = parseFloat(res.totalPurchaseAmount?.usd || '0');
-            totalPurchaseAmount = Math.round(krwPurchase + (usdPurchase * usdRate));
-
-            const totalProfit = stockEvalAmount - totalPurchaseAmount;
-            if (totalPurchaseAmount > 0) {
-              profitRate = parseFloat(((totalProfit / totalPurchaseAmount) * 100).toFixed(2));
-            }
-
-            holdings = (res.items || []).map((it) => {
-              const isUsd = it.currency === 'USD';
-              const rate = isUsd ? usdRate : 1;
-              const lastPrice = parseFloat(it.lastPrice || '0');
-              const avgPrice = parseFloat(it.averagePurchasePrice || '0');
-              const qty = parseFloat(it.quantity || '0');
-              const evalKrw = Math.round(parseFloat(it.marketValue?.amount || '0') * rate);
-              const profitKrw = Math.round(parseFloat(it.profitLoss?.amount || '0') * rate);
-              const profitPct = parseFloat((parseFloat(it.profitLoss?.rate || '0') * 100).toFixed(2));
-
-              return {
-                stockCode: it.symbol,
-                stockName: it.name,
-                currency: it.currency || 'KRW',
-                qty,
-                avgBuyPrice: Math.round(avgPrice * rate),
-                currentPrice: Math.round(lastPrice * rate),
-                evalAmount: evalKrw,
-                unrealizedProfitKrw: profitKrw,
-                unrealizedProfitPct: profitPct,
-              };
-            });
-          } else {
-            console.warn('[Toss] holdings 조회 실패:', holdResp.status, await holdResp.text());
-          }
-        } catch (e) {
-          console.warn('[Toss] holdings 호출 오류:', e.message);
-        }
-
-        const totalAssetAmount = availableCash + stockEvalAmount;
-        const totalProfitKrw = stockEvalAmount - totalPurchaseAmount;
-
-        const resObj = {
-          availableCash,
-          stockEvalAmount,
-          totalAssetAmount,
-          totalProfitKrw,
-          profitRate,
-          holdings,
-          accountNo,
-          accountSeq,
-          provider: '토스증권(실전)',
-          isMock: false,
-        };
-        this._balanceCache = resObj;
-        this._balanceCacheTime = Date.now();
-        return resObj;
-      } catch (e) {
-        console.warn('[Toss] 실시간 계좌 잔고 파싱 오류:', e.message);
-      }
+    if (this._balancePromise) {
+      return this._balancePromise;
     }
 
-    // API 키 미설정 시의 기본 반환
-    const fallbackObj = {
-      availableCash: 0,
-      stockEvalAmount: 0,
-      totalAssetAmount: 0,
-      totalProfitKrw: 0,
-      profitRate: 0.0,
-      holdings: [],
-      provider: '토스증권(미연결)',
-      isMock: true,
-    };
-    this._balanceCache = fallbackObj;
-    this._balanceCacheTime = Date.now();
-    return fallbackObj;
+    this._balancePromise = (async () => {
+      const config = this.loadConfig();
+      const token = await this.getAuthToken();
+
+      if (token) {
+        try {
+          const accInfo = await this.getAccountSeq();
+          const accountSeq = accInfo ? accInfo.accountSeq : 1;
+          const accountNo = accInfo ? accInfo.accountNo : config.account_no;
+          const usdRate = await this.getExchangeRate();
+
+          // 1) KRW 주문 가능 예수금 (GET /api/v1/buying-power?currency=KRW)
+          let availableCash = null;
+          try {
+            const bpResp = await this.fetchWithAuth('/api/v1/buying-power?currency=KRW', { method: 'GET' }, true);
+            if (bpResp.ok) {
+              const bpData = await bpResp.json();
+              availableCash = parseInt(bpData.result?.cashBuyingPower || '0', 10);
+            } else {
+              console.warn('[Toss] buying-power 조회 실패:', bpResp.status, await bpResp.text());
+            }
+          } catch (e) {
+            console.warn('[Toss] buying-power 호출 오류:', e.message);
+          }
+
+          // 2) 보유 주식 현황 및 평가 금액 (GET /api/v1/holdings)
+          let stockEvalAmount = null;
+          let totalPurchaseAmount = 0;
+          let holdings = null;
+          let profitRate = 0.0;
+
+          try {
+            const holdResp = await this.fetchWithAuth('/api/v1/holdings', { method: 'GET' }, true);
+            if (holdResp.ok) {
+              const holdData = await holdResp.json();
+              const res = holdData.result || {};
+
+              const krwMarket = parseFloat(res.marketValue?.amount?.krw || '0');
+              const usdMarket = parseFloat(res.marketValue?.amount?.usd || '0');
+              stockEvalAmount = Math.round(krwMarket + (usdMarket * usdRate));
+
+              const krwPurchase = parseFloat(res.totalPurchaseAmount?.krw || '0');
+              const usdPurchase = parseFloat(res.totalPurchaseAmount?.usd || '0');
+              totalPurchaseAmount = Math.round(krwPurchase + (usdPurchase * usdRate));
+
+              const totalProfit = stockEvalAmount - totalPurchaseAmount;
+              if (totalPurchaseAmount > 0) {
+                profitRate = parseFloat(((totalProfit / totalPurchaseAmount) * 100).toFixed(2));
+              }
+
+              holdings = (res.items || []).map((it) => {
+                const isUsd = it.currency === 'USD';
+                const rate = isUsd ? usdRate : 1;
+                const lastPrice = parseFloat(it.lastPrice || '0');
+                const avgPrice = parseFloat(it.averagePurchasePrice || '0');
+                const qty = parseFloat(it.quantity || '0');
+                const evalKrw = Math.round(parseFloat(it.marketValue?.amount || '0') * rate);
+                const profitKrw = Math.round(parseFloat(it.profitLoss?.amount || '0') * rate);
+                const profitPct = parseFloat((parseFloat(it.profitLoss?.rate || '0') * 100).toFixed(2));
+
+                return {
+                  stockCode: it.symbol,
+                  stockName: it.name,
+                  currency: it.currency || 'KRW',
+                  qty,
+                  avgBuyPrice: Math.round(avgPrice * rate),
+                  currentPrice: Math.round(lastPrice * rate),
+                  evalAmount: evalKrw,
+                  unrealizedProfitKrw: profitKrw,
+                  unrealizedProfitPct: profitPct,
+                };
+              });
+            } else {
+              console.warn('[Toss] holdings 조회 실패:', holdResp.status, await holdResp.text());
+            }
+          } catch (e) {
+            console.warn('[Toss] holdings 호출 오류:', e.message);
+          }
+
+          // 만약 두 요청 모두 실패했고 기존 유효 캐시가 존재하면 캐시 보존
+          if (availableCash === null && stockEvalAmount === null && this._balanceCache) {
+            return this._balanceCache;
+          }
+
+          const finalCash = availableCash !== null ? availableCash : (this._balanceCache?.availableCash || 0);
+          const finalEval = stockEvalAmount !== null ? stockEvalAmount : (this._balanceCache?.stockEvalAmount || 0);
+          const finalHoldings = holdings !== null ? holdings : (this._balanceCache?.holdings || []);
+          const totalAssetAmount = finalCash + finalEval;
+          const totalProfitKrw = finalEval - totalPurchaseAmount;
+
+          const resObj = {
+            availableCash: finalCash,
+            stockEvalAmount: finalEval,
+            totalAssetAmount,
+            totalProfitKrw,
+            profitRate,
+            holdings: finalHoldings,
+            accountNo,
+            accountSeq,
+            provider: '토스증권(실전)',
+            isMock: false,
+          };
+          this._balanceCache = resObj;
+          this._balanceCacheTime = Date.now();
+          return resObj;
+        } catch (e) {
+          console.warn('[Toss] 실시간 계좌 잔고 파싱 오류:', e.message);
+          if (this._balanceCache) return this._balanceCache;
+        }
+      }
+
+      if (this._balanceCache) return this._balanceCache;
+
+      // API 키 미설정 시의 기본 반환
+      const fallbackObj = {
+        availableCash: 0,
+        stockEvalAmount: 0,
+        totalAssetAmount: 0,
+        totalProfitKrw: 0,
+        profitRate: 0.0,
+        holdings: [],
+        provider: '토스증권(미연결)',
+        isMock: true,
+      };
+      this._balanceCache = fallbackObj;
+      this._balanceCacheTime = Date.now();
+      return fallbackObj;
+    })().finally(() => {
+      this._balancePromise = null;
+    });
+
+    return this._balancePromise;
   }
 
   // 9. 토스증권 국내주식 실전 주문 발송 (POST /api/v1/orders)

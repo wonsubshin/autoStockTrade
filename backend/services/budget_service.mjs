@@ -21,15 +21,9 @@ export class BudgetService {
   static async saveBudgetSettings({ virtualTotalBudget, realTotalBudget, botAllocations }) {
     const db = getDb();
     const tossBal = await tossClient.getAccountBalance();
-    const tossMaxCash = tossBal.availableCash || 0;
 
     const numReal = parseInt(realTotalBudget, 10) || 0;
     const numVirtual = parseInt(virtualTotalBudget, 10) || 0;
-
-    // 비즈니스 규칙: 실제 사용 예산은 토스 실잔고(주문 가능 예수금)를 초과할 수 없음
-    if (numReal > tossMaxCash) {
-      throw new Error(`실제 사용 예산(${numReal.toLocaleString()}원)은 현재 토스증권 주문 가능 예수금(${tossMaxCash.toLocaleString()}원)을 초과할 수 없습니다.`);
-    }
 
     const nowIso = new Date().toISOString();
     const stmtSet = db.prepare(`
@@ -45,13 +39,26 @@ export class BudgetService {
         UPDATE bots
         SET allocation_ratio = ?,
             allocated_capital = ?,
+            real_allocation_ratio = ?,
+            real_allocated_capital = ?,
+            real_available_krw = ?,
             updated_at = ?
         WHERE bot_id = ?
       `);
       for (const b of botAllocations) {
-        const ratio = parseFloat(b.ratio) / 100;
-        const allocatedCap = Math.floor(numVirtual * ratio);
-        stmtBotUpdate.run(ratio, allocatedCap, nowIso, b.bot_id);
+        const ratioPercent = parseFloat(b.ratio) || 0;
+        const ratioFrac = ratioPercent / 100;
+        const allocatedCap = Math.floor(numVirtual * ratioFrac);
+        const realAllocatedCap = Math.floor(numReal * ratioFrac);
+        stmtBotUpdate.run(
+          ratioFrac,
+          allocatedCap,
+          ratioPercent,
+          realAllocatedCap,
+          realAllocatedCap,
+          nowIso,
+          b.bot_id
+        );
       }
     }
 

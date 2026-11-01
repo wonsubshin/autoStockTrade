@@ -230,7 +230,6 @@ export default function SettingsPanel({
                 type="number"
                 className="input-field"
                 step="100000"
-                style={{ borderColor: tossAvailable > 0 && realTotalBudget > tossAvailable ? '#ef4444' : undefined }}
                 value={realTotalBudget}
                 onChange={(e) => setRealTotalBudget(parseInt(e.target.value, 10) || 0)}
               />
@@ -240,33 +239,33 @@ export default function SettingsPanel({
                   className="budget-quick-btn"
                   onClick={() => setRealTotalBudget(tossAvailable || 10000000)}
                 >
-                  전액 (100%)
+                  토스예수금 ({tossAvailable.toLocaleString()}원)
                 </button>
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(Math.floor((tossAvailable || 10000000) * 0.7))}
+                  onClick={() => setRealTotalBudget(1000000)}
                 >
-                  70%
+                  100만
                 </button>
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(Math.floor((tossAvailable || 10000000) * 0.5))}
+                  onClick={() => setRealTotalBudget(5000000)}
                 >
-                  50%
+                  500만
                 </button>
                 <button
                   type="button"
                   className="budget-quick-btn"
-                  onClick={() => setRealTotalBudget(Math.floor((tossAvailable || 10000000) * 0.3))}
+                  onClick={() => setRealTotalBudget(10000000)}
                 >
-                  30%
+                  1천만
                 </button>
               </div>
               {tossAvailable > 0 && realTotalBudget > tossAvailable && (
-                <div className="budget-error-msg" style={{ marginTop: '8px' }}>
-                  ⚠️ 실제 사용 예산({realTotalBudget.toLocaleString()}원)은 현재 토스증권 예수금({tossAvailable.toLocaleString()}원)을 초과할 수 없습니다.
+                <div style={{ marginTop: '8px', fontSize: '12px', color: '#fbbf24', background: 'rgba(245, 158, 11, 0.1)', border: '1px solid rgba(245, 158, 11, 0.3)', borderRadius: '6px', padding: '6px 12px' }}>
+                  ℹ️ 현재 토스 주문 가능 예수금({tossAvailable.toLocaleString()}원)보다 설정 예산이 큽니다. 실제 자동 매매 주문은 토스 실잔고 한도 내에서 안전하게 분할 집행됩니다.
                 </div>
               )}
             </div>
@@ -331,7 +330,7 @@ export default function SettingsPanel({
               </span>
               <button
                 className="btn-primary"
-                disabled={!isAllocValid || (tossAvailable > 0 && realTotalBudget > tossAvailable)}
+                disabled={!isAllocValid}
                 onClick={() => onSaveRealAllocation && onSaveRealAllocation(realTotalBudget, allocations)}
               >
                 💾 실전 투자금 비율 저장 및 실전 매매 적용 (확인)

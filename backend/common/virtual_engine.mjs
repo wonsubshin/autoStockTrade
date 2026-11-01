@@ -316,27 +316,33 @@ export class VirtualPaperTradingEngine {
     let totalBuyAmount = 0;
     const holdings = [];
 
+    const uniqueSymbols = [...new Set(openPositions.map((p) => p.stock_code))];
+    const priceMap = new Map();
+    await Promise.all(
+      uniqueSymbols.map(async (sym) => {
+        try {
+          const p = await this.kiwoomClient.getCurrentPrice(sym);
+          if (p) priceMap.set(sym, p);
+        } catch (e) {}
+      })
+    );
+
     for (const pos of openPositions) {
-      try {
-        const priceInfo = await this.kiwoomClient.getCurrentPrice(pos.stock_code);
-        const currentPrice = priceInfo.currentPrice || pos.avg_buy_price;
-        const evalAmt = currentPrice * pos.qty;
-        stockEvalAmount += evalAmt;
-        totalBuyAmount += pos.buy_amount;
-        holdings.push({
-          stockCode: pos.stock_code,
-          stockName: pos.stock_name,
-          qty: pos.qty,
-          avgBuyPrice: pos.avg_buy_price,
-          currentPrice,
-          evalAmount: evalAmt,
-          unrealizedProfitKrw: evalAmt - pos.buy_amount - (pos.buy_fee || 0),
-          unrealizedProfitPct: parseFloat((((evalAmt - pos.buy_amount) / pos.buy_amount) * 100).toFixed(2)),
-        });
-      } catch (e) {
-        stockEvalAmount += pos.buy_amount;
-        totalBuyAmount += pos.buy_amount;
-      }
+      const priceInfo = priceMap.get(pos.stock_code);
+      const currentPrice = priceInfo?.currentPrice || pos.avg_buy_price;
+      const evalAmt = currentPrice * pos.qty;
+      stockEvalAmount += evalAmt;
+      totalBuyAmount += pos.buy_amount;
+      holdings.push({
+        stockCode: pos.stock_code,
+        stockName: pos.stock_name,
+        qty: pos.qty,
+        avgBuyPrice: pos.avg_buy_price,
+        currentPrice,
+        evalAmount: evalAmt,
+        unrealizedProfitKrw: evalAmt - pos.buy_amount - (pos.buy_fee || 0),
+        unrealizedProfitPct: pos.buy_amount > 0 ? parseFloat((((evalAmt - pos.buy_amount) / pos.buy_amount) * 100).toFixed(2)) : 0,
+      });
     }
 
     const realizedRow = db.prepare("SELECT COALESCE(SUM(profit_krw), 0) as totalRealized FROM trades WHERE status = 'CLOSED' AND trade_mode = 'VIRTUAL'").get();

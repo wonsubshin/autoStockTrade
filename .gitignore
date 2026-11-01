@@ -4,6 +4,8 @@
 .env.*.local
 config/kis_config.json
 config/broker_config.json
+config/.toss_token.json
+config/.*_token.json
 
 # Databases
 data/*.db
