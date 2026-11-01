@@ -58,7 +58,7 @@ if [ -n "$PUBLIC_URL" ]; then
     echo "🎉 [SUCCESS] 외부 어디서나 접속 가능한 보안 HTTPS 주소 발급 완료!"
     echo "========================================================"
     echo "• 외부 접속 HTTPS 주소 : $PUBLIC_URL"
-    echo "• 게이트 입장 코드     : sws@2129"
+    echo "• 게이트 입장 코드     : coin (설정 탭에서 변경 가능)"
     echo "• 터널 프로세스 PID    : $TUNNEL_PID"
     echo "• 터널 종료 명령어     : ./stop_tunnel.sh"
     echo "• 터널 실시간 로그     : tail -f logs/tunnel.log"

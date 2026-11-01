@@ -80,7 +80,7 @@ if [ "$BACKEND_OK" -eq 1 ] && [ "$FRONTEND_OK" -eq 1 ]; then
     echo "• 로컬 웹 접속      : http://127.0.0.1:$FRONTEND_PORT"
     echo "• 사내 LAN 웹 접속  : http://$LAN_IP:$FRONTEND_PORT"
     echo "• 백엔드 REST/SSE   : http://127.0.0.1:$BACKEND_PORT"
-    echo "• 게이트 입장 코드  : sws@2129"
+    echo "• 게이트 입장 코드  : coin (설정 탭에서 변경 가능)"
     echo "--------------------------------------------------------"
     echo "• 외부 접속 (Cloudflare Tunnel):"
     echo "  cloudflared tunnel --url http://127.0.0.1:$FRONTEND_PORT"

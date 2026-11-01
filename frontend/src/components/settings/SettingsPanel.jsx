@@ -786,7 +786,7 @@ export default function SettingsPanel({
             https://plumbing-workplace-spouse-def.trycloudflare.com
           </a>
           <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: 'auto' }}>
-            게이트 암호: <strong>sws@2129</strong>
+            게이트 암호: <strong>{gatePasscode || 'coin'}</strong>
           </span>
         </div>
       </div>
