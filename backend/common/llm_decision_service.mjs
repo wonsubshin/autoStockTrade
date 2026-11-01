@@ -114,7 +114,8 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
           contents: [{ parts: [{ text: prompt }] }],
           generationConfig: {
             temperature: 0.2,
-            maxOutputTokens: 2048,
+            maxOutputTokens: 4096,
+            responseMimeType: 'application/json',
           },
         }),
       });
@@ -127,8 +128,12 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
 
       const resData = await resp.json();
       const rawText = resData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      const jsonMatch = rawText.match(/```json\s*([\s\S]*?)\s*```/) || rawText.match(/\[\s*\{[\s\S]*\}\s*\]/);
-      const jsonStr = jsonMatch ? (jsonMatch[1] || jsonMatch[0]) : rawText;
+      let jsonStr = rawText.trim();
+      const match = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/) || rawText.match(/\[\s*\{[\s\S]*\}\s*\]/);
+      if (match) {
+        jsonStr = (match[1] !== undefined && match[1] !== '') ? match[1] : match[0];
+      }
+      jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
 
       const parsed = JSON.parse(jsonStr);
       if (Array.isArray(parsed) && parsed.length > 0) {

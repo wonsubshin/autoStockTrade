@@ -3,16 +3,23 @@ import { kiwoomClient, tossClient, TOP_KR_STOCKS, TOP_US_STOCKS, ALL_CANDIDATE_S
 import { virtualEngine } from './bot_service.mjs';
 import { pythonBridge } from './trade_service.mjs';
 import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
+import { llmDecisionService } from './ai_service.mjs';
 
 export class SchedulerService {
   constructor() {
     this.timer = null;
     this.intervalMs = 7000;
+    this.lastLlmAnalysisTime = 0;
+    this.llmAnalysisIntervalMs = 90000; // 90초 주기 자동 LLM 뉴스 분석 갱신
+    this.isLlmAnalyzing = false;
+    this.cachedLlmDecisions = [];
   }
 
   start() {
     if (this.timer) return;
     console.log('[SchedulerService] 듀얼 트랙(10대 가상 아레나 & 1~3개 실전봇) 스케줄러 시작 (7초 주기)');
+    // 시스템 시작 시 백그라운드로 LLM 뉴스 감성 분석 1회 즉시 실행
+    this.refreshLlmDecisions().catch(() => {});
     this.timer = setInterval(() => this.runCycle(), this.intervalMs);
   }
 
@@ -21,6 +28,50 @@ export class SchedulerService {
       clearInterval(this.timer);
       this.timer = null;
       console.log('[SchedulerService] 스케줄러 정지');
+    }
+  }
+
+  async refreshLlmDecisions() {
+    if (this.isLlmAnalyzing) return;
+    this.isLlmAnalyzing = true;
+    try {
+      console.log('[SchedulerService] 📰 최신 뉴스 수집 데이터 기반 Gemini LLM 감성 분석 및 매매 신호 갱신 시작...');
+      const decisions = await llmDecisionService.evaluateTradeSignals(ALL_CANDIDATE_STOCKS);
+      if (Array.isArray(decisions) && decisions.length > 0) {
+        this.cachedLlmDecisions = decisions;
+        this.lastLlmAnalysisTime = Date.now();
+        console.log(`[SchedulerService] ✅ Gemini LLM 뉴스 분석 완료 (총 ${decisions.length}개 종목 신호, BUY: ${decisions.filter((d) => d.action === 'BUY').length}건, SELL: ${decisions.filter((d) => d.action === 'SELL').length}건)`);
+      }
+    } catch (err) {
+      console.warn('[SchedulerService] LLM 뉴스 분석 비동기 갱신 오류:', err.message);
+    } finally {
+      this.isLlmAnalyzing = false;
+    }
+  }
+
+  getLatestLlmDecisions(db) {
+    if (this.cachedLlmDecisions && this.cachedLlmDecisions.length > 0) {
+      return this.cachedLlmDecisions;
+    }
+    try {
+      const rows = db.prepare(`
+        SELECT * FROM ai_trade_decisions
+        WHERE id IN (
+          SELECT MAX(id) FROM ai_trade_decisions GROUP BY symbol
+        )
+      `).all();
+      return rows.map((r) => ({
+        symbol: r.symbol,
+        name: r.stock_name,
+        market: r.market,
+        action: r.action,
+        confidence: r.confidence,
+        sentimentScore: r.sentiment_score,
+        reasoning: r.reasoning,
+        isFractional: r.suggested_order_type === 'AMOUNT_FRACTIONAL',
+      }));
+    } catch (e) {
+      return [];
     }
   }
 
@@ -80,14 +131,21 @@ export class SchedulerService {
 
       // ===========================================================================
       // [TRACK B] 실전 거래 (사용자가 선택한 1~3개 봇 중 실전 가동 ON인 봇만 실행)
-      // 기존 실전 브로커 주문 + 구매 우선순위 + Python Core Executor 100% 보존
+      // Gemini LLM 뉴스 감성 분석 ⨉ Python Core Executor ⨉ 구매 우선순위 100% 연동
       // ===========================================================================
+      // 90초 주기 경과 시 백그라운드로 LLM 뉴스 분석 비동기 갱신 트리거
+      if (Date.now() - this.lastLlmAnalysisTime > this.llmAnalysisIntervalMs && !this.isLlmAnalyzing) {
+        this.refreshLlmDecisions().catch(() => {});
+      }
+
+      const latestLlmDecisions = this.getLatestLlmDecisions(db);
+
       const activeRealBots = allBots.filter(
         (b) => Number(b.is_real_selected) === 1 && Number(b.is_real_running) === 1
       );
 
       if (activeRealBots.length > 0) {
-        await this.runRealTradingCycle(db, activeRealBots, candidateQuotes, marketStatus, regimeInfo);
+        await this.runRealTradingCycle(db, activeRealBots, candidateQuotes, marketStatus, regimeInfo, latestLlmDecisions);
       }
     } catch (err) {
       console.error('[SchedulerService] Error in runCycle:', err);
@@ -195,11 +253,12 @@ export class SchedulerService {
 
   // ---------------------------------------------------------------------------
   // [TRACK B: 내부 실행 함수] 실전 거래 사이클 (선택된 1~3개 실전봇 전용)
+  // Gemini LLM 뉴스 감성 분석 ⨉ Python Core Executor ⨉ 구매 우선순위 100% 연동
   // ---------------------------------------------------------------------------
-  async runRealTradingCycle(db, activeRealBots, candidateQuotes, marketStatus, regimeInfo) {
+  async runRealTradingCycle(db, activeRealBots, candidateQuotes, marketStatus, regimeInfo, latestLlmDecisions = []) {
     const nowIso = new Date().toISOString();
 
-    // 1) 실전 포지션 청산 검사
+    // 1) 실전 포지션 청산 검사 (손절/익절/15:15장마감 및 Gemini LLM 뉴스 악재 SELL 신호)
     for (const bot of activeRealBots) {
       const realPositions = db.prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'").all(bot.bot_id);
 
@@ -223,6 +282,13 @@ export class SchedulerService {
           if (nowMin >= 15 * 60 + 15) {
             shouldSell = true;
             sellReason = '15:15 당일 장마감 동시호가 전 실전 시간청산 (오버나잇 배제)';
+          }
+        } else {
+          // Gemini LLM 실시간 뉴스 감성 분석 악재 SELL 신호 발생 시 긴급 청산
+          const llmSignal = latestLlmDecisions.find((d) => d.symbol === pos.stock_code);
+          if (llmSignal && llmSignal.action === 'SELL') {
+            shouldSell = true;
+            sellReason = `[🎙️ Gemini LLM 뉴스 악재 매도권고] ${llmSignal.reasoning || '뉴스 감성 점수 급락 및 악재 출회로 인한 리스크 관리 매도'}`;
           }
         }
 
@@ -278,6 +344,11 @@ export class SchedulerService {
               nowIso,
               bot.bot_id
             );
+
+            // AI 의사결정 상태도 EXECUTED_REAL_SELL로 갱신
+            try {
+              db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL_SELL' WHERE symbol = ? ORDER BY id DESC LIMIT 1").run(pos.stock_code);
+            } catch (e) {}
           } catch (err) {
             console.error('[SchedulerService] Python 실전 매도 에러:', err.message);
             // 브로커 미보유, 잔고 오류, 레이트리밋 등으로 연속 실패하는 고스트 포지션은 CLOSED 처리하여 무한 반복 방지
@@ -296,7 +367,16 @@ export class SchedulerService {
       return;
     }
 
-    // 2) 실전 신규 매수 진입 판정 (우선순위 엔진 적용)
+    // 2) 실전 신규 매수 진입 판정 (Gemini LLM 추천 종목 ⨉ 사용자 구매 우선순위 엔진)
+    // LLM 분석 결과에서 BUY 신호(확신도 65% 이상) 필터링 및 확신도/감성점수 내림차순 정렬
+    const buySignals = latestLlmDecisions
+      .filter((d) => d.action === 'BUY' && (d.confidence || 0) >= 65)
+      .sort((a, b) => (b.confidence || 0) - (a.confidence || 0) || (b.sentimentScore || 0) - (a.sentimentScore || 0));
+
+    if (buySignals.length === 0) {
+      return;
+    }
+
     for (const bot of activeRealBots) {
       const openCount = db.prepare("SELECT COUNT(*) as cnt FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'").get(bot.bot_id).cnt;
       if (openCount >= 3) continue;
@@ -321,96 +401,123 @@ export class SchedulerService {
 
         const tossBal = await tossClient.getAccountBalance();
         const availableRealCash = Math.min(tossBal.availableCash, remainingCap);
+        if (availableRealCash <= 0) continue;
+
+        // 현재 봇이 이미 보유 중인 종목 제외
+        const heldCodes = db.prepare("SELECT stock_code FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'").all(bot.bot_id).map((p) => p.stock_code);
+        const availableBuySignals = buySignals.filter((s) => !heldCodes.includes(s.symbol));
+        if (availableBuySignals.length === 0) continue;
 
         let realExecuted = false;
         for (const priority of priorityList) {
           if (realExecuted) break;
 
           if (priority === 'KR_UNIT') {
-            // 1순위: 국내 주식 1주 온주 매수
-            const candidate = TOP_KR_STOCKS[Math.floor(Math.random() * TOP_KR_STOCKS.length)];
-            const priceInfo = await kiwoomClient.getCurrentPrice(candidate.code);
+            // 1순위: LLM 추천 국내 주식 1주 온주 매수
+            const candidateSignal = availableBuySignals.find((s) => s.market === 'KR');
+            if (!candidateSignal) continue;
+
+            const priceInfo = await kiwoomClient.getCurrentPrice(candidateSignal.symbol);
             const unitPrice = priceInfo.currentPrice;
 
             if (availableRealCash >= unitPrice && unitPrice > 0) {
+              const execReason = `[${bot.nickname}] Gemini AI 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 매수'}`;
               const orderRes = await pythonBridge.executeOrder({
-                symbol: candidate.code,
+                symbol: candidateSignal.symbol,
                 side: 'BUY',
                 orderType: 'MARKET',
                 market: 'KR',
                 quantity: 1,
-                reason: `[${bot.nickname}] 우선순위: 국내 1주 자동 매수`,
+                reason: execReason,
               });
               const fee = Math.round(unitPrice * 0.00015);
               const insTrade = db.prepare(`
                 INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
                 VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
-              `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, unitPrice, unitPrice, nowIso);
+              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, unitPrice, unitPrice, nowIso);
 
               db.prepare(`
                 INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
                 VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
-              `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPrice, unitPrice, fee, insTrade.lastInsertRowid, nowIso);
+              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPrice, unitPrice, fee, insTrade.lastInsertRowid, nowIso);
 
               db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                `[🐍 Python 실전매수] 1순위 국내 1주: ${candidate.name} (${unitPrice.toLocaleString()}원)`,
-                `[🐍 Python 실전매수] 1순위 국내 1주: ${candidate.name}`,
+                `[🐍 Python 실전매수] LLM 호재 추천: ${candidateSignal.name} (${unitPrice.toLocaleString()}원, 확신도 ${candidateSignal.confidence}%)`,
+                `[🐍 Python 실전매수] LLM 추천 매수: ${candidateSignal.name}`,
                 nowIso,
                 bot.bot_id
               );
+
+              try {
+                db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
+                  .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
+              } catch (e) {}
+
               realExecuted = true;
             }
           } else if (priority === 'US_UNIT') {
-            // 2순위: 미국 주식 1주 온주 매수
-            const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
-            const priceInfo = await tossClient.getCurrentPrice(candidate.code);
+            // 2순위: LLM 추천 미국 주식 1주 온주 매수
+            const candidateSignal = availableBuySignals.find((s) => s.market === 'US');
+            if (!candidateSignal) continue;
+
+            const priceInfo = await tossClient.getCurrentPrice(candidateSignal.symbol);
             const unitPriceKrw = priceInfo.currentPrice;
             const unitPriceUsd = priceInfo.currentPriceUsd;
 
             if (availableRealCash >= unitPriceKrw && unitPriceKrw > 0) {
+              const execReason = `[${bot.nickname}] Gemini AI 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 미국 1주 온주 매수'}`;
               const orderRes = await pythonBridge.executeOrder({
-                symbol: candidate.code,
+                symbol: candidateSignal.symbol,
                 side: 'BUY',
                 orderType: 'MARKET',
                 market: 'US',
                 quantity: 1,
-                reason: `[${bot.nickname}] 우선순위: 미국 1주 온주 자동 매수`,
+                reason: execReason,
               });
               const fee = Math.round(unitPriceKrw * 0.0025);
               const insTrade = db.prepare(`
                 INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
                 VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
-              `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
+              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
 
               db.prepare(`
                 INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
                 VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
-              `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
+              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
 
               db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                `[🐍 Python 실전매수] 2순위 미국 1주 온주: ${candidate.name} ($${unitPriceUsd})`,
-                `[🐍 Python 실전매수] 2순위 미국 1주 온주: ${candidate.name}`,
+                `[🐍 Python 실전매수] LLM 추천 미국 1주 온주: ${candidateSignal.name} ($${unitPriceUsd}, 확신도 ${candidateSignal.confidence}%)`,
+                `[🐍 Python 실전매수] LLM 추천 1주 온주: ${candidateSignal.name}`,
                 nowIso,
                 bot.bot_id
               );
+
+              try {
+                db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
+                  .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
+              } catch (e) {}
+
               realExecuted = true;
             }
           } else if (priority === 'US_FRACTIONAL') {
-            // 3순위: 미국 주식 소수점 금액 구매 ($10)
-            const candidate = TOP_US_STOCKS[Math.floor(Math.random() * TOP_US_STOCKS.length)];
-            const priceInfo = await tossClient.getCurrentPrice(candidate.code);
+            // 3순위: LLM 추천 미국 주식 소수점 금액 구매 ($10)
+            const candidateSignal = availableBuySignals.find((s) => s.market === 'US');
+            if (!candidateSignal) continue;
+
+            const priceInfo = await tossClient.getCurrentPrice(candidateSignal.symbol);
             const usdRate = priceInfo.exchangeRate || 1340;
             const targetUsd = 10;
             const targetKrw = Math.round(targetUsd * usdRate);
 
             if (availableRealCash >= targetKrw) {
+              const execReason = `[${bot.nickname}] Gemini AI 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 소수점 매수'}`;
               const orderRes = await pythonBridge.executeOrder({
-                symbol: candidate.code,
+                symbol: candidateSignal.symbol,
                 side: 'BUY',
                 orderType: 'MARKET',
                 market: 'US',
                 orderAmount: targetUsd,
-                reason: `[${bot.nickname}] 우선순위: 미국 소수점($${targetUsd}) 자동 매수`,
+                reason: execReason,
               });
               const fractionalQty = parseFloat((targetKrw / priceInfo.currentPrice).toFixed(6));
               const fee = Math.round(targetKrw * 0.0025);
@@ -418,19 +525,25 @@ export class SchedulerService {
               const insTrade = db.prepare(`
                 INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
                 VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-              `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TORD_${Date.now()}`, priceInfo.currentPrice, fractionalQty, targetKrw, nowIso);
+              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, priceInfo.currentPrice, fractionalQty, targetKrw, nowIso);
 
               db.prepare(`
                 INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
                 VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-              `).run(bot.bot_id, candidate.code, candidate.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, priceInfo.currentPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
+              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, priceInfo.currentPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
 
               db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                `[🐍 Python 실전매수] 3순위 미국 소수점: ${candidate.name} $${targetUsd} (${fractionalQty}주)`,
-                `[🐍 Python 실전매수] 3순위 미국 소수점: ${candidate.name}`,
+                `[🐍 Python 실전매수] LLM 추천 미국 소수점: ${candidateSignal.name} $${targetUsd} (${fractionalQty}주, 확신도 ${candidateSignal.confidence}%)`,
+                `[🐍 Python 실전매수] LLM 추천 소수점: ${candidateSignal.name}`,
                 nowIso,
                 bot.bot_id
               );
+
+              try {
+                db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE symbol = ? ORDER BY id DESC LIMIT 1")
+                  .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
+              } catch (e) {}
+
               realExecuted = true;
             }
           }

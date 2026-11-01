@@ -275,9 +275,11 @@ export default function App() {
 
     if (activeMenu === 'REAL_TRADING' || activeMenu === 'TRADING') {
       fetchTradesAndPositions('REAL');
+      fetchAiDecisions();
       const tInterval = setInterval(() => {
         fetchTradesAndPositions('REAL');
         fetchBots();
+        fetchAiDecisions();
       }, 5000);
       return () => clearInterval(tInterval);
     }
