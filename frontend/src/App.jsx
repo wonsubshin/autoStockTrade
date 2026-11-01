@@ -123,6 +123,7 @@ export default function App() {
     has_gemini_key: false,
   });
   const [purchasePriority, setPurchasePriority] = useState(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
+  const [gatePasscode, setGatePasscode] = useState('coin');
 
   // Active Trade Mode calculation
   const selectedBot = bots.find((b) => b.bot_id === selectedBotId) || bots[0];
@@ -204,6 +205,9 @@ export default function App() {
             setPurchasePriority(parsed);
           }
         } catch (e) {}
+      }
+      if (settingsData.settings?.gate_passcode) {
+        setGatePasscode(settingsData.settings.gate_passcode);
       }
     } catch {}
   }, []);
@@ -800,6 +804,34 @@ export default function App() {
     });
   };
 
+  const handleSaveGatePasscode = async (newPasscode) => {
+    if (!newPasscode || !newPasscode.trim()) {
+      setModalInfo({ title: '오류', message: '변경할 입장 코드를 입력해주세요.', type: 'error' });
+      return;
+    }
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '🔑 입장 코드 변경',
+      title: '🔑 시스템 입장 코드(Passcode) 변경 확인',
+      message: `시스템 보안 입장 코드를 "${newPasscode.trim()}"(으)로 변경하시겠습니까?\n\n변경 후에는 새로운 입장 코드로 인증하셔야 시스템에 접속하실 수 있습니다.`,
+      onConfirm: async () => {
+        try {
+          await api.saveSettings({ settings: { gate_passcode: newPasscode.trim() } });
+          setGatePasscode(newPasscode.trim());
+          setModalInfo({
+            title: '입장 코드 변경 완료',
+            message: `시스템 보안 입장 코드가 "${newPasscode.trim()}"(으)로 성공적으로 변경되었습니다.`,
+            type: 'success',
+          });
+          await fetchSettingsAndBalance();
+        } catch (err) {
+          setModalInfo({ title: '입장 코드 저장 실패', message: err.message, type: 'error' });
+        }
+      },
+    });
+  };
+
   const handleSaveKeys = async (form, onSuccess) => {
     setModalInfo({
       type: 'confirm',
@@ -1157,6 +1189,8 @@ export default function App() {
             brokerConfig={brokerConfig}
             purchasePriority={purchasePriority}
             setPurchasePriority={setPurchasePriority}
+            gatePasscode={gatePasscode}
+            onSavePasscode={handleSaveGatePasscode}
             onSavePriority={handleSavePurchasePriority}
             onSaveBudget={handleSaveBudget}
             onSaveRealAllocation={handleSaveRealAllocation}

@@ -14,6 +14,9 @@ export class SettingsController {
     if (!settingsMap.purchase_priority) {
       settingsMap.purchase_priority = JSON.stringify(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
     }
+    if (!settingsMap.gate_passcode) {
+      settingsMap.gate_passcode = 'coin';
+    }
 
     let bConf = {
       account_mode: 'VIRTUAL',

@@ -32,7 +32,7 @@ export class HealthController {
     const { passcode } = await parseJsonBody(req);
     const db = getDb();
     const row = db.prepare("SELECT value FROM system_settings WHERE key = 'gate_passcode'").get();
-    const expectedPasscode = row ? row.value : 'sws@2129';
+    const expectedPasscode = row ? row.value : 'coin';
 
     if (passcode === expectedPasscode) {
       const now = Date.now();

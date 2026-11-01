@@ -10,6 +10,8 @@ export default function SettingsPanel({
   brokerConfig,
   purchasePriority,
   setPurchasePriority,
+  gatePasscode = 'coin',
+  onSavePasscode,
   onSavePriority,
   onSaveBudget,
   onSaveRealAllocation,
@@ -19,6 +21,13 @@ export default function SettingsPanel({
   onGoToArena,
 }) {
   const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
+  const [newPasscode, setNewPasscode] = useState(gatePasscode || 'coin');
+
+  React.useEffect(() => {
+    if (gatePasscode) {
+      setNewPasscode(gatePasscode);
+    }
+  }, [gatePasscode]);
   const selectedRealBots = bots.filter((b) => Number(b.is_real_selected) === 1);
   const [realTotalBudget, setRealTotalBudget] = useState(budgetSettings?.realTotalBudget || 10000000);
   const [allocations, setAllocations] = useState(() => {
@@ -539,6 +548,55 @@ export default function SettingsPanel({
           >
             🔄 기본 순위로 복원 (1.국내1주 ➔ 2.미국1주 ➔ 3.미국소수점)
           </button>
+        </div>
+      </div>
+
+      {/* Security Gate Passcode Configuration */}
+      <div className="board-card" style={{ marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🔑 시스템 보안 입장 코드 (Gate Passcode) 설정</div>
+          <span className="badge-mode real" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.35)' }}>
+            접속 인증 보안
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
+          웹 브라우저 접속 시 인증에 사용되는 보안 입장 코드(Passcode)를 설정합니다. 기본값은 <code>coin</code>이며, 언제든지 원하는 코드로 안전하게 변경하실 수 있습니다.
+        </p>
+
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap', maxWidth: '640px' }}>
+          <div style={{ flex: 1, minWidth: '220px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
+              새로운 입장 코드 입력
+            </label>
+            <input
+              type="text"
+              className="input-field"
+              style={{ width: '100%', padding: '10px 14px', fontSize: '14px', fontFamily: 'monospace' }}
+              value={newPasscode}
+              onChange={(e) => setNewPasscode(e.target.value)}
+              placeholder="변경할 입장 코드 (기본: coin)"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ padding: '10px 20px', fontSize: '13px', fontWeight: 700 }}
+            onClick={() => onSavePasscode && onSavePasscode(newPasscode)}
+          >
+            💾 입장 코드 변경 저장
+          </button>
+          <button
+            type="button"
+            className="btn-action"
+            style={{ padding: '10px 14px', fontSize: '12px' }}
+            onClick={() => setNewPasscode('coin')}
+          >
+            기본값(coin)으로 재설정
+          </button>
+        </div>
+
+        <div style={{ marginTop: '14px', fontSize: '12.5px', color: '#94a3b8' }}>
+          💡 현재 등록된 입장 코드: <strong style={{ color: '#38bdf8', fontFamily: 'monospace', fontSize: '13.5px' }}>{gatePasscode || 'coin'}</strong>
         </div>
       </div>
 

@@ -178,7 +178,7 @@ export function seedInitialData() {
 
   // Settings
   const initSettings = [
-    { key: 'gate_passcode', value: 'sws@2129' },
+    { key: 'gate_passcode', value: 'coin' },
     { key: 'total_capital', value: '30000000' },
     { key: 'virtual_seed_money', value: '1000000' },
     { key: 'virtual_total_budget', value: '10000000' },

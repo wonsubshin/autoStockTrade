@@ -44,6 +44,7 @@ export default function GateModal({ onAuthenticated }) {
             className="input-field"
             value={passcodeInput}
             onChange={(e) => setPasscodeInput(e.target.value)}
+            placeholder="입장 코드를 입력하세요 (기본: coin)"
             autoFocus
           />
           {errorMsg && <div style={{ color: '#ef4444', fontSize: '13px' }}>{errorMsg}</div>}
