@@ -1,0 +1,846 @@
+import React, { useState } from 'react';
+
+export default function SettingsPanel({
+  accountBalance,
+  budgetSettings,
+  setBudgetSettings,
+  botRatios,
+  setBotRatios,
+  bots = [],
+  brokerConfig,
+  purchasePriority,
+  setPurchasePriority,
+  gatePasscode = 'coin',
+  tunnelUrl,
+  onSavePasscode,
+  onSavePriority,
+  onSaveBudget,
+  onSaveRealAllocation,
+  onSaveKeys,
+  onExportBackup,
+  onImportBackup,
+  onGoToArena,
+}) {
+  const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
+  const [newPasscode, setNewPasscode] = useState(gatePasscode || 'coin');
+
+  React.useEffect(() => {
+    if (gatePasscode) {
+      setNewPasscode(gatePasscode);
+    }
+  }, [gatePasscode]);
+  const selectedRealBots = bots.filter((b) => Number(b.is_real_selected) === 1);
+  const [realTotalBudget, setRealTotalBudget] = useState(budgetSettings?.realTotalBudget || 10000000);
+  const [allocations, setAllocations] = useState(() => {
+    if (selectedRealBots.length > 0) {
+      return selectedRealBots.map((b) => ({
+        bot_id: b.bot_id,
+        name: b.name,
+        nickname: b.nickname,
+        ratio: Number(b.real_allocation_ratio || (100 / selectedRealBots.length).toFixed(1)),
+      }));
+    }
+    return [];
+  });
+
+  React.useEffect(() => {
+    if (budgetSettings?.realTotalBudget) {
+      setRealTotalBudget(budgetSettings.realTotalBudget);
+    }
+  }, [budgetSettings?.realTotalBudget]);
+
+  const selectedBotIdsKey = selectedRealBots.map((b) => b.bot_id).sort().join(',');
+  const prevBotIdsKeyRef = React.useRef(selectedBotIdsKey);
+
+  React.useEffect(() => {
+    if (selectedRealBots.length > 0) {
+      if (allocations.length === 0 || prevBotIdsKeyRef.current !== selectedBotIdsKey) {
+        prevBotIdsKeyRef.current = selectedBotIdsKey;
+        const count = selectedRealBots.length;
+        const base = Math.floor(100 / count);
+        let rem = 100;
+        const initialRatios = selectedRealBots.map((b, idx) => {
+          const defaultRatio = idx === count - 1 ? rem : base;
+          rem -= base;
+          const userRatio = Math.round(Number(b.real_allocation_ratio));
+          return userRatio > 0 ? userRatio : defaultRatio;
+        });
+
+        const curSum = initialRatios.reduce((s, r) => s + r, 0);
+        if (curSum !== 100 && initialRatios.length > 0) {
+          initialRatios[initialRatios.length - 1] += (100 - curSum);
+        }
+
+        setAllocations(
+          selectedRealBots.map((b, idx) => ({
+            bot_id: b.bot_id,
+            name: b.name,
+            nickname: b.nickname,
+            ratio: initialRatios[idx],
+          }))
+        );
+      }
+    }
+  }, [selectedBotIdsKey, selectedRealBots, allocations.length]);
+
+  const handleRatioChange = (targetBotId, val) => {
+    const rawVal = parseFloat(val);
+    const targetVal = isNaN(rawVal) ? 0 : Math.max(0, Math.min(100, Math.round(rawVal)));
+
+    if (allocations.length <= 1) {
+      setAllocations(allocations.map((a) => ({ ...a, ratio: 100 })));
+      return;
+    }
+
+    if (allocations.length === 2) {
+      setAllocations(
+        allocations.map((a) =>
+          a.bot_id === targetBotId
+            ? { ...a, ratio: targetVal }
+            : { ...a, ratio: 100 - targetVal }
+        )
+      );
+      return;
+    }
+
+    // 3개 봇 대상: 조작하지 않은 나머지 두 봇의 비율을 자동 조절하여 항상 합계 100% 엄격 유지
+    const otherBots = allocations.filter((a) => a.bot_id !== targetBotId);
+    const remaining = 100 - targetVal;
+    const otherSum = otherBots.reduce((sum, b) => sum + (Number(b.ratio) || 0), 0);
+
+    let updatedOthers;
+    if (otherSum <= 0) {
+      const split = Math.floor(remaining / otherBots.length);
+      let remAcc = remaining;
+      updatedOthers = otherBots.map((b, idx) => {
+        const r = idx === otherBots.length - 1 ? remAcc : split;
+        remAcc -= r;
+        return { ...b, ratio: Math.max(0, r) };
+      });
+    } else {
+      let remAcc = remaining;
+      updatedOthers = otherBots.map((b, idx) => {
+        if (idx === otherBots.length - 1) {
+          return { ...b, ratio: Math.max(0, remAcc) };
+        }
+        const weight = (Number(b.ratio) || 0) / otherSum;
+        const r = Math.max(0, Math.min(remAcc, Math.round(remaining * weight)));
+        remAcc -= r;
+        return { ...b, ratio: r };
+      });
+    }
+
+    setAllocations(
+      allocations.map((a) => {
+        if (a.bot_id === targetBotId) {
+          return { ...a, ratio: targetVal };
+        }
+        const found = updatedOthers.find((o) => o.bot_id === a.bot_id);
+        return found ? found : a;
+      })
+    );
+  };
+
+  const handleEqualSplit = () => {
+    const n = allocations.length;
+    if (!n) return;
+    const base = Math.floor(100 / n);
+    let rem = 100;
+    setAllocations(
+      allocations.map((a, idx) => {
+        const r = idx === n - 1 ? rem : base;
+        rem -= base;
+        return { ...a, ratio: r };
+      })
+    );
+  };
+
+  const totalAllocRatio = allocations.reduce((s, a) => s + Number(a.ratio || 0), 0);
+  const isAllocValid = totalAllocRatio === 100 || Math.abs(totalAllocRatio - 100) <= 0.5;
+  const [localPriority, setLocalPriority] = useState(
+    purchasePriority && purchasePriority.length === 3
+      ? purchasePriority
+      : ['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']
+  );
+
+  React.useEffect(() => {
+    if (purchasePriority && purchasePriority.length === 3) {
+      setLocalPriority(purchasePriority);
+    }
+  }, [purchasePriority]);
+
+  const movePriority = (index, direction) => {
+    const targetIdx = index + direction;
+    if (targetIdx < 0 || targetIdx >= localPriority.length) return;
+    const nextList = [...localPriority];
+    const temp = nextList[index];
+    nextList[index] = nextList[targetIdx];
+    nextList[targetIdx] = temp;
+    setLocalPriority(nextList);
+  };
+
+  const resetPriorityToDefault = () => {
+    setLocalPriority(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
+  };
+
+  const PRIORITY_META = {
+    KR_UNIT: {
+      title: '국내 주식 1주 구매 (온주)',
+      desc: '키움증권 호가 기반 삼성전자, SK하이닉스 등 KRX 대표 우량주 1주 정수 단위 매수',
+      icon: '🇰🇷',
+    },
+    US_UNIT: {
+      title: '미국 주식 1주 구매 (온주)',
+      desc: '토스증권 실시간 시세 기반 애플, 엔비디아, 테슬라 등 1주 정수 단위 매수',
+      icon: '🇺🇸',
+    },
+    US_FRACTIONAL: {
+      title: '미국 주식 소수점 구매 (금액 단위)',
+      desc: '토스증권 공식 소수점 매매(orderAmount)를 통해 소액($10 / 약 1.3만원) 분할 적립 매수',
+      icon: '🪙',
+    },
+  };
+  const [newBrokerConfig, setNewBrokerConfig] = useState({
+    account_mode: 'VIRTUAL',
+    kiwoom_app_key: '',
+    kiwoom_app_secret: '',
+    toss_api_key: '',
+    toss_api_secret: '',
+    toss_account_no: '',
+    gemini_api_key: '',
+  });
+
+  const tossAvailable = budgetSettings.tossAvailableCash || 0;
+
+  return (
+    <div>
+      {/* 1. Broker Account Assets Status Card */}
+      <div className="board-card" style={{ marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">💼 토스증권 실전 계좌 잔고 & 예수금 현황 (실시간 연동)</div>
+          <span className="badge-mode real">토스증권 공식 Open API 연동</span>
+        </div>
+        <div className="metrics-grid">
+          <div className="metric-card">
+            <div className="metric-title">주문 가능 예수금 (KRW)</div>
+            <div className="metric-value">{(accountBalance?.real?.availableCash ?? accountBalance?.availableCash ?? 0).toLocaleString()}원</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-title">주식 매입/평가 금액</div>
+            <div className="metric-value">{(accountBalance?.real?.stockEvalAmount ?? accountBalance?.stockEvalAmount ?? 0).toLocaleString()}원</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-title">총 평가 자산</div>
+            <div className="metric-value">{(accountBalance?.real?.totalAssetAmount ?? accountBalance?.totalAssetAmount ?? 0).toLocaleString()}원</div>
+          </div>
+          <div className="metric-card">
+            <div className="metric-title">평가 손익률</div>
+            <div className={`metric-value ${(accountBalance?.real?.profitRate ?? accountBalance?.profitRate ?? 0) >= 0 ? 'up' : 'down'}`}>
+              {(accountBalance?.real?.profitRate ?? accountBalance?.profitRate ?? 0) >= 0 ? '+' : ''}
+              {accountBalance?.real?.profitRate ?? accountBalance?.profitRate ?? 0}%
+            </div>
+          </div>
+        </div>
+      </div>
+
+      {/* 2. Dynamic Real Budget Allocation for Selected 1~3 Bots */}
+      <div className="board-card" style={{ borderColor: 'rgba(59, 130, 246, 0.4)', marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🎯 선택된 실전 담당 봇 (3개) 동적 투자금 비율 설정</div>
+          <span className="badge-mode real">
+            실전 배분 엔진
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
+          가상 아레나에서 선발된 <strong>3개의 실전 담당 봇</strong>의 투자금 비율(합계 100%)을 설정합니다. 하단의 <strong>[확인 및 실전 매매 적용]</strong>을 누르면 설정이 저장되고 즉시 <strong>실전 매매 화면으로 이동</strong>하여 매매에 적용됩니다.
+        </p>
+
+        {allocations.length === 0 ? (
+          <div style={{ padding: '20px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', color: '#fca5a5', fontSize: '13px' }}>
+            <div style={{ marginBottom: '12px' }}>
+              ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 3개의 봇을 먼저 체크 후 확정해주세요.
+            </div>
+            {onGoToArena && (
+              <button
+                type="button"
+                className="btn-action success"
+                style={{ fontWeight: 700, padding: '7px 16px' }}
+                onClick={onGoToArena}
+              >
+                ⚡ 가상 경쟁 아레나로 이동하여 3개 봇 선택하기
+              </button>
+            )}
+          </div>
+        ) : (
+          <>
+            {/* Real Total Budget Setup - 토스 주문가능 예수금 90% 자동 계산 */}
+            {(() => {
+              const dynamicOperatingBudget = Math.floor(tossAvailable * 0.90);
+              const effectiveBudget = dynamicOperatingBudget > 0 ? dynamicOperatingBudget : (realTotalBudget || 10000000);
+
+              return (
+                <div className="form-group" style={{ marginBottom: '20px' }}>
+                  <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                    <label className="form-label" style={{ marginBottom: 0 }}>🚨 총 실전 투자 예산 (운영원금)</label>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontSize: '12px', color: '#34d399', fontWeight: 600 }}>
+                        토스 주문가능 예수금: {tossAvailable.toLocaleString()}원
+                      </span>
+                      <button
+                        type="button"
+                        className="btn-action"
+                        style={{ fontSize: '11px', padding: '3px 8px' }}
+                        onClick={handleEqualSplit}
+                      >
+                        ⚖️ 균등 배분 ({allocations.length}등분)
+                      </button>
+                    </div>
+                  </div>
+
+                  {/* 자동 계산된 운영원금 카드 */}
+                  <div
+                    style={{
+                      background: 'rgba(56, 189, 248, 0.08)',
+                      border: '1px solid rgba(56, 189, 248, 0.4)',
+                      borderRadius: '8px',
+                      padding: '14px 18px',
+                      marginBottom: '10px',
+                    }}
+                  >
+                    <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
+                      <div>
+                        <div style={{ fontSize: '12px', color: '#94a3b8' }}>토스증권 예수금 기반 자동 운영원금 (90%)</div>
+                        <div style={{ fontSize: '20px', fontWeight: 700, color: '#38bdf8', marginTop: '2px' }}>
+                          {effectiveBudget.toLocaleString()}원
+                        </div>
+                      </div>
+                      <span
+                        style={{
+                          fontSize: '11px',
+                          padding: '3px 9px',
+                          borderRadius: '4px',
+                          background: 'rgba(56, 189, 248, 0.2)',
+                          color: '#38bdf8',
+                          border: '1px solid rgba(56, 189, 248, 0.45)',
+                          fontWeight: 600,
+                        }}
+                      >
+                        ⚡ 예수금 90% 자동 연동
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '11.5px', color: '#cbd5e1', marginTop: '8px', lineHeight: 1.5 }}>
+                      💡 총 실전 투자 예산은 사용자가 수동 입력하지 않고, 실제 토스증권 계좌의 주문가능 예수금({tossAvailable.toLocaleString()}원)의 <strong>90%({effectiveBudget.toLocaleString()}원)</strong>를 운영원금으로 자동 계산합니다. 아래 슬라이더에서 각 봇의 비율(%)을 조절하면 이 금액이 비율대로 실시간 분배됩니다.
+                    </div>
+                  </div>
+                </div>
+              );
+            })()}
+
+            {/* Dynamic Allocation List */}
+            {(() => {
+              const dynamicOperatingBudget = Math.floor(tossAvailable * 0.90);
+              const effectiveBudget = dynamicOperatingBudget > 0 ? dynamicOperatingBudget : (realTotalBudget || 10000000);
+
+              return (
+                <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '18px' }}>
+                  {allocations.map((item) => {
+                    const allocatedKrw = Math.floor(effectiveBudget * (item.ratio / 100));
+                    return (
+                      <div
+                        key={item.bot_id}
+                        style={{
+                          padding: '14px 18px',
+                          background: 'rgba(0, 0, 0, 0.3)',
+                          border: '1px solid rgba(59, 130, 246, 0.25)',
+                          borderRadius: '8px',
+                        }}
+                      >
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
+                          <div>
+                            <strong style={{ fontSize: '14px', color: '#f8fafc' }}>{item.name}</strong>
+                            <span style={{ color: '#818cf8', marginLeft: '6px', fontSize: '12px' }}>({item.nickname})</span>
+                          </div>
+                          <span className="badge-mode real" style={{ fontSize: '12px', padding: '3px 8px' }}>
+                            실전 배정금: <strong>{allocatedKrw.toLocaleString()}원</strong> ({item.ratio}%)
+                          </span>
+                        </div>
+
+                        <div style={{ display: 'flex', alignItems: 'center', gap: '12px' }}>
+                          <input
+                            type="range"
+                            min="0"
+                            max="100"
+                            step="1"
+                            style={{ flex: 1, accentColor: '#3b82f6' }}
+                            value={item.ratio}
+                            onChange={(e) => handleRatioChange(item.bot_id, e.target.value)}
+                          />
+                          <div style={{ width: '75px', display: 'flex', alignItems: 'center' }}>
+                            <input
+                              type="number"
+                              min="0"
+                              max="100"
+                              className="input-field"
+                              style={{ padding: '5px 8px', fontSize: '13px', textAlign: 'center' }}
+                              value={item.ratio}
+                              onChange={(e) => handleRatioChange(item.bot_id, e.target.value)}
+                            />
+                            <span style={{ fontSize: '13px', color: '#cbd5e1', marginLeft: '4px' }}>%</span>
+                          </div>
+                        </div>
+                      </div>
+                    );
+                  })}
+                </div>
+              );
+            })()}
+
+            {/* Ratio Validation & Save Bar */}
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '10px' }}>
+              <span className={isAllocValid ? 'num-up' : 'num-down'} style={{ fontWeight: 700, fontSize: '13px' }}>
+                비율 합계: <strong>{totalAllocRatio}%</strong> / 100% {isAllocValid ? '✓ (자동 100% 균형 유지)' : '(비율 조정 필요)'}
+              </span>
+              <button
+                className="btn-primary"
+                disabled={!isAllocValid}
+                onClick={() => {
+                  const dynamicOperatingBudget = Math.floor(tossAvailable * 0.90);
+                  const effectiveBudget = dynamicOperatingBudget > 0 ? dynamicOperatingBudget : (realTotalBudget || 10000000);
+                  if (onSaveRealAllocation) onSaveRealAllocation(effectiveBudget, allocations);
+                }}
+              >
+                💾 실전 투자금 비율 저장 및 실전 매매 적용 (확인)
+              </button>
+            </div>
+          </>
+        )}
+      </div>
+
+      {/* 2-1. Virtual Budget Configuration */}
+      <div className="board-card" style={{ borderColor: 'rgba(16, 185, 129, 0.4)', marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🧪 가상 매매 총 운용 예산 설정 (10대 봇 아레나)</div>
+          <span className="badge-mode virtual">가상 아레나</span>
+        </div>
+        <div className="form-group">
+          <label className="form-label">가상 매매 총 운용 자본금 (KRW)</label>
+          <input
+            type="number"
+            className="input-field"
+            value={budgetSettings.virtualTotalBudget}
+            onChange={(e) => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: parseInt(e.target.value, 10) || 0 })}
+          />
+          <div className="budget-quick-btns">
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 10000000 })}>1천만</button>
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 30000000 })}>3천만</button>
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 50000000 })}>5천만</button>
+            <button type="button" className="budget-quick-btn" onClick={() => setBudgetSettings({ ...budgetSettings, virtualTotalBudget: 100000000 })}>1억</button>
+          </div>
+        </div>
+        <button
+          className="btn-action success"
+          style={{ marginTop: '14px' }}
+          onClick={onSaveBudget}
+        >
+          💾 가상 예산 저장
+        </button>
+      </div>
+
+      {/* 2-1. Purchase Priority Configuration Card */}
+      <div className="board-card" style={{ borderColor: 'rgba(168, 85, 247, 0.4)', marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🎯 주식 구매 우선순위 설정 (자동 & 전략 매매)</div>
+          <span className="badge-mode" style={{ background: 'rgba(168, 85, 247, 0.15)', color: '#c084fc', borderColor: 'rgba(168, 85, 247, 0.35)' }}>
+            매수 체결 알고리즘
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '16px', lineHeight: 1.5 }}>
+          매수 발생 시 아래의 <strong>우선순위(1순위 ➔ 2순위 ➔ 3순위)</strong>에 따라 잔여 가용 예산을 확인하고 순차적으로 매수를 집행합니다.<br />
+          예를 들어 1순위(국내 1주) 매수 예산이 부족하거나 조건 미충족 시 다음 순위(미국 1주 ➔ 미국 소수점)로 자동 전환됩니다.
+        </p>
+
+        <div style={{ display: 'flex', flexDirection: 'column', gap: '10px', marginBottom: '18px' }}>
+          {localPriority.map((key, idx) => {
+            const meta = PRIORITY_META[key] || { title: key, desc: '', icon: '📌' };
+            const rankColor = idx === 0 ? '#10b981' : idx === 1 ? '#3b82f6' : '#a855f7';
+            return (
+              <div
+                key={key}
+                style={{
+                  display: 'flex',
+                  alignItems: 'center',
+                  justifyContent: 'space-between',
+                  padding: '14px 18px',
+                  backgroundColor: 'rgba(0, 0, 0, 0.35)',
+                  border: `1px solid ${idx === 0 ? 'rgba(16, 185, 129, 0.4)' : idx === 1 ? 'rgba(59, 130, 246, 0.4)' : 'rgba(168, 85, 247, 0.4)'}`,
+                  borderRadius: '10px',
+                }}
+              >
+                <div style={{ display: 'flex', alignItems: 'center', gap: '14px' }}>
+                  <div
+                    style={{
+                      width: '32px',
+                      height: '32px',
+                      borderRadius: '50%',
+                      background: rankColor,
+                      color: '#fff',
+                      display: 'flex',
+                      alignItems: 'center',
+                      justifyContent: 'center',
+                      fontWeight: 800,
+                      fontSize: '14px',
+                      boxShadow: `0 0 10px ${rankColor}44`,
+                    }}
+                  >
+                    {idx + 1}
+                  </div>
+                  <div>
+                    <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                      <span style={{ fontWeight: 700, fontSize: '14.5px', color: '#f8fafc' }}>
+                        {meta.icon} {meta.title}
+                      </span>
+                      <span
+                        style={{
+                          fontSize: '10.5px',
+                          padding: '2px 8px',
+                          borderRadius: '10px',
+                          background: `${rankColor}22`,
+                          color: rankColor,
+                          border: `1px solid ${rankColor}44`,
+                          fontWeight: 600,
+                        }}
+                      >
+                        {idx + 1}순위
+                      </span>
+                    </div>
+                    <div style={{ fontSize: '12px', color: '#94a3b8', marginTop: '3px' }}>
+                      {meta.desc}
+                    </div>
+                  </div>
+                </div>
+
+                <div style={{ display: 'flex', gap: '6px' }}>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    disabled={idx === 0}
+                    style={{ padding: '6px 12px', fontSize: '11.5px', opacity: idx === 0 ? 0.35 : 1 }}
+                    onClick={() => movePriority(idx, -1)}
+                  >
+                    ▲ 위로
+                  </button>
+                  <button
+                    type="button"
+                    className="btn-action"
+                    disabled={idx === localPriority.length - 1}
+                    style={{ padding: '6px 12px', fontSize: '11.5px', opacity: idx === localPriority.length - 1 ? 0.35 : 1 }}
+                    onClick={() => movePriority(idx, 1)}
+                  >
+                    ▼ 아래로
+                  </button>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        <div style={{ display: 'flex', gap: '10px', flexWrap: 'wrap' }}>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ flex: 1, minWidth: '180px' }}
+            onClick={() => onSavePriority && onSavePriority(localPriority)}
+          >
+            💾 구매 우선순위 설정 저장
+          </button>
+          <button
+            type="button"
+            className="btn-action"
+            style={{ fontSize: '12px', padding: '8px 14px' }}
+            onClick={resetPriorityToDefault}
+          >
+            🔄 기본 순위로 복원 (1.국내1주 ➔ 2.미국1주 ➔ 3.미국소수점)
+          </button>
+        </div>
+      </div>
+
+      {/* Security Gate Passcode Configuration */}
+      <div className="board-card" style={{ marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🔑 시스템 보안 입장 코드 (Gate Passcode) 설정</div>
+          <span className="badge-mode real" style={{ background: 'rgba(239, 68, 68, 0.15)', color: '#f87171', borderColor: 'rgba(239, 68, 68, 0.35)' }}>
+            접속 인증 보안
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
+          웹 브라우저 접속 시 인증에 사용되는 보안 입장 코드(Passcode)를 설정합니다. 기본값은 <code>coin</code>이며, 언제든지 원하는 코드로 안전하게 변경하실 수 있습니다.
+        </p>
+
+        <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap', maxWidth: '640px' }}>
+          <div style={{ flex: 1, minWidth: '220px' }}>
+            <label style={{ display: 'block', fontSize: '12px', color: '#cbd5e1', marginBottom: '6px', fontWeight: 600 }}>
+              새로운 입장 코드 입력
+            </label>
+            <input
+              type="text"
+              className="input-field"
+              style={{ width: '100%', padding: '10px 14px', fontSize: '14px', fontFamily: 'monospace' }}
+              value={newPasscode}
+              onChange={(e) => setNewPasscode(e.target.value)}
+              placeholder="변경할 입장 코드 (기본: coin)"
+            />
+          </div>
+          <button
+            type="button"
+            className="btn-primary"
+            style={{ padding: '10px 20px', fontSize: '13px', fontWeight: 700 }}
+            onClick={() => onSavePasscode && onSavePasscode(newPasscode)}
+          >
+            💾 입장 코드 변경 저장
+          </button>
+          <button
+            type="button"
+            className="btn-action"
+            style={{ padding: '10px 14px', fontSize: '12px' }}
+            onClick={() => setNewPasscode('coin')}
+          >
+            기본값(coin)으로 재설정
+          </button>
+        </div>
+
+        <div style={{ marginTop: '14px', fontSize: '12.5px', color: '#94a3b8' }}>
+          💡 현재 등록된 입장 코드: <strong style={{ color: '#38bdf8', fontFamily: 'monospace', fontSize: '13.5px' }}>{gatePasscode || 'coin'}</strong>
+        </div>
+      </div>
+
+      {/* 3. Broker API Keys Security (Hidden & Masked Protected View) */}
+      <div className="board-card" style={{ marginBottom: '24px' }}>
+        <div className="card-title-row">
+          <div className="card-title">🔒 키움증권(시세) ⨉ 토스증권(매매) ⨉ Gemini API 보안 보호</div>
+          <span className="badge-mode" style={{ background: 'rgba(16, 185, 129, 0.15)', color: '#34d399', borderColor: 'rgba(16, 185, 129, 0.35)' }}>
+            안전 마스킹 암호화 보관
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
+          보안 강화를 위해 증권사 및 AI 연동 API Key는 설정 화면에서 평문으로 노출되지 않으며, 암호화 마스킹 보호 상태로 관리됩니다.
+        </p>
+
+        {/* Security Status Cards */}
+        <div className="security-card-grid">
+          {/* Kiwoom Card */}
+          <div className="security-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontWeight: 700, color: '#60a5fa', fontSize: '14px' }}>🔍 키움증권 Open API (시세/호가)</span>
+              <span className="security-status-badge ok">✅ 키 등록 완료</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+              • App Key: <span className="masked-value">••••••••••••••••</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+              • Secret Key: <span className="masked-value">••••••••••••••••</span>
+            </div>
+          </div>
+
+          {/* Toss Card */}
+          <div className="security-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontWeight: 700, color: '#34d399', fontSize: '14px' }}>⚡ 토스증권 Open API (주문/잔고)</span>
+              <span className="security-status-badge ok">✅ 실계좌 연동 완료</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
+              • API Key: <span className="masked-value">••••••••••••••••</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '6px' }}>
+              • Secret Key: <span className="masked-value">••••••••••••••••</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+              • 연동 계좌: <span className="masked-value">••••••••</span>
+            </div>
+          </div>
+
+          {/* Gemini Card */}
+          <div className="security-card">
+            <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '12px' }}>
+              <span style={{ fontWeight: 700, color: '#c084fc', fontSize: '14px' }}>🤖 Google Gemini AI (시황 인텔리전스)</span>
+              <span className="security-status-badge ok">✅ API 연동 완료</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '8px' }}>
+              • Gemini Key: <span className="masked-value">••••••••••••••••</span>
+            </div>
+            <div style={{ fontSize: '12px', color: '#94a3b8' }}>
+              • Model: <span>gemini-2.5-flash</span>
+            </div>
+          </div>
+        </div>
+
+        {/* Change Keys Toggle Button */}
+        <div style={{ marginTop: '16px', display: 'flex', justifyContent: 'flex-end' }}>
+          <button
+            className="btn-action"
+            style={{ fontSize: '12px' }}
+            onClick={() => setShowNewKeyInputs(!showNewKeyInputs)}
+          >
+            {showNewKeyInputs ? '▲ 새로운 API 키 입력창 닫기' : '🔑 새로운 증권사 / AI 키로 변경하기'}
+          </button>
+        </div>
+
+        {/* New Keys Input Accordion */}
+        {showNewKeyInputs && (
+          <div style={{ marginTop: '16px', padding: '20px', backgroundColor: 'rgba(0,0,0,0.4)', borderRadius: '10px', border: '1px solid var(--border-color)' }}>
+            <div style={{ fontSize: '13px', fontWeight: 700, color: '#f1f5f9', marginBottom: '14px' }}>
+              새로운 API 키 등록 (변경할 항목만 입력하세요. 빈칸은 기존 키를 그대로 유지합니다)
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">매매 기본 모드</label>
+                <select
+                  className="input-field"
+                  value={newBrokerConfig.account_mode}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, account_mode: e.target.value })}
+                >
+                  <option value="VIRTUAL">🧪 가상매매 (키움 모의 체결)</option>
+                  <option value="REAL">💰 실전매매 (토스증권 실주문 체결)</option>
+                </select>
+              </div>
+              <div className="form-group">
+                <label className="form-label">새로운 Gemini API 키</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="새로 변경할 경우에만 입력"
+                  value={newBrokerConfig.gemini_api_key}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, gemini_api_key: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">새로운 키움증권 App Key</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="새로 변경할 경우에만 입력"
+                  value={newBrokerConfig.kiwoom_app_key}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, kiwoom_app_key: e.target.value })}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">새로운 키움증권 Secret Key</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="새로 변경할 경우에만 입력"
+                  value={newBrokerConfig.kiwoom_app_secret}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, kiwoom_app_secret: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">새로운 토스증권 API Key</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="새로 변경할 경우에만 입력"
+                  value={newBrokerConfig.toss_api_key}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, toss_api_key: e.target.value })}
+                />
+              </div>
+              <div className="form-group">
+                <label className="form-label">새로운 토스증권 Secret Key</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="새로 변경할 경우에만 입력"
+                  value={newBrokerConfig.toss_api_secret}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, toss_api_secret: e.target.value })}
+                />
+              </div>
+            </div>
+            <div className="form-row">
+              <div className="form-group">
+                <label className="form-label">새로운 토스증권 계좌번호</label>
+                <input
+                  type="password"
+                  className="input-field"
+                  placeholder="새로 변경할 경우에만 입력"
+                  value={newBrokerConfig.toss_account_no}
+                  onChange={(e) => setNewBrokerConfig({ ...newBrokerConfig, toss_account_no: e.target.value })}
+                />
+              </div>
+            </div>
+            <button
+              className="btn-primary"
+              onClick={() => onSaveKeys(newBrokerConfig, () => setShowNewKeyInputs(false))}
+            >
+              💾 신규 API 키 저장
+            </button>
+          </div>
+        )}
+      </div>
+
+      {/* 4. External Web Access Cloudflare Security Tunnel */}
+      {(() => {
+        const currentOrigin = typeof window !== 'undefined' ? window.location.origin : '';
+        const isTunnelOrigin = currentOrigin.includes('trycloudflare.com');
+        const activeTunnelUrl = tunnelUrl || (isTunnelOrigin ? currentOrigin : null);
+
+        return (
+          <div className="board-card" style={{ marginBottom: '24px' }}>
+            <div className="card-title-row">
+              <div className="card-title">🌐 외부 인터넷 모바일/PC 보안 접속 (Cloudflare Tunnel)</div>
+              {activeTunnelUrl ? (
+                <span className="security-status-badge ok">🟢 HTTPS 정상 연결됨</span>
+              ) : (
+                <span className="security-status-badge" style={{ background: '#334155', color: '#94a3b8' }}>⚪ 터널 미가동</span>
+              )}
+            </div>
+            <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.5 }}>
+              포트포워딩 없이 Cloudflare 보안 터널을 통해 외부 모바일/태블릿에서도 암호화된 HTTPS로 안전하게 접속할 수 있습니다.
+            </p>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '12px', flexWrap: 'wrap', background: 'rgba(0,0,0,0.3)', padding: '12px 16px', borderRadius: '8px' }}>
+              <span style={{ fontSize: '13px', color: '#60a5fa', fontWeight: 600 }}>공개 주소:</span>
+              {activeTunnelUrl ? (
+                <a
+                  href={activeTunnelUrl}
+                  target="_blank"
+                  rel="noopener noreferrer"
+                  style={{ color: '#38bdf8', textDecoration: 'underline', fontWeight: 600, fontSize: '13px' }}
+                >
+                  {activeTunnelUrl}
+                </a>
+              ) : (
+                <span style={{ color: '#94a3b8', fontSize: '13px' }}>
+                  터널 미실행 상태입니다 (외부 접속 필요 시: <code>bash start_tunnel.sh</code> 실행)
+                </span>
+              )}
+              <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: 'auto' }}>
+                게이트 암호: <strong>{gatePasscode || 'coin'}</strong>
+              </span>
+            </div>
+          </div>
+        );
+      })()}
+
+      {/* 5. JSON Data Backup & Restore */}
+      <div className="board-card">
+        <div className="card-title-row">
+          <div className="card-title">💾 JSON 데이터 백업 및 복원</div>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '16px', lineHeight: 1.5 }}>
+          PostgreSQL 내 모든 테이블(봇 설정, 실전/가상 거래 내역, 포지션, 알고리즘 리포트)을 단일 JSON으로 Export하거나 복원합니다.
+        </p>
+        <div style={{ display: 'flex', gap: '12px' }}>
+          <button className="btn-action" onClick={onExportBackup}>
+            📥 JSON 백업 파일 다운로드 (Export)
+          </button>
+          <label className="btn-action" style={{ cursor: 'pointer' }}>
+            📤 JSON 백업 파일 복원 (Import)
+            <input type="file" accept=".json" style={{ display: 'none' }} onChange={onImportBackup} />
+          </label>
+        </div>
+      </div>
+    </div>
+  );
+}
+

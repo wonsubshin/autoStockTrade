@@ -1,0 +1,22 @@
+{
+  "account_mode": "VIRTUAL",
+  "real": {
+    "app_key": "YOUR_KIS_REAL_APP_KEY",
+    "app_secret": "YOUR_KIS_REAL_APP_SECRET",
+    "account_no": "12345678",
+    "account_code": "01",
+    "base_url": "https://openapi.koreainvestment.com:9443"
+  },
+  "virtual": {
+    "app_key": "YOUR_KIS_VIRTUAL_APP_KEY",
+    "app_secret": "YOUR_KIS_VIRTUAL_APP_SECRET",
+    "account_no": "50012345",
+    "account_code": "01",
+    "base_url": "https://openapivts.koreainvestment.com:29443"
+  },
+  "gemini": {
+    "api_key": "YOUR_GEMINI_API_KEY",
+    "model": "gemini-2.5-flash"
+  }
+}
+

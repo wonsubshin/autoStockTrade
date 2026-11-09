@@ -1,0 +1,43 @@
+# Environment & Secrets
+.env
+.env.local
+.env.*.local
+config/kis_config.json
+config/broker_config.json
+config/stock_config.json
+config/.toss_token.json
+config/.*_token.json
+
+# Databases & Runtime Data
+data/
+*.db
+*.db-wal
+*.db-shm
+*.sqlite
+*.sqlite3
+
+# Dependencies
+node_modules/
+frontend/node_modules/
+.venv/
+venv/
+__pycache__/
+*.pyc
+
+# Build output
+frontend/dist/
+dist/
+build/
+
+# Logs & PIDs
+logs/
+*.log
+*.pid
+
+# System & IDE
+.DS_Store
+Thumbs.db
+.vscode/
+.idea/
+
+.aider*
