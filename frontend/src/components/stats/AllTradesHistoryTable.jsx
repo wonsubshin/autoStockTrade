@@ -14,6 +14,7 @@ export default function AllTradesHistoryTable({ bots = [] }) {
   // Filters (오직 실제 거래 'REAL'만 조회)
   const [botFilter, setBotFilter] = useState('ALL');
   const [statusFilter, setStatusFilter] = useState('ALL'); // 'ALL' | 'CLOSED' | 'HOLDING'
+  const [profitFilter, setProfitFilter] = useState('ALL'); // 'ALL' | 'PROFIT' | 'LOSS'
   const [searchInput, setSearchInput] = useState('');
   const [searchTerm, setSearchTerm] = useState('');
 
@@ -30,6 +31,7 @@ export default function AllTradesHistoryTable({ bots = [] }) {
       };
       if (botFilter !== 'ALL') params.botId = botFilter;
       if (statusFilter !== 'ALL') params.status = statusFilter;
+      if (profitFilter !== 'ALL') params.profitType = profitFilter;
       if (searchTerm.trim()) params.search = searchTerm.trim();
 
       const res = await api.getTrades(params);
@@ -42,12 +44,12 @@ export default function AllTradesHistoryTable({ bots = [] }) {
     } finally {
       setLoading(false);
     }
-  }, [botFilter, statusFilter, searchTerm, pagination.page]);
+  }, [botFilter, statusFilter, profitFilter, searchTerm, pagination.page]);
 
   // Initial and filter change effect
   useEffect(() => {
     fetchTrades(1);
-  }, [botFilter, statusFilter, searchTerm]);
+  }, [botFilter, statusFilter, profitFilter, searchTerm]);
 
   // Page change handler
   const handlePageChange = (newPage) => {
@@ -207,6 +209,29 @@ export default function AllTradesHistoryTable({ bots = [] }) {
               <option value="ALL">전체 상태</option>
               <option value="CLOSED">청산완료 (실현손익 확정)</option>
               <option value="HOLDING">보유중 (미청산)</option>
+            </select>
+          </div>
+
+          {/* Profit / Loss Filter */}
+          <div style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+            <span style={{ fontSize: '12px', color: '#94a3b8', fontWeight: 600 }}>손익 구분:</span>
+            <select
+              className="custom-select"
+              style={{
+                fontSize: '12px',
+                padding: '4px 8px',
+                backgroundColor: '#0b0f19',
+                color: profitFilter === 'PROFIT' ? '#34d399' : profitFilter === 'LOSS' ? '#f87171' : '#e2e8f0',
+                border: profitFilter === 'PROFIT' ? '1px solid rgba(16, 185, 129, 0.45)' : profitFilter === 'LOSS' ? '1px solid rgba(239, 68, 68, 0.45)' : '1px solid #1e293b',
+                borderRadius: '6px',
+                fontWeight: profitFilter !== 'ALL' ? 700 : 500,
+              }}
+              value={profitFilter}
+              onChange={(e) => setProfitFilter(e.target.value)}
+            >
+              <option value="ALL">전체 손익 (수익+손해)</option>
+              <option value="PROFIT">📈 수익 거래만 (+)</option>
+              <option value="LOSS">📉 손해 거래만 (-)</option>
             </select>
           </div>
         </div>

@@ -1,50 +1,386 @@
 import fs from 'fs';
 import path from 'path';
 
+export const GEMINI_FLASH_MODELS = [
+  'gemini-3.5-flash',
+  'gemini-flash-latest',
+  'gemini-3.8-flash',
+  'gemini-flash-lite-latest',
+  'gemini-3.5-flash-lite',
+  'gemini-1.5-flash',
+];
+
+export const GEMINI_PRO_MODELS = [
+  'gemini-pro-latest',
+  'gemini-3.1-pro-preview',
+  'gemini-3.5-flash',
+  'gemini-1.5-pro',
+];
+
+/**
+ * [서킷 브레이커 (Circuit Breaker) 상태 관리 클래스]
+ * - CLOSED: 정상 상태, API 호출 허용
+ * - OPEN: 장애 감지 (연속 N회 실패), API 호출 전면 차단 및 퀀트 Fallback 활성화
+ * - HALF_OPEN: N분(15분) 후 단일 테스트 호출 수행하여 성공 시 복구
+ */
+export class CircuitBreaker {
+  constructor({ failureThreshold = 3, resetTimeoutMs = 15 * 60 * 1000, name = 'Gemini' } = {}) {
+    this.failureThreshold = failureThreshold;
+    this.resetTimeoutMs = resetTimeoutMs;
+    this.name = name;
+    this.state = 'CLOSED'; // 'CLOSED' | 'OPEN' | 'HALF_OPEN'
+    this.failureCount = 0;
+    this.lastFailureTime = 0;
+    this.lastStateChange = Date.now();
+  }
+
+  canExecute() {
+    const now = Date.now();
+    if (this.state === 'OPEN') {
+      if (now - this.lastFailureTime >= this.resetTimeoutMs) {
+        this.state = 'HALF_OPEN';
+        this.lastStateChange = now;
+        console.log(`[CircuitBreaker:${this.name}] ⏳ 쿨다운 만료로 상태 전환: OPEN -> HALF_OPEN (테스트 호출 허용)`);
+        return true;
+      }
+      return false; // 아직 OPEN 유지
+    }
+    return true; // CLOSED or HALF_OPEN
+  }
+
+  recordSuccess() {
+    this.failureCount = 0;
+    if (this.state === 'HALF_OPEN') {
+      this.state = 'CLOSED';
+      this.lastStateChange = Date.now();
+      console.log(`[CircuitBreaker:${this.name}] ✅ 테스트 호출 성공! 서킷 복구 완료: HALF_OPEN -> CLOSED`);
+    }
+  }
+
+  reset() {
+    this.state = 'CLOSED';
+    this.failureCount = 0;
+    this.lastFailureTime = 0;
+    this.lastStateChange = Date.now();
+    console.log(`[CircuitBreaker:${this.name}] 🔄 서킷 브레이커 수동 리셋 완료: -> CLOSED`);
+  }
+
+  recordFailure(err) {
+    this.lastFailureTime = Date.now();
+    this.failureCount++;
+    console.warn(`[CircuitBreaker:${this.name}] ⚠️ 호출 실패 감지 (연속 ${this.failureCount}/${this.failureThreshold}회):`, err?.message || err);
+
+    if (this.state === 'HALF_OPEN' || this.failureCount >= this.failureThreshold) {
+      this.state = 'OPEN';
+      this.lastStateChange = Date.now();
+      const waitMin = Math.round(this.resetTimeoutMs / 60000);
+      console.warn(`[CircuitBreaker:${this.name}] 🔴 서킷 브레이커 발동(OPEN): 연속 ${this.failureCount}회 장애로 향후 ${waitMin}분 동안 API 호출 차단 및 순수 퀀트 Fallback 모드 전환`);
+    }
+  }
+
+  getStatus() {
+    const now = Date.now();
+    const isCoolingDown = this.state === 'OPEN' && (now - this.lastFailureTime < this.resetTimeoutMs);
+    const remainingCooldownSec = isCoolingDown ? Math.ceil((this.resetTimeoutMs - (now - this.lastFailureTime)) / 1000) : 0;
+    return {
+      name: this.name,
+      state: this.state,
+      failureCount: this.failureCount,
+      lastFailureTime: this.lastFailureTime,
+      remainingCooldownSec,
+      isOpen: this.state === 'OPEN' && isCoolingDown,
+    };
+  }
+}
+
 /**
  * Gemini LLM 기반 퀀트 의사결정 인텔리전스 엔진 (LLMDecisionService)
- * - 수집된 실시간 국내/글로벌 뉴스, 공시, 시장 시황 데이터를 종합 분석
- * - 국내 대형주 및 미국 소수점 거래 종목(AAPL, NVDA, TSLA, QQQ 등)에 대해 매매 시그널(BUY/HOLD/SELL) 도출
- * - 도출된 매매 신호 및 수량/금액 파라미터를 Python 트레이더에 전달하여 안전 체결
+ * - 30분 단위 Flash 종합 판단 (실시간 속보 뉴스 및 단기 호가 시그널)
+ * - 1시간 단위 Pro 심층 분석 (거시 경제 지표, 이평선 괴리율 및 심층 리스크 평가)
+ * - 다중 LLM(Flash/Pro) 하이브리드 의사결정 지원
+ * - 지수 백오프 & 429 방어 및 서킷 브레이커 (Circuit Breaker) 탑재
  */
 export class LLMDecisionService {
   constructor(projectRoot, getDb) {
     this.projectRoot = projectRoot;
     this.getDb = getDb;
-    this.quotaExceededUntil = 0; // 429 Quota 초과 시 불필요한 반복 호출 방지 쿨다운
+    this.flashQuotaExceededUntil = 0;
+    this.proQuotaExceededUntil = 0;
+    this.quotaExceededUntil = 0; // 호환용
+
+    // 서킷 브레이커 (Flash & Pro 분리 관리, 3회 연속 실패 시 15분 차단)
+    this.circuitBreakers = {
+      FLASH: new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 15 * 60 * 1000, name: 'Gemini-Flash' }),
+      PRO: new CircuitBreaker({ failureThreshold: 3, resetTimeoutMs: 15 * 60 * 1000, name: 'Gemini-Pro' }),
+    };
   }
 
-  loadGeminiConfig() {
+  getCircuitBreaker(modelType = 'FLASH') {
+    const cleanType = String(modelType || 'FLASH').toUpperCase() === 'PRO' ? 'PRO' : 'FLASH';
+    return this.circuitBreakers[cleanType];
+  }
+
+  getCircuitBreakerStatus(modelType = null) {
+    if (modelType) {
+      return this.getCircuitBreaker(modelType).getStatus();
+    }
+    return {
+      FLASH: this.circuitBreakers.FLASH.getStatus(),
+      PRO: this.circuitBreakers.PRO.getStatus(),
+      isOpen: this.circuitBreakers.FLASH.getStatus().isOpen || this.circuitBreakers.PRO.getStatus().isOpen,
+    };
+  }
+
+  isCircuitOpen(modelType = null) {
+    if (modelType) {
+      return this.getCircuitBreaker(modelType).getStatus().isOpen;
+    }
+    return this.circuitBreakers.FLASH.getStatus().isOpen || this.circuitBreakers.PRO.getStatus().isOpen;
+  }
+
+  /**
+   * 동적 프롬프트 토큰 최적화 (Token Truncation)
+   * 잦은 호출에 따른 토큰 낭비 및 Rate Limit 방지
+   * 최대 허용 글자수(기본 약 7,500자 / 약 4,500토큰) 초과 시 뉴스 및 시황 데이터 최신순 절사
+   */
+  optimizePromptTokens(prompt, maxChars = 7500) {
+    if (!prompt || typeof prompt !== 'string') return '';
+    if (prompt.length <= maxChars) return prompt;
+
+    console.log(`[LLMDecisionService] ✂️ 프롬프트 길이(${prompt.length}자)가 허용치(${maxChars}자)를 초과하여 동적 토큰 절사(Truncation)를 적용합니다.`);
+    return prompt.slice(0, maxChars) + '\n\n[...이하 토큰 최적화를 위해 이전 데이터는 생략됨. 상기 제공된 최신 핵심 팩트만을 기준으로 완결된 JSON 응답을 작성하세요...]';
+  }
+
+  loadGeminiConfig(modelType = 'FLASH') {
     const brokerConfPath = path.join(this.projectRoot, 'config', 'broker_config.json');
+    const stockConfPath = path.join(this.projectRoot, 'config', 'stock_config.json');
     let geminiApiKey = process.env.GEMINI_API_KEY || '';
-    let geminiModel = 'gemini-2.5-flash';
+    let configuredModel = '';
 
     if (fs.existsSync(brokerConfPath)) {
       try {
         const conf = JSON.parse(fs.readFileSync(brokerConfPath, 'utf8'));
         if (conf.gemini?.api_key) geminiApiKey = conf.gemini.api_key;
-        if (conf.gemini?.model) geminiModel = conf.gemini.model;
+        if (conf.gemini?.model) configuredModel = conf.gemini.model;
       } catch (e) {}
     }
 
-    return { geminiApiKey, geminiModel };
+    if (!geminiApiKey && fs.existsSync(stockConfPath)) {
+      try {
+        const sConf = JSON.parse(fs.readFileSync(stockConfPath, 'utf8'));
+        if (sConf.gemini_api_key) geminiApiKey = sConf.gemini_api_key;
+        else if (sConf.gemini?.api_key) geminiApiKey = sConf.gemini.api_key;
+      } catch (e) {}
+    }
+
+    const isPro = String(modelType || '').toUpperCase() === 'PRO';
+    const candidateChain = isPro ? [...GEMINI_PRO_MODELS] : [...GEMINI_FLASH_MODELS];
+
+    if (configuredModel) {
+      const cleanConf = configuredModel.replace(/^models\//, '');
+      if (!candidateChain.includes(cleanConf)) {
+        candidateChain.unshift(cleanConf);
+      }
+    }
+
+    const defaultModel = candidateChain[0];
+    return {
+      geminiApiKey: String(geminiApiKey || '').trim(),
+      geminiModel: defaultModel,
+      candidateChain,
+      modelType: isPro ? 'PRO' : 'FLASH',
+    };
   }
 
   /**
-   * 실시간 뉴스, 한·미 시장 지표 및 가동 중인 봇 상태를 기반으로
-   * Gemini LLM 실시간 시장 분석 & 봇 진단 + 종목별 매매 시그널 도출
-   * @param {Array} candidates 종목 후보군 (국내 및 미국 소수점 종목)
-   * @param {Object} context 추가 시장/봇 컨텍스트 ({ triggerType, slotLabel, botsSummary, marketSummary })
+   * [API 방어 래퍼 (Circuit Breaker & Exponential Backoff)]
+   * - 서킷 브레이커 상태 확인 (OPEN 시 즉시 차단 후 Fallback 유도)
+   * - 429 Too Many Requests / 503 에러 발생 시 지수 백오프 (2초 -> 4초 -> 8초) 최대 3회 재시도
+   * - 동적 프롬프트 토큰 절사(optimizePromptTokens) 적용
+   */
+  async callGeminiApiWithDefense(prompt, modelType = 'FLASH', { maxRetries = 3 } = {}) {
+    const breaker = this.getCircuitBreaker(modelType);
+    if (!breaker.canExecute()) {
+      const status = breaker.getStatus();
+      const errMsg = `[CircuitBreaker:${breaker.name}] 서킷 브레이커가 OPEN 상태입니다. (${status.remainingCooldownSec}초 남음) 무의미한 API 호출을 차단하고 순수 퀀트 Fallback 모드를 가동합니다.`;
+      console.warn(`[LLMDecisionService] ${errMsg}`);
+      const err = new Error(errMsg);
+      err.circuitOpen = true;
+      err.status = status;
+      throw err;
+    }
+
+    const optimizedPrompt = this.optimizePromptTokens(prompt);
+    const { geminiApiKey, candidateChain } = this.loadGeminiConfig(modelType);
+
+    if (!geminiApiKey) {
+      const err = new Error('Gemini API 키가 설정되지 않았습니다.');
+      err.code = 'NO_API_KEY';
+      throw err;
+    }
+
+    const backoffDelays = [2000, 4000, 8000]; // 2초 -> 4초 -> 8초
+    const isPro = String(modelType).toUpperCase() === 'PRO';
+    const timeoutMs = isPro ? 35000 : 25000;
+    const temperature = isPro ? 0.15 : 0.25;
+
+    let lastError = null;
+
+    // 후보 모델 체인을 순회하며 지수 백오프 적용
+    for (const candidateModel of candidateChain) {
+      const cleanModel = candidateModel.replace(/^models\//, '');
+
+      for (let attempt = 0; attempt <= maxRetries; attempt++) {
+        let resp = null;
+        let controller = new AbortController();
+        let timer = setTimeout(() => controller.abort(), timeoutMs);
+
+        try {
+          resp = await fetch(
+            `https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${geminiApiKey}`,
+            {
+              method: 'POST',
+              signal: controller.signal,
+              headers: { 'Content-Type': 'application/json' },
+              body: JSON.stringify({
+                contents: [{ parts: [{ text: optimizedPrompt }] }],
+                generationConfig: {
+                  temperature,
+                  maxOutputTokens: 8192,
+                  responseMimeType: 'application/json',
+                },
+              }),
+            }
+          );
+          clearTimeout(timer);
+
+          if (resp.ok) {
+            const resData = await resp.json();
+            const rawText = resData.candidates?.[0]?.content?.parts?.[0]?.text || '';
+            let jsonStr = rawText.trim();
+            const match = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
+            if (match && match[1]) jsonStr = match[1].trim();
+            jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
+
+            const parsed = JSON.parse(jsonStr);
+            breaker.recordSuccess();
+            return { success: true, parsed, usedModel: cleanModel };
+          }
+
+          const errText = await resp.text();
+          const status = resp.status;
+
+          // 429 Rate Limit 또는 500/503 서버 일시 장애 처리
+          if (status === 429 || status === 503 || status === 500) {
+            let retryDelayMs = backoffDelays[attempt] || 8000;
+            try {
+              const errJson = JSON.parse(errText);
+              const retryInfo = errJson.error?.details?.find((d) => d['@type']?.includes('RetryInfo'));
+              if (retryInfo?.retryDelay) {
+                const seconds = parseFloat(retryInfo.retryDelay.replace('s', ''));
+                if (!isNaN(seconds) && seconds > 0) retryDelayMs = Math.ceil(seconds * 1000);
+              }
+            } catch (_) {}
+
+            lastError = new Error(`Gemini ${cleanModel} ${status} (${errText.slice(0, 100)})`);
+            lastError.status = status;
+
+            if (attempt < maxRetries) {
+              const waitSec = (retryDelayMs / 1000).toFixed(1);
+              console.warn(`[LLMDefense] ⚠️ Gemini ${modelType}(${cleanModel}) ${status} 발생. 지수 백오프 대기 후 재시도 (${attempt + 1}/${maxRetries}회, ${waitSec}초 대기)...`);
+              await new Promise((r) => setTimeout(r, retryDelayMs));
+              continue; // 동일 모델 재시도
+            } else {
+              console.warn(`[LLMDefense] ⚠️ Gemini ${cleanModel} ${status} 최대 재시도 초과. 다음 후보 모델로 폴백 시도...`);
+              break; // 다음 모델 시도
+            }
+          } else {
+            // 기타 404, 400 등 비복구성 오류는 즉시 다음 모델 시도
+            lastError = new Error(`Gemini ${cleanModel} HTTP ${status}: ${errText.slice(0, 100)}`);
+            lastError.status = status;
+            break;
+          }
+        } catch (fetchErr) {
+          clearTimeout(timer);
+          lastError = fetchErr;
+          if (attempt < maxRetries) {
+            const delay = backoffDelays[attempt] || 4000;
+            console.warn(`[LLMDefense] ⚠️ Gemini ${modelType}(${cleanModel}) 네트워크/타임아웃 오류(${fetchErr.message}). 백오프 대기 후 재시도 (${attempt + 1}/${maxRetries}회, ${delay / 1000}초 대기)...`);
+            await new Promise((r) => setTimeout(r, delay));
+          } else {
+            break;
+          }
+        }
+      }
+    }
+
+    // 모든 후보 모델 및 재시도 실패 시 서킷 브레이커 실패 기록
+    breaker.recordFailure(lastError);
+    throw lastError || new Error('모든 Gemini 모델 호출에 실패하였습니다.');
+  }
+
+  /**
+   * 하위 호환 호출 래퍼
+   */
+  async callGeminiJson({ prompt, modelType = 'FLASH', temperature = 0.2 }) {
+    try {
+      return await this.callGeminiApiWithDefense(prompt, modelType);
+    } catch (err) {
+      return { success: false, reason: err.message, circuitOpen: !!err.circuitOpen };
+    }
+  }
+
+  /**
+   * 30분 단위 Flash 종합 판단 (Gemini Flash 적용)
+   * 네이버 금융/언론사 RSS 실시간 뉴스와 빠른 시황을 입력받아 30분 단위 단기 트렌드 시그널을 출력
+   */
+  async evaluateFlashSignals(candidates = [], context = {}) {
+    return await this._evaluateWithModel(candidates, {
+      ...context,
+      modelType: 'FLASH',
+      timeframeLabel: '30분 단기 트렌드',
+      focusArea: '실시간 뉴스 속보 감성, 호가창 수급 모멘텀, 단기 급등락 대응 및 30분 내 유효한 진입/이탈 타점',
+    });
+  }
+
+  /**
+   * 1시간 단위 Pro 심층 분석 (Gemini Pro 적용)
+   * 누적된 지표와 심층 프롬프트를 입력받아 1시간 단위 거시적/심층 트렌드를 출력
+   */
+  async evaluateProDeepAnalysis(candidates = [], context = {}) {
+    return await this._evaluateWithModel(candidates, {
+      ...context,
+      modelType: 'PRO',
+      timeframeLabel: '1시간 거시/심층 트렌드',
+      focusArea: '일봉 20MA/60분봉 60MA 이동평균선 괴리율, 거시 경제 환경(환율·금리), 종목별 펀더멘털 및 1시간 이상 유지될 중기 추세 지지/저항',
+    });
+  }
+
+  /**
+   * 기존 시그니처 호환 및 modelType에 따른 자동 분기
    */
   async evaluateTradeSignals(candidates = [], context = {}) {
-    const db = this.getDb();
-    const { geminiApiKey, geminiModel } = this.loadGeminiConfig();
+    const modelType = String(context.modelType || 'FLASH').toUpperCase();
+    if (modelType === 'PRO') {
+      return await this.evaluateProDeepAnalysis(candidates, context);
+    }
+    return await this.evaluateFlashSignals(candidates, context);
+  }
 
-    // 1. 최근 수집된 주요 뉴스 상위 30건 조회 (keywords 컬럼 활용)
+  /**
+   * 내부 공통 LLM 평가 실행 엔진
+   */
+  async _evaluateWithModel(candidates = [], context = {}) {
+    const db = this.getDb();
+    const modelType = String(context.modelType || 'FLASH').toUpperCase();
+    const isPro = modelType === 'PRO';
+    const { geminiApiKey } = this.loadGeminiConfig(modelType);
+
+    // 1. 최근 수집된 뉴스 상위 30건 (네이버 금융, 한경, 매경, 구글 등)
     let recentNews = [];
     try {
       recentNews = db.prepare(`
-        SELECT id, title, summary, sentiment, keywords, created_at
+        SELECT id, title, summary, sentiment, keywords, source, created_at
         FROM stock_news
         ORDER BY id DESC LIMIT 30
       `).all() || [];
@@ -52,7 +388,7 @@ export class LLMDecisionService {
       console.warn('[LLMDecisionService] 뉴스 조회 실패:', e.message);
     }
 
-    // 2. 현재 실전 및 가상 봇 상태 요약 조회 (봇 진단용)
+    // 2. 봇 상태 요약
     let botsSummaryText = context.botsSummary || '';
     if (!botsSummaryText) {
       try {
@@ -69,43 +405,67 @@ export class LLMDecisionService {
             .filter((p) => p.bot_id === b.bot_id)
             .map((p) => `${p.stock_name}(${p.stock_code}) ${p.qty}주`)
             .join(', ') || '보유 포지션 없음';
-          return `- ${b.name}(${b.nickname}): 배정예산 ${Number(b.real_allocated_capital || 0).toLocaleString()}원, 익절 +${b.take_profit_pct}%/손절 -${b.stop_loss_pct}%, 보유[${posList}], 상태[${b.real_status_msg || '정상'}]`;
+          return `- ${b.name}(${b.nickname}): 예산 ${Number(b.real_allocated_capital || 0).toLocaleString()}원, 익절 +${b.take_profit_pct}%/손절 -${b.stop_loss_pct}%, 보유[${posList}], 상태[${b.real_status_msg || '정상'}]`;
         }).join('\n');
       } catch (e) {}
     }
 
-    // 후보군 기본값 (국내 대표주 + 미국 소수점 대표 종목)
+    // 3. 후보 종목 기본값
     const targetCandidates = candidates.length > 0 ? candidates : [
       { code: '005930', name: '삼성전자', market: 'KR', isFractional: false },
       { code: '000660', name: 'SK하이닉스', market: 'KR', isFractional: false },
       { code: '068270', name: '셀트리온', market: 'KR', isFractional: false },
+      { code: '005380', name: '현대차', market: 'KR', isFractional: false },
       { code: 'AAPL', name: '애플', market: 'US', isFractional: true },
       { code: 'NVDA', name: '엔비디아', market: 'US', isFractional: true },
       { code: 'TSLA', name: '테슬라', market: 'US', isFractional: true },
       { code: 'QQQ', name: 'QQQ ETF', market: 'US', isFractional: true },
-      { code: 'SBUX', name: '스타벅스', market: 'US', isFractional: true },
+      { code: 'MSFT', name: '마이크로소프트', market: 'US', isFractional: true },
     ];
 
     if (!geminiApiKey) {
-      console.warn('[LLMDecisionService] Gemini API 키가 설정되지 않아 규칙 기반(Rule-based) 시그널로 대체합니다.');
-      return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, context);
+      console.warn(`[LLMDecisionService] Gemini API 키 부재 -> ${modelType} 규칙 기반 폴백 시그널 적용`);
+      return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, { ...context, modelType });
     }
 
     const newsContext = recentNews.map((n, i) =>
-      `[기사 ${i + 1}] (${n.sentiment || 'NEUTRAL'}) ${n.title} - ${n.summary || ''}`
+      `[기사 ${i + 1}] (${n.sentiment || 'NEUTRAL'} | ${n.source || '증시속보'}) ${n.title} - ${n.summary || ''}`
     ).join('\n');
 
     const candidateListStr = targetCandidates.map((c) =>
       `- [${c.market}] ${c.name}(${c.code}): ${c.isFractional ? '미국 소수점 금액 주문 가능' : '국내 온주(1주 단위) 주문'}`
     ).join('\n');
 
+    // 거시 경제 및 체제 데이터 (Pro 심층 분석 시 강조)
+    let filterRow = null;
+    try {
+      filterRow = db.prepare('SELECT * FROM market_regime_filter WHERE id = 1').get() || null;
+    } catch (e) {}
+
+    const macroContext = [
+      `- 🇰🇷 한국 시장 체제: ${filterRow?.kr_recommended_action || 'NORMAL'} (배율: ${Math.round((Number(filterRow?.kr_position_size_multiplier || 1.0)) * 100)}%, 사유: ${filterRow?.kr_reason || '정상'})`,
+      `- 🇺🇸 미국 시장 체제: ${filterRow?.us_recommended_action || 'NORMAL'} (배율: ${Math.round((Number(filterRow?.us_position_size_multiplier || 1.0)) * 100)}%, 사유: ${filterRow?.us_reason || '정상'})`,
+      `- 분석 주기 및 분석 모델: ${isPro ? 'Gemini 1.5 Pro (1시간 단위 거시·심층 퀀트 분석)' : 'Gemini 1.5 Flash (30분 단위 뉴스·시황 고속 스캔)'}`,
+    ].join('\n');
+
     const prompt = `
-당신은 월스트리트와 여의도 탑티어 퀀트 헤지펀드의 수석 AI 전략가이자 증시 전문 앵커입니다.
-아래에 제공된 실시간 증시 뉴스 25건, 거시 경제 흐름, 그리고 현재 가동 중인 실전 퀀트 봇들의 포지션/운용 현황을 정밀하게 분석하여:
-1) 실시간 시장 분석 요약 브리핑(marketBriefing)
-2) 실전 퀀트 봇 진단 및 종합 구두 시황 해설(verbalOverview)
-3) 각 후보 종목에 대한 매매 의사결정(decisions)
-을 JSON 객체 형식으로 작성해주세요.
+당신은 월스트리트와 여의도 탑티어 퀀트 헤지펀드의 수석 AI 전략가입니다.
+현재 모드는 [${isPro ? 'Gemini Pro 1시간 심층 퀀트 분석' : 'Gemini Flash 30분 고속 시황 판단'}] 엔진입니다.
+
+아래에 제공된 ${isPro ? '누적된 시장 거시 지표, 60분봉/일봉 추세, 심층 수급 및' : '네이버 금융 및 주요 언론사 실시간 속보 뉴스와 빠른 시황'} 데이터를 바탕으로:
+1) marketBriefing: ${isPro ? '1시간 단위 거시적 관점의 종합 심층 브리핑' : '30분 단위 실시간 빠른 시황 판단'}
+2) krMarketOverview: 🇰🇷 한국 주식 시장(KRX) 구두 시황 해설
+3) usMarketOverview: 🇺🇸 미국 주식 시장(NYSE/NASDAQ) 구두 시황 해설
+4) verbalOverview: 3개 파트([🇰🇷 한국 시장], [🇺🇸 미국 시장], [🤖 실전 봇 진단])로 구분된 상세 브리핑
+5) decisions: 각 종목에 대한 매매 판단(BUY, HOLD, SELL), 신뢰도(0~100), 감성점수(-10.0 ~ +10.0), 근거 뉴스 및 구체적 사유
+를 JSON 객체로 작성해주세요.
+
+[분석 핵심 중점사항]
+- 주기: ${context.timeframeLabel || (isPro ? '1시간 단위 심층 트렌드' : '30분 단위 단기 트렌드')}
+- 중점 영역: ${context.focusArea || (isPro ? '거시 경제, 20MA/60MA 이동평균선, 종목 펀더멘털' : '실시간 속보 뉴스 감성, 단기 수급, 즉시성 호재/악재')}
+
+[시장 체제 및 거시 환경]
+${macroContext}
 
 [현재 실전 가동 퀀트 봇 및 보유 포지션 현황]
 ${botsSummaryText || '3대 실전 퀀트 봇 정상 가동 중'}
@@ -113,29 +473,23 @@ ${botsSummaryText || '3대 실전 퀀트 봇 정상 가동 중'}
 [분석 대상 종목군]
 ${candidateListStr}
 
-[최근 수집 증시 뉴스 25건]
+[최근 수집 실시간 뉴스]
 ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테크 반도체 및 AI 밸류체인 수혜 관점으로 평가해주세요.'}
 
 [평가 지침 및 규칙]
-1. marketBriefing: 상단 전광판 배너에 표시할 2~3문장의 핵심 실시간 한·미 증시 시황 분석 및 실전 봇 운용 진단 요약문.
-2. krMarketOverview: 🇰🇷 한국 주식 시장(KRX: KOSPI/KOSDAQ) 전용 종합 구두 시황 해설 (국내 지수·수급 흐름, 호재/악재 뉴스 감성 추이, 국내 대표주 온주 매매 추천 종목 및 알고리즘 매매 진행 상태 3~4문장).
-3. usMarketOverview: 🇺🇸 미국 주식 시장(NYSE/NASDAQ) 전용 종합 구두 시황 해설 (나스닥 QQQ·빅테크 수급 흐름, 원/달러 환율 영향, 미국 소수점 매수 추천 종목 및 23:30 정규장 예약대기 체결 전략 3~4문장).
-4. verbalOverview: 투자자에게 직접 방송 마이크를 잡고 구두(Oral/Spoken)로 해설하듯 작성하되, 반드시 **[🇰🇷 한국 시장 종합 진단]**, **[🇺🇸 미국 시장 종합 진단]**, **[🤖 실전 퀀트 봇 & 알고리즘 매매 진단]** 3개 파트로 명확히 구분하여 작성한 종합 리포트.
-5. decisions 배열: 각 종목에 대해 'BUY'(매수 권고), 'HOLD'(관망), 'SELL'(매도/차익실현) 중 하나의 명확한 시그널을 부여하세요.
-   - 🇰🇷 한국 종목(market: 'KR'): 코스피/코스닥 지수 흐름, 20일선 지지 여부, 국내 증시 급락/안정세를 기준으로 독립 평가하세요 (코스피 급락 시 무리한 매수 지양).
-   - 🇺🇸 미국 종목(market: 'US'): 나스닥 100(QQQ), S&P500 추세, 빅테크 펀더멘털을 기준으로 한국 시장과 완전히 분리하여 독립 평가하세요 (토스 소수점 분할 매수 전략 명시).
-6. 'BUY' 신호는 확신도(confidence) 70% 이상, 호재 감성점수(sentimentScore) +3.0점 이상일 때 발동하세요.
-7. 미국 주식(market: 'US')은 소수점 거래(토스증권 달러 금액 주문)가 가능하므로 소액 분할매수 행동요령을 명시하세요.
-8. 각 종목의 'reasoning' 필드는 필수적으로 제공된 [최근 수집 증시 뉴스 25건] 중 해당 종목 및 연관 테마/업종의 최신 뉴스 헤드라인(기사 제목)과 핵심 이슈를 직접 인용·언급하며, 이를 근거로 왜 BUY/HOLD/SELL인지 2~3문장의 생생하고 자연스러운 '구두형 구어체 해설'로 작성하세요. (예: "최근 '... 관련 뉴스 기사 제목'에서 보듯 ...")
-9. 각 종목에 'related_news' 필드를 추가하여 근거가 된 핵심 뉴스 1건의 제목을 명시하세요.
-10. 반드시 아래 JSON 객체 스키마 형식으로만 응답하세요.
+1. decisions 배열: 각 종목에 대해 'BUY'(매수 권고), 'HOLD'(관망), 'SELL'(매도/리스크 관리)을 부여하세요.
+2. ${isPro ? 'Pro 심층 분석 모드이므로, 단기 잡음(Noise)에 휘둘리지 않고 펀더멘털과 60분봉/일봉 지지선, 거시 리스크를 기준으로 보수적이고 깊이 있게 추론하세요.' : 'Flash 모드이므로 실시간 속보 뉴스 키워드와 단기 수급 탄력을 기민하게 반영하여 30분 단위 단기 시그널을 신속하게 도출하세요.'}
+3. 🇰🇷 한국 종목과 🇺🇸 미국 종목은 서로 독립적으로 평가하세요 (코스피 지표와 나스닥 지표 각각 적용).
+4. 'BUY' 신호는 확신도(confidence) 70% 이상, 호재 감성점수(sentimentScore) +3.0점 이상일 때 부여하세요.
+5. 각 종목의 'reasoning' 필드는 최근 뉴스 제목과 핵심 이슈를 직접 언급하며 ${isPro ? '1시간 단위 심층 거시/기술적 관점' : '30분 단위 단기 트렌드/뉴스 모멘텀 관점'}에서 2~3문장의 생생한 구어체로 서술하세요.
+6. 반드시 아래 JSON 객체 스키마 형식으로만 응답하세요.
 
 [응답 JSON 스키마]
 {
-  "marketBriefing": "[AI 실시간 시장 분석 & 봇 진단] 국내외 반도체·빅테크 중심 매수세 유입 속 실전 3대 봇(VOL-BREAK #1, BB-RSI #3, ENV-SNIPER #6)이 기보유 미국 우량주 차익실현 대기 및 신규 소수점 분할 진입을 준비 중입니다.",
-  "krMarketOverview": "🇰🇷 [한국 시장 (KOSPI/KOSDAQ)] 현재 국내 증시는 글로벌 메모리 반도체 업황 회복과 외국인 수급 유입에 힘입어 일봉 20일 이동평균선 상단에서 견조한 흐름을 이어가고 있습니다. ...",
-  "usMarketOverview": "🇺🇸 [미국 시장 (NYSE/NASDAQ)] 미국 증시는 나스닥 100(QQQ) 지수가 일봉 20MA 및 장중 60MA 지지를 확보한 가운데 AI 빅테크 중심의 강한 매수 모멘텀이 유지되고 있습니다. ...",
-  "verbalOverview": "### 🇰🇷 [한국 시장 (KRX: KOSPI/KOSDAQ)] 종합 분석\n...\n\n### 🇺🇸 [미국 시장 (US: NYSE/NASDAQ)] 종합 분석\n...\n\n### 🤖 [실전 퀀트 봇 & 알고리즘 매매 진행 진단]\n...",
+  "marketBriefing": "${isPro ? '[1시간 Pro 심층 퀀트 분석]' : '[30분 Flash 실시간 종합 판단]'} ...",
+  "krMarketOverview": "🇰🇷 [한국 시장] ...",
+  "usMarketOverview": "🇺🇸 [미국 시장] ...",
+  "verbalOverview": "### 🇰🇷 [한국 시장 종합 진단]\n...\n\n### 🇺🇸 [미국 시장 종합 진단]\n...\n\n### 🤖 [실전 퀀트 봇 & 알고리즘 매매 진단]\n...",
   "decisions": [
     {
       "symbol": "AAPL",
@@ -144,8 +498,8 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
       "action": "BUY",
       "confidence": 85,
       "sentimentScore": 7.5,
-      "related_news": "애플, 온디바이스 AI 채택 가속화 및 서비스 부문 분기 호실적 달성",
-      "reasoning": "최근 실시간 뉴스 '애플, 온디바이스 AI 채택 가속화 및 서비스 부문 분기 호실적 달성' 소식이 이어지며 긍정적인 수급 탄력을 받고 있습니다. 토스증권 소수점 분할 매수를 통해 소액 적립식으로 비중을 확대해 나가시는 전략을 추천해 드립니다.",
+      "related_news": "애플 AI 채택 가속화 및 서비스 부문 분기 호실적",
+      "reasoning": "...",
       "isFractional": true,
       "suggestedBudgetRatio": 0.35
     }
@@ -153,85 +507,51 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
 }
 `;
 
-    // 429 Quota 초과 쿨다운 중인 경우 즉시 내장 퀀트 폴백 엔진 적용
-    if (Date.now() < this.quotaExceededUntil) {
-      const remainMin = Math.ceil((this.quotaExceededUntil - Date.now()) / 60000);
-      console.log(`[LLMDecisionService] Gemini Free Tier 쿨다운 활성 상태 (${remainMin}분 남음) - 내장 퀀트 감성 엔진 즉시 적용`);
-      return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, context);
+    let apiResult = null;
+    try {
+      apiResult = await this.callGeminiApiWithDefense(prompt, modelType);
+    } catch (defenseErr) {
+      console.warn(`[LLMDecisionService] 🛡️ Gemini ${modelType} API 방어/서킷 브레이커 발동 (${defenseErr.message}) -> 내장 퀀트 감성 폴백 전환`);
+      return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, { ...context, modelType, circuitOpen: !!defenseErr.circuitOpen });
     }
 
-    try {
-      const cleanModel = geminiModel.replace(/^models\//, '');
-      const resp = await fetch(`https://generativelanguage.googleapis.com/v1beta/models/${cleanModel}:generateContent?key=${geminiApiKey}`, {
-        method: 'POST',
-        headers: { 'Content-Type': 'application/json' },
-        body: JSON.stringify({
-          contents: [{ parts: [{ text: prompt }] }],
-          generationConfig: {
-            temperature: 0.2,
-            maxOutputTokens: 8192,
-            responseMimeType: 'application/json',
-          },
-        }),
-      });
-
-      if (!resp.ok) {
-        const errText = await resp.text();
-        if (resp.status === 429) {
-          let cooldownMs = 60 * 60 * 1000; // 기본 1시간 쿨다운
-          try {
-            const errJson = JSON.parse(errText);
-            const retryInfo = errJson.error?.details?.find((d) => d['@type']?.includes('RetryInfo'));
-            if (retryInfo?.retryDelay) {
-              const seconds = parseFloat(retryInfo.retryDelay.replace('s', ''));
-              if (!isNaN(seconds) && seconds > 0) cooldownMs = Math.ceil(seconds * 1000);
-            }
-          } catch (_) {}
-          this.quotaExceededUntil = Date.now() + cooldownMs;
-          const waitMinutes = Math.round(cooldownMs / 60000);
-          console.warn(`[LLMDecisionService] ⚠️ Gemini Free Tier 일일 한도(20회) 도달 (429 Quota Exceeded). ${waitMinutes}분 동안 내장 퀀트 감성 분석 엔진으로 자동 전환합니다.`);
-        } else {
-          console.warn(`[LLMDecisionService] Gemini 호출 실패 (${resp.status}):`, errText.slice(0, 150));
-        }
-        return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, context);
-      }
-
-      const resData = await resp.json();
-      const rawText = resData.candidates?.[0]?.content?.parts?.[0]?.text || '';
-      let jsonStr = rawText.trim();
-      const match = rawText.match(/```(?:json)?\s*([\s\S]*?)\s*```/);
-      if (match && match[1]) {
-        jsonStr = match[1].trim();
-      }
-      jsonStr = jsonStr.replace(/^```json\s*/i, '').replace(/^```\s*/, '').replace(/```\s*$/, '').trim();
-
-      const parsed = JSON.parse(jsonStr);
+    if (apiResult && apiResult.success && apiResult.parsed) {
+      const parsed = apiResult.parsed;
       const decisionsList = Array.isArray(parsed)
         ? parsed
         : (Array.isArray(parsed?.decisions) ? parsed.decisions : []);
 
       if (decisionsList.length > 0) {
-        this.saveDecisionsToDb(decisionsList);
-        const defaultSummaries = this.buildDefaultAnalysisSummaries(decisionsList, botsSummaryText, context);
+        this.saveDecisionsToDb(decisionsList, modelType);
+        const defaultSummaries = this.buildDefaultAnalysisSummaries(decisionsList, botsSummaryText, { ...context, modelType });
         const marketBriefing = parsed?.marketBriefing || defaultSummaries.marketBriefing;
         const krMarketOverview = parsed?.krMarketOverview || defaultSummaries.krMarketOverview;
         const usMarketOverview = parsed?.usMarketOverview || defaultSummaries.usMarketOverview;
-        const verbalOverview = parsed?.verbalOverview || defaultSummaries.verbalOverview;
+        let verbalOverview = parsed?.verbalOverview;
+        if (verbalOverview && typeof verbalOverview === 'object') {
+          const parts = [];
+          if (verbalOverview.krMarket || verbalOverview.kr) parts.push(`### 🇰🇷 [한국 주식 시장 (KRX: KOSPI / KOSDAQ)] 종합 분석 & 온주 전략\n- ${verbalOverview.krMarket || verbalOverview.kr}`);
+          if (verbalOverview.usMarket || verbalOverview.us) parts.push(`### 🇺🇸 [미국 주식 시장 (US: NYSE / NASDAQ)] 종합 분석 & 소수점 전략\n- ${verbalOverview.usMarket || verbalOverview.us}`);
+          if (verbalOverview.botDiagnostic || verbalOverview.bot) parts.push(`### 🤖 [실전 퀀트 봇 & 알고리즘 매매 진단]\n- ${verbalOverview.botDiagnostic || verbalOverview.bot}`);
+          verbalOverview = parts.length > 0 ? parts.join('\n\n') : JSON.stringify(verbalOverview);
+        }
+        if (!verbalOverview) verbalOverview = defaultSummaries.verbalOverview;
+
         this.saveLatestAnalysisToDb({
           marketBriefing,
           krMarketOverview,
           usMarketOverview,
           verbalOverview,
           triggerType: context.triggerType || 'AUTO',
-          slotLabel: context.slotLabel || '',
+          slotLabel: context.slotLabel || (isPro ? '1시간 Pro 심층분석' : '30분 Flash 자동분석'),
+          modelType,
         });
         return decisionsList;
       }
-    } catch (e) {
-      console.warn('[LLMDecisionService] Gemini 분석 파싱 오류, fallback 적용:', e.message);
     }
 
-    return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, context);
+    console.warn(`[LLMDecisionService] Gemini ${modelType} API 응답 실패/파싱불가 -> 내장 퀀트 폴백 적용`);
+    return this.generateFallbackDecisions(targetCandidates, recentNews, botsSummaryText, { ...context, modelType });
   }
 
   buildDefaultAnalysisSummaries(decisions, botsSummaryText = '', context = {}) {
@@ -512,6 +832,17 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
         }
       }
 
+      const isPro = String(context.modelType || '').toUpperCase() === 'PRO';
+      if (isPro) {
+        if (action === 'BUY') {
+          reasoning = `📊 [Pro 거시/심층 분석 | 1시간 추세] "${newsTitle}" 관련 밸류에이션 호재와 함께 중기 이평선(20MA/60MA) 상단 지지가 견고합니다. 거시 지표 안정세 속에서 분할 매수 관점을 유지합니다.`;
+        } else if (action === 'SELL') {
+          reasoning = `⚠️ [Pro 거시/심층 분석 | 1시간 추세] "${newsTitle}" 관련 하방 압력 및 거시 리스크가 심화되고 있습니다. 중기 추세 이탈 방어를 위해 보수적 비중 축소 및 매도를 권고합니다.`;
+        } else {
+          reasoning = `⚖️ [Pro 거시/심층 분석 | 1시간 추세] "${newsTitle}" 보도 속에서 방향성 탐색 구간입니다. 거시 경제 지표와 수급 전환 확인 시까지 관망(HOLD)을 유지합니다.`;
+        }
+      }
+
       return {
         symbol: c.code,
         name: c.name,
@@ -521,12 +852,14 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
         sentimentScore,
         related_news: newsTitle,
         reasoning,
+        modelType: isPro ? 'PRO' : 'FLASH',
         isFractional: c.isFractional,
         suggestedBudgetRatio: 0.35,
       };
     });
 
-    this.saveDecisionsToDb(results);
+    const usedModelType = String(context.modelType || 'FLASH').toUpperCase();
+    this.saveDecisionsToDb(results, usedModelType);
     const defaultSummaries = this.buildDefaultAnalysisSummaries(results, botsSummaryText, context);
     this.saveLatestAnalysisToDb({
       marketBriefing: defaultSummaries.marketBriefing,
@@ -534,21 +867,23 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
       usMarketOverview: defaultSummaries.usMarketOverview,
       verbalOverview: defaultSummaries.verbalOverview,
       triggerType: context.triggerType || 'AUTO',
-      slotLabel: context.slotLabel || '',
+      slotLabel: context.slotLabel || (usedModelType === 'PRO' ? '1시간 Pro 심층분석' : '30분 Flash 자동분석'),
+      modelType: usedModelType,
     });
     return results;
   }
 
-  saveDecisionsToDb(decisions) {
+  saveDecisionsToDb(decisions, modelType = 'FLASH') {
     const db = this.getDb();
     const nowIso = new Date().toISOString();
+    const cleanModelType = String(modelType || 'FLASH').toUpperCase() === 'PRO' ? 'PRO' : 'FLASH';
 
     try {
       const stmt = db.prepare(`
         INSERT INTO ai_trade_decisions (
           symbol, stock_name, market, action, confidence, sentiment_score,
-          reasoning, related_news, suggested_order_type, executed_by, execution_status, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          reasoning, related_news, suggested_order_type, executed_by, execution_status, model_type, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const d of decisions) {
@@ -564,6 +899,7 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
           d.isFractional ? 'AMOUNT_FRACTIONAL' : 'UNIT_ORDER',
           'PYTHON_TOSS_EXECUTOR',
           d.action === 'BUY' ? 'READY_TO_EXECUTE' : 'SKIPPED_HOLD',
+          cleanModelType,
           nowIso
         );
       }
@@ -572,15 +908,55 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
     }
   }
 
-  getRecentDecisions(limit = 20) {
+  getRecentDecisions(limit = 20, modelType = null) {
     const db = this.getDb();
     try {
+      if (modelType) {
+        const cleanType = String(modelType).toUpperCase();
+        return db.prepare(`
+          SELECT * FROM ai_trade_decisions
+          WHERE model_type = ?
+          ORDER BY id DESC LIMIT ?
+        `).all(cleanType, limit);
+      }
       return db.prepare(`
         SELECT * FROM ai_trade_decisions
         ORDER BY id DESC LIMIT ?
       `).all(limit);
     } catch (e) {
       return [];
+    }
+  }
+
+  /**
+   * 모델별(FLASH 또는 PRO) 종목별 최신 의사결정 목록 조회
+   */
+  getLatestDecisionsByModel(modelType = 'FLASH') {
+    const db = this.getDb();
+    const cleanType = String(modelType || 'FLASH').toUpperCase();
+    try {
+      const rows = db.prepare(`
+        SELECT * FROM ai_trade_decisions
+        WHERE model_type = ?
+          AND id IN (
+            SELECT MAX(id) FROM ai_trade_decisions
+            WHERE model_type = ?
+            GROUP BY symbol
+          )
+        ORDER BY id DESC
+      `).all(cleanType, cleanType);
+      return rows || [];
+    } catch (e) {
+      // model_type 컬럼이 구버전일 경우 전체 최신 조회 폴백
+      try {
+        return db.prepare(`
+          SELECT * FROM ai_trade_decisions
+          WHERE id IN (SELECT MAX(id) FROM ai_trade_decisions GROUP BY symbol)
+          ORDER BY id DESC
+        `).all() || [];
+      } catch (_) {
+        return [];
+      }
     }
   }
 }

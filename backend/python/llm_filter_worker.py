@@ -23,15 +23,12 @@ try:
 except ImportError:
     requests = None
 
-# 상위/동일 디렉터리 init_db 임포트 호환
-PROJECT_ROOT = Path(__file__).resolve().parent
-if (PROJECT_ROOT / "init_db.py").exists():
-    from init_db import get_db_connection
-elif (PROJECT_ROOT / "backend" / "python" / "init_db.py").exists():
-    sys.path.append(str(PROJECT_ROOT / "backend" / "python"))
-    from init_db import get_db_connection
-else:
-    from init_db import get_db_connection
+# 상위/동일 디렉터리 init_db 임포트 및 프로젝트 루트 경로 설정
+SCRIPT_DIR = Path(__file__).resolve().parent
+PROJECT_ROOT = SCRIPT_DIR.parent.parent
+if str(SCRIPT_DIR) not in sys.path:
+    sys.path.insert(0, str(SCRIPT_DIR))
+from init_db import get_db_connection
 
 logging.basicConfig(
     level=logging.INFO,

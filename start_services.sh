@@ -50,8 +50,8 @@ echo "$FRONTEND_PID" > logs/.frontend.pid
 echo "  -> 프론트엔드 PID: $FRONTEND_PID (로그: logs/frontend.log)"
 
 # 3. 비동기 거시 LLM 리스크 관리자 워커 기동 (1시간 주기 / 하루 5~7회, Gemini Free Tier 429 원천 차단)
-echo "[3/3] 거시 LLM 리스크 관리자 워커 기동 (llm_filter_worker.py)..."
-setsid python3 llm_filter_worker.py </dev/null >> logs/llm_filter.log 2>&1 &
+echo "[3/3] 거시 LLM 리스크 관리자 워커 기동 (backend/python/llm_filter_worker.py)..."
+setsid python3 backend/python/llm_filter_worker.py </dev/null >> logs/llm_filter.log 2>&1 &
 LLM_WORKER_PID=$!
 echo "$LLM_WORKER_PID" > logs/.llm_filter.pid
 echo "  -> LLM 리스크 워커 PID: $LLM_WORKER_PID (로그: logs/llm_filter.log)"

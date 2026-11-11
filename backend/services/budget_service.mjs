@@ -18,6 +18,8 @@ export class BudgetService {
       realTotalBudget: dynamicRealBudget,
       operatingBudget: dynamicRealBudget,
       tossAvailableCash: tossBal.availableCash || 0,
+      tossAvailableUsd: tossBal.availableUsd || 0,
+      tossTotalCashKrw: tossBal.totalCashKrw || tossBal.availableCash || 0,
       tossTotalAssetAmount: tossBal.totalAssetAmount || 0,
       bots,
     };
@@ -27,8 +29,8 @@ export class BudgetService {
     const db = getDb();
     const tossBal = await tossClient.getAccountBalance();
 
-    // 토스 실시간 주문가능 예수금의 90% 자동 계산 (사용자 수동 입력 대신 실제 잔고 90% 적용)
-    const dynamicReal = Math.floor(Number(tossBal?.availableCash || 0) * 0.90);
+    // 토스 실시간 주문가능 예수금(원화 + 달러 환산)의 90% 자동 계산
+    const dynamicReal = BotService.syncDynamicRealBudget(db, tossBal);
     const numReal = dynamicReal > 0 ? dynamicReal : (parseInt(realTotalBudget, 10) || 0);
     const numVirtual = parseInt(virtualTotalBudget, 10) || 0;
 
@@ -60,7 +62,9 @@ export class BudgetService {
 
         const openReal = db.prepare(`
           SELECT COALESCE(SUM(buy_amount), 0) as amt
-          FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+          FROM bot_positions
+          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+            AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
         `).get(b.bot_id)?.amt || 0;
         const availKrw = Math.max(0, realAllocatedCap - Number(openReal));
 

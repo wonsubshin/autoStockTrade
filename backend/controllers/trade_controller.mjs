@@ -8,8 +8,9 @@ export class TradeController {
     const page = parseInt(urlObj.searchParams.get('page') || '1', 10);
     const limit = parseInt(urlObj.searchParams.get('limit') || '50', 10);
     const status = urlObj.searchParams.get('status');
+    const profitType = urlObj.searchParams.get('profitType') || urlObj.searchParams.get('profitFilter');
     const search = urlObj.searchParams.get('search');
-    const result = TradeService.getTrades({ mode, botId, page, limit, status, search });
+    const result = TradeService.getTrades({ mode, botId, page, limit, status, search, profitType });
     return sendJson(res, 200, result);
   }
 

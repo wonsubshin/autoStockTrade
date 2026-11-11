@@ -188,7 +188,7 @@ export class VirtualPaperTradingEngine {
     const totalSellCosts = sellFee + sellTax;
     const netProceeds = sellAmount - totalSellCosts;
 
-    const totalFeeAndTax = (pos.buy_fee || 0) + totalSellCosts;
+    const totalFeeAndTax = Number(pos.buy_fee || 0) + totalSellCosts;
     const profitKrw = (sellAmount - pos.buy_amount) - totalFeeAndTax;
     const profitPct = parseFloat(((profitKrw / pos.buy_amount) * 100).toFixed(2));
 

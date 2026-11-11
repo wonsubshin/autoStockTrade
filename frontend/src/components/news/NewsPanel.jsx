@@ -47,7 +47,7 @@ export default function NewsPanel({
   // 뉴스 메뉴 진입 시 AI 종합 시장 판단 아코디언 기본 펼침(true) 상태
   const [isAccordionOpen, setIsAccordionOpen] = useState(true);
 
-  // 4시간 주기(0·4·8·12·16·20시) 자동 분석 및 수동 분석 브리핑 상태
+  // 30분(Flash) 및 60분(Pro) 다중 LLM 자동 분석 및 수동 분석 브리핑 상태
   const [aiBriefing, setAiBriefing] = useState(null);
   const [localLatestAnalysis, setLocalLatestAnalysis] = useState(null);
   const [hasKey, setHasKey] = useState(false);
@@ -69,7 +69,7 @@ export default function NewsPanel({
   const isStreamDoneRef = useRef(false);
   const abortControllerRef = useRef(null);
 
-  // 초기 및 15초 주기 브리핑 상태 동기화 (0·4·8·12·16·20시 자동 분석 결과 즉시 반영)
+  // 초기 및 15초 주기 브리핑 상태 동기화 (30분 Flash & 60분 Pro 자동 분석 결과 즉시 반영)
   const loadBriefingState = useCallback(async () => {
     if (aiStreaming) return;
     try {
@@ -394,15 +394,34 @@ export default function NewsPanel({
       ? 'rgba(245, 158, 11, 0.45)'
       : 'rgba(16, 185, 129, 0.4)';
 
+  const mergedLatestAnalysis = localLatestAnalysis || parentLatestAnalysis;
+  const krAction = mergedLatestAnalysis?.krRegime?.action || mergedLatestAnalysis?.llm_algo_status?.kr?.statusCode || aiBriefing?.kr_regime_status;
+  const isKrHold = krAction === 'HOLD_CASH' || krAction === 'HALT_NEW_BUYS';
+  const isKrReduced = !isKrHold && (krAction === 'REDUCE_SIZE' || (mergedLatestAnalysis?.krRegime?.multiplier > 0 && mergedLatestAnalysis?.krRegime?.multiplier < 1.0));
+
+  const usAction = mergedLatestAnalysis?.usRegime?.action || mergedLatestAnalysis?.llm_algo_status?.us?.statusCode || aiBriefing?.us_regime_status;
+  const isUsHold = usAction === 'HOLD_CASH' || usAction === 'HALT_NEW_BUYS';
+  const isUsReduced = !isUsHold && (usAction === 'REDUCE_SIZE' || (mergedLatestAnalysis?.usRegime?.multiplier > 0 && mergedLatestAnalysis?.usRegime?.multiplier < 1.0));
+
+  const krRegimeBadgeText = isKrHold
+    ? '🔴 신규 매수 차단'
+    : isKrReduced
+    ? `🟡 비중 ${Math.round((mergedLatestAnalysis?.krRegime?.multiplier || 0.5) * 100)}% 축소 매매`
+    : '🟢 정상 매매';
+
+  const usRegimeBadgeText = isUsHold
+    ? '🔴 신규 매수 차단'
+    : isUsReduced
+    ? `🟡 비중 ${Math.round((mergedLatestAnalysis?.usRegime?.multiplier || 0.5) * 100)}% 축소 매매`
+    : '🟢 정상 매매';
+
   const krPrice = aiBriefing?.kr_index_price ?? 2580;
   const kr20Ma = aiBriefing?.kr_daily_20ma ?? 2565;
   const kr60Ma = aiBriefing?.kr_intraday_60ma ?? 2572;
-  const isKrHold = aiBriefing?.kr_regime_status === 'HOLD_CASH';
 
   const usPrice = aiBriefing?.us_index_price ?? 502.4;
   const us20Ma = aiBriefing?.us_daily_20ma ?? 498.1;
   const us60Ma = aiBriefing?.us_intraday_60ma ?? 500.2;
-  const isUsHold = aiBriefing?.us_regime_status === 'HOLD_CASH';
 
   const usdKrwRate = aiBriefing?.usd_krw_rate ?? 1385;
   const triggerType = aiBriefing?.trigger_type || 'AUTO';
@@ -421,13 +440,12 @@ export default function NewsPanel({
     ? llmAlgo.top_buy_stocks.slice(0, 3).join(', ')
     : '엔비디아(NVDA), QQQ, SK하이닉스';
 
-  const mergedLatestAnalysis = localLatestAnalysis || parentLatestAnalysis;
   const krOverview =
     mergedLatestAnalysis?.krMarketOverview ||
-    `[🇰🇷 한국 시장(KRX: KOSPI/KOSDAQ)] KOSPI ${Number(krPrice).toLocaleString()}pt (일봉 20MA ${Number(kr20Ma).toLocaleString()}pt) 기준 ${isKrHold ? '신규 매수 보류(HOLD_CASH)' : '정상 매수 허용(NORMAL)'} 체제입니다. 국내 대표 반도체·자동차·금융 대형주의 외국인/기관 수급과 뉴스 호재·악재를 반영해 1주 온주 매매를 운용합니다.`;
+    `[🇰🇷 한국 시장(KRX: KOSPI/KOSDAQ)] KOSPI ${Number(krPrice).toLocaleString()}pt (일봉 20MA ${Number(kr20Ma).toLocaleString()}pt) 기준 ${isKrHold ? '신규 매수 차단(HOLD_CASH)' : isKrReduced ? '비중 50% 축소 매매(REDUCE_SIZE)' : '정상 매수 허용(NORMAL)'} 체제입니다. 국내 대표 반도체·자동차·금융 대형주의 외국인/기관 수급과 뉴스 호재·악재를 반영해 1주 온주 매매를 운용합니다.`;
   const usOverview =
     mergedLatestAnalysis?.usMarketOverview ||
-    `[🇺🇸 미국 시장(US: NYSE/NASDAQ)] 나스닥100(QQQ) $${Number(usPrice).toLocaleString()} (일봉 20MA $${Number(us20Ma).toLocaleString()}) 및 원/달러 환율 ${Number(usdKrwRate).toLocaleString()}원 기준 ${isUsHold ? '신규 매수 보류(HOLD_CASH)' : '정상 매수 허용(NORMAL)'} 체제입니다. 미국 AI·빅테크 주도주(NVDA, AAPL, MSFT, QQQ 등)를 중심으로 소수점 예약 및 정규장 매매를 병행합니다.`;
+    `[🇺🇸 미국 시장(US: NYSE/NASDAQ)] 나스닥100(QQQ) $${Number(usPrice).toLocaleString()} (일봉 20MA $${Number(us20Ma).toLocaleString()}) 및 원/달러 환율 ${Number(usdKrwRate).toLocaleString()}원 기준 ${isUsHold ? '신규 매수 차단(HOLD_CASH)' : isUsReduced ? '비중 50% 축소 매매(REDUCE_SIZE)' : '정상 매수 허용(NORMAL)'} 체제입니다. 미국 AI·빅테크 주도주(NVDA, AAPL, MSFT, QQQ 등)를 중심으로 소수점 예약 및 정규장 매매를 병행합니다.`;
 
   const POPULAR_TAGS = [
     '#반도체', '#2차전지', '#바이오', '#AI/로봇', '#자동차',
@@ -444,7 +462,7 @@ export default function NewsPanel({
       </div>
 
       {/* ====================================================================
-          AI 종합 시장 판단 & 시간대별(0·4·8·12·16·20시) 한·미 증시 뉴스 통합 브리핑
+          AI 종합 시장 판단 & 다중 LLM(30분 Flash · 60분 Pro) 한·미 증시 뉴스 통합 브리핑
           ==================================================================== */}
       <div
         className="ai-briefing-accordion-card"
@@ -497,12 +515,12 @@ export default function NewsPanel({
                 border: '1px solid rgba(192, 132, 252, 0.45)',
               }}
             >
-              {aiBriefing?.model || 'Gemini 3.5 Flash-Lite'}
+              {aiBriefing?.model || 'Gemini Flash/Pro'}
             </span>
 
-            {/* 4시간 주기 자동갱신 뱃지 */}
+            {/* 실제 배치주기 자동갱신 뱃지 */}
             <span
-              title={`다음 자동 분석 예정 시각: ${nextScheduledAt}`}
+              title={`다음 자동 분석: 30분 단위 Flash 종합 판단 & 1시간 단위 Pro 심층 분석 (다음 예정: ${nextScheduledAt})`}
               style={{
                 fontSize: '11px',
                 fontWeight: 600,
@@ -513,7 +531,7 @@ export default function NewsPanel({
                 border: '1px solid rgba(56, 189, 248, 0.35)',
               }}
             >
-              ⏰ 0·4·8·12·16·20시 자동갱신
+              ⚡ 30분(Flash) · 🏛️ 60분(Pro) 자동갱신
             </span>
 
             {/* 뉴스 감성 카운트 뱃지 */}
@@ -598,9 +616,9 @@ export default function NewsPanel({
                 color: quotaColor,
                 border: `1px solid ${quotaBorder}`,
               }}
-              title={`일일 총 무료 한도 20건 중 4시간 간격 자동분석 예약 6건을 제외한 수동 호출 가능 잔여 건수 (다음 자동갱신: ${nextScheduledAt})`}
+              title={`일일 총 무료 한도 ${aiQuota?.daily_total_limit || 50}건 중 정기 자동배치 예약(${aiQuota?.auto_reserved_count || 36}건)을 제외한 수동 호출 가능 잔여 건수 (다음 자동갱신: ${nextScheduledAt})`}
             >
-              무료 API 잔여: {remainingCalls}/{manualLimit}건 (자동예약 6건 제외)
+              무료 API 잔여: {remainingCalls}/{manualLimit}건 (자동예약 제외)
             </span>
 
             <button
@@ -883,9 +901,24 @@ export default function NewsPanel({
                     borderBottom: '1px solid rgba(56, 189, 248, 0.2)',
                   }}
                 >
-                  <span style={{ fontSize: '13px', fontWeight: 800, color: '#38bdf8' }}>
-                    🇰🇷 한국 시장 (KRX: KOSPI/KOSDAQ) 종합 판단
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 800, color: '#38bdf8' }}>
+                      🇰🇷 한국 시장 (KRX: KOSPI/KOSDAQ) 종합 판단
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        padding: '2px 7px',
+                        borderRadius: '4px',
+                        background: isKrHold ? 'rgba(239, 68, 68, 0.2)' : isKrReduced ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.2)',
+                        color: isKrHold ? '#f87171' : isKrReduced ? '#fbbf24' : '#34d399',
+                        border: isKrHold ? '1px solid rgba(239, 68, 68, 0.45)' : isKrReduced ? '1px solid rgba(245, 158, 11, 0.45)' : '1px solid rgba(16, 185, 129, 0.4)',
+                      }}
+                    >
+                      {krRegimeBadgeText}
+                    </span>
+                  </div>
                   <button
                     type="button"
                     className="btn-action"
@@ -919,9 +952,24 @@ export default function NewsPanel({
                     borderBottom: '1px solid rgba(168, 85, 247, 0.2)',
                   }}
                 >
-                  <span style={{ fontSize: '13px', fontWeight: 800, color: '#c084fc' }}>
-                    🇺🇸 미국 시장 (US: NYSE/NASDAQ) 종합 판단
-                  </span>
+                  <div style={{ display: 'flex', alignItems: 'center', gap: '6px', flexWrap: 'wrap' }}>
+                    <span style={{ fontSize: '13px', fontWeight: 800, color: '#c084fc' }}>
+                      🇺🇸 미국 시장 (US: NYSE/NASDAQ) 종합 판단
+                    </span>
+                    <span
+                      style={{
+                        fontSize: '11px',
+                        fontWeight: 700,
+                        padding: '2px 7px',
+                        borderRadius: '4px',
+                        background: isUsHold ? 'rgba(239, 68, 68, 0.2)' : isUsReduced ? 'rgba(245, 158, 11, 0.2)' : 'rgba(99, 102, 241, 0.2)',
+                        color: isUsHold ? '#f87171' : isUsReduced ? '#fbbf24' : '#a5b4fc',
+                        border: isUsHold ? '1px solid rgba(239, 68, 68, 0.45)' : isUsReduced ? '1px solid rgba(245, 158, 11, 0.45)' : '1px solid rgba(99, 102, 241, 0.45)',
+                      }}
+                    >
+                      {usRegimeBadgeText}
+                    </span>
+                  </div>
                   <button
                     type="button"
                     className="btn-action"
@@ -937,7 +985,7 @@ export default function NewsPanel({
               </div>
             </div>
 
-            {/* 3. 시간대별(0·4·8·12·16·20시) & 수동 AI 마크다운 상세 브리핑 본문 */}
+            {/* 3. 다중 LLM(30분 Flash · 60분 Pro) & 수동 AI 마크다운 상세 브리핑 본문 */}
             <div
               style={{
                 background: 'rgba(11, 15, 25, 0.72)',

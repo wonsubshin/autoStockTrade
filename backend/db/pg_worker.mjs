@@ -20,19 +20,95 @@ pool.on('error', (err) => {
   console.error('[PG-Worker] Pool error:', err.message);
 });
 
+let txClient = null;
+let txDepth = 0;
+
+async function releaseTxClient() {
+  if (txClient) {
+    const client = txClient;
+    txClient = null;
+    txDepth = 0;
+    try {
+      client.release();
+    } catch {}
+  }
+}
+
+async function handleTransactionCommand(upperSql) {
+  if (upperSql === 'BEGIN' || upperSql === 'BEGIN TRANSACTION') {
+    if (!txClient) {
+      txClient = await pool.connect();
+      txDepth = 1;
+      await txClient.query('BEGIN');
+    } else {
+      txDepth += 1;
+      await txClient.query(`SAVEPOINT sp_${txDepth}`);
+    }
+    return true;
+  }
+  if (upperSql === 'COMMIT' || upperSql === 'COMMIT TRANSACTION') {
+    if (txClient) {
+      if (txDepth > 1) {
+        await txClient.query(`RELEASE SAVEPOINT sp_${txDepth}`);
+        txDepth -= 1;
+      } else {
+        try {
+          await txClient.query('COMMIT');
+        } finally {
+          await releaseTxClient();
+        }
+      }
+    }
+    return true;
+  }
+  if (upperSql === 'ROLLBACK' || upperSql === 'ROLLBACK TRANSACTION') {
+    if (txClient) {
+      if (txDepth > 1) {
+        try {
+          await txClient.query(`ROLLBACK TO SAVEPOINT sp_${txDepth}`);
+        } finally {
+          txDepth -= 1;
+        }
+      } else {
+        try {
+          await txClient.query('ROLLBACK');
+        } finally {
+          await releaseTxClient();
+        }
+      }
+    }
+    return true;
+  }
+  return false;
+}
+
 port.on('message', async (msg) => {
   try {
+    const rawSql = String(msg.sql || '').trim().replace(/;$/, '').trim();
+    const upperSql = rawSql.toUpperCase();
+
     if (msg.type === 'query') {
-      const res = await pool.query(msg.sql, msg.params || []);
-      port.postMessage({
-        ok: true,
-        rows: res.rows || [],
-        rowCount: res.rowCount || 0,
-      });
+      if (await handleTransactionCommand(upperSql)) {
+        port.postMessage({ ok: true, rows: [], rowCount: 0 });
+      } else {
+        const runner = txClient || pool;
+        const res = await runner.query(msg.sql, msg.params || []);
+        port.postMessage({
+          ok: true,
+          rows: res.rows || [],
+          rowCount: res.rowCount || 0,
+        });
+      }
     } else if (msg.type === 'exec') {
-      await pool.query(msg.sql);
-      port.postMessage({ ok: true, rowCount: 0 });
+      if (await handleTransactionCommand(upperSql)) {
+        port.postMessage({ ok: true, rowCount: 0 });
+      } else {
+        const runner = txClient || pool;
+        await runner.query(msg.sql);
+        port.postMessage({ ok: true, rowCount: 0 });
+      }
     } else if (msg.type === 'close') {
+      await releaseTxClient();
       await pool.end();
       port.postMessage({ ok: true });
     } else {

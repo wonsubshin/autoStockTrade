@@ -30,7 +30,25 @@ function renderInlineBold(text) {
 }
 
 export function MarkdownViewer({ content, isStreaming }) {
-  const raw = String(content || '');
+  let raw = '';
+  if (typeof content === 'string') {
+    raw = content;
+  } else if (content && typeof content === 'object') {
+    const parts = [];
+    if (content.krMarket || content.kr) parts.push(`### 🇰🇷 [한국 주식 시장 (KRX)]\n- ${content.krMarket || content.kr}`);
+    if (content.usMarket || content.us) parts.push(`### 🇺🇸 [미국 주식 시장 (US)]\n- ${content.usMarket || content.us}`);
+    if (content.botDiagnostic || content.bot) parts.push(`### 🤖 [실전 봇 진단]\n- ${content.botDiagnostic || content.bot}`);
+    if (parts.length > 0) {
+      raw = parts.join('\n\n');
+    } else {
+      raw = Object.entries(content)
+        .map(([k, v]) => (typeof v === 'string' ? `- **${k}**: ${v}` : ''))
+        .filter(Boolean)
+        .join('\n\n') || JSON.stringify(content, null, 2);
+    }
+  } else {
+    raw = String(content || '');
+  }
   const lines = raw.split('\n');
 
   return (
@@ -609,12 +627,12 @@ export default function MarketBanner({
               border: '1px solid rgba(192, 132, 252, 0.45)',
             }}
           >
-            {aiBriefing?.model || 'Gemini 3.5 Flash-Lite'}
+            {aiBriefing?.model || 'Gemini Flash/Pro'}
           </span>
 
           {/* 자동갱신 뱃지 (title 툴팁에 다음 예정 시각 next_scheduled_at 표시) */}
           <span
-            title={`다음 자동 분석 예정 시각: ${nextScheduledAt}`}
+            title={`다음 자동 분석: 30분 단위 Flash 종합 판단 & 1시간 단위 Pro 심층 분석 (다음 예정: ${nextScheduledAt})`}
             style={{
               fontSize: '11px',
               fontWeight: 600,
@@ -625,7 +643,7 @@ export default function MarketBanner({
               border: '1px solid rgba(56, 189, 248, 0.35)',
             }}
           >
-            ⏰ 0·4·8·12·16·20시 자동갱신
+            ⚡ 30분(Flash) · 🏛️ 60분(Pro) 자동갱신
           </span>
 
           {/* 생성 시각 및 트리거 표시 */}
@@ -720,9 +738,9 @@ export default function MarketBanner({
               color: quotaColor,
               border: `1px solid ${quotaBorder}`,
             }}
-            title={`일일 총 무료 한도 20건 중 4시간 간격 자동분석 예약 6건을 제외한 수동 호출 가능 잔여 건수 (다음 자동갱신: ${nextScheduledAt})`}
+            title={`일일 총 무료 한도 ${aiQuota?.daily_total_limit || 50}건 중 정기 자동배치 예약(${aiQuota?.auto_reserved_count || 36}건)을 제외한 수동 호출 가능 잔여 건수 (다음 자동갱신: ${nextScheduledAt})`}
           >
-            무료 API 잔여: {remainingCalls}/{manualLimit}건 (자동예약 6건 제외)
+            무료 API 잔여: {remainingCalls}/{manualLimit}건 (자동예약 제외)
           </span>
 
           {/* [⚡ AI 시황 분석 요청 ({remaining_calls}건 남음)] 버튼 */}

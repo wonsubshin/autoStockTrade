@@ -3,11 +3,12 @@ import { PROJECT_ROOT } from '../config/env.mjs';
 import { kiwoomClient, tossClient, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
 import { virtualEngine, BotService } from './bot_service.mjs';
 import { PythonExecutorBridge } from '../common/python_executor_bridge.mjs';
+import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
 
 export const pythonBridge = new PythonExecutorBridge(PROJECT_ROOT);
 
 export class TradeService {
-  static getTrades({ mode, botId, page = 1, limit = 50, status, search }) {
+  static getTrades({ mode, botId, page = 1, limit = 50, status, search, profitType }) {
     const db = getDb();
     let whereClause = ' WHERE 1=1';
     const params = [];
@@ -26,6 +27,11 @@ export class TradeService {
     if (status && status !== 'ALL') {
       whereClause += ' AND trades.status = ?';
       params.push(status);
+    }
+    if (profitType === 'PROFIT') {
+      whereClause += ' AND trades.profit_krw > 0';
+    } else if (profitType === 'LOSS') {
+      whereClause += ' AND trades.profit_krw < 0';
     }
     if (search && search.trim()) {
       whereClause += ' AND (trades.stock_name ILIKE ? OR trades.stock_code ILIKE ?)';
@@ -122,22 +128,32 @@ export class TradeService {
 
     const openPositions = db.prepare(query).all(...params);
 
-    // 키움증권 실시간 호가/시세 기반 평가금액 산출
+    // 국내(키움증권) 및 해외(토스증권) 실시간 호가/시세 기반 평가금액 산출
     const enriched = await Promise.all(
       openPositions.map(async (pos) => {
-        const priceInfo = await kiwoomClient.getCurrentPrice(pos.stock_code);
-        const currentPrice = priceInfo?.currentPrice || pos.avg_buy_price;
-        const evalAmount = currentPrice * pos.qty;
-        const unrealizedProfitKrw = evalAmount - pos.buy_amount - (pos.buy_fee || 0);
-        const unrealizedProfitPct = pos.buy_amount > 0 ? parseFloat(((unrealizedProfitKrw / pos.buy_amount) * 100).toFixed(2)) : 0;
+        const isUs = /^[A-Za-z.]+$/.test(pos.stock_code);
+        const priceInfo = isUs
+          ? await tossClient.getCurrentPrice(pos.stock_code)
+          : await kiwoomClient.getCurrentPrice(pos.stock_code);
+        const currentPrice = Number(priceInfo?.currentPrice || pos.avg_buy_price || 0);
+        const qty = Number(pos.qty || 0);
+        const buyAmount = Number(pos.buy_amount || 0);
+        const buyFee = Number(pos.buy_fee || 0);
+        const evalAmount = Math.round(currentPrice * qty);
+        const unrealizedProfitKrw = evalAmount - buyAmount - buyFee;
+        const unrealizedProfitPct = buyAmount > 0 ? parseFloat(((unrealizedProfitKrw / buyAmount) * 100).toFixed(2)) : 0;
 
         return {
           ...pos,
+          qty,
+          avg_buy_price: Number(pos.avg_buy_price || 0),
+          buy_amount: buyAmount,
+          buy_fee: buyFee,
           currentPrice,
           evalAmount,
           unrealizedProfitKrw,
           unrealizedProfitPct,
-          priceProvider: '키움증권',
+          priceProvider: isUs ? '토스증권' : '키움증권',
         };
       })
     );
@@ -169,15 +185,18 @@ export class TradeService {
         };
       } else {
         // 실전 모드 매수 집행 (Python Core Executor 연동)
-        const priceInfo = await kiwoomClient.getCurrentPrice(targetStock.code);
+        const isUs = targetStock.market === 'US';
+        const priceInfo = isUs
+          ? await tossClient.getCurrentPrice(targetStock.code)
+          : await kiwoomClient.getCurrentPrice(targetStock.code);
         const tossBal = await tossClient.getAccountBalance();
         const dynamicRealBudget = BotService.syncDynamicRealBudget(db, tossBal);
-        const botCap = bot.real_allocated_capital || Math.floor(dynamicRealBudget * ((bot.real_allocation_ratio || 33.3) / 100));
+        const botCap = Number(bot.real_allocated_capital || Math.floor(dynamicRealBudget * ((Number(bot.real_allocation_ratio || 33.3)) / 100)));
         const usedCapRow = db.prepare("SELECT COALESCE(SUM(buy_amount), 0) as used FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN' AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)").get(botId);
-        const usedCap = usedCapRow ? usedCapRow.used : 0;
+        const usedCap = usedCapRow ? Number(usedCapRow.used || 0) : 0;
         const remainingCap = Math.max(0, botCap - usedCap);
 
-        const availableCash = Math.min(tossBal.availableCash, remainingCap);
+        const availableCash = Math.min(Number(tossBal.availableCash || 0), remainingCap);
 
         // 구매 우선순위 확인
         const prioRow = db.prepare("SELECT value FROM system_settings WHERE key = 'purchase_priority'").get();
@@ -189,7 +208,6 @@ export class TradeService {
           } catch (e) {}
         }
 
-        const isUs = targetStock.market === 'US';
         const preferUsUnit = priorityList.indexOf('US_UNIT') < priorityList.indexOf('US_FRACTIONAL');
 
         if (isUs) {
@@ -223,15 +241,18 @@ export class TradeService {
               orderRes,
             };
           } else {
-            // 미국 소수점 금액 주문 ($1.00 ~ $10.00 가용 예산 맞춤 동적 산정)
-            const usdRate = priceInfo.exchangeRate || 1345;
-            const minKrw = Math.round(1.0 * usdRate);
-            const affordableUsd = Math.floor(((availableCash * 0.96) / usdRate) * 100) / 100;
+            // 미국 소수점 금액 주문 ($1.00 ~ $10.00 가용 달러/원화 예산 맞춤 동적 산정)
+            const usdRate = priceInfo.exchangeRate || tossBal.usdRate || 1345;
+            const actualUsd = Number(tossBal.availableUsd || 0);
+            const botRemainingUsd = remainingCap / usdRate;
+            const cashBasedUsd = (availableCash * 0.96) / usdRate;
+            const effectiveUsdPool = actualUsd >= 1.0 ? Math.min(actualUsd * 0.98, Math.max(1.0, botRemainingUsd)) : cashBasedUsd;
+            const affordableUsd = Math.floor(effectiveUsdPool * 100) / 100;
             const targetUsd = Math.min(10.0, affordableUsd);
             const targetKrw = Math.round(targetUsd * usdRate);
 
-            if (targetUsd < 1.0 || availableCash < targetKrw) {
-              throw new Error(`주문 가능 예수금 부족 (소수점 최소 $1 ≈ ${minKrw.toLocaleString()}원 필요, 잔여: ${availableCash.toLocaleString()}원)`);
+            if (targetUsd < 1.0) {
+              throw new Error(`주문 가능 달러/예수금 부족 (소수점 최소 $1.00 필요, 현재 주문가능 달러: $${actualUsd.toFixed(2)}, 원화: ${availableCash.toLocaleString()}원)`);
             }
 
             const orderRes = await pythonBridge.executeOrder({
@@ -322,21 +343,25 @@ export class TradeService {
         if (!targetPos) throw new Error('청산할 실전 포지션이 없습니다.');
 
         const isKr = /^[0-9]/.test(targetPos.stock_code);
+        const posQty = Number(targetPos.qty || 0);
+        const posBuyAmt = Number(targetPos.buy_amount || 0);
         const orderRes = await pythonBridge.executeOrder({
           symbol: targetPos.stock_code,
           side: 'SELL',
           orderType: 'MARKET',
           market: isKr ? 'KR' : 'US',
-          quantity: targetPos.qty,
+          quantity: posQty,
           reason: '웹 수동 실전 매도 청산',
         });
 
-        const priceInfo = await kiwoomClient.getCurrentPrice(targetPos.stock_code);
-        const executionPrice = priceInfo.currentPrice;
-        const sellAmount = Math.round(executionPrice * targetPos.qty);
-        const feeAndTax = Math.round(sellAmount * (0.00015 + 0.0018)) + (targetPos.buy_fee || 0);
-        const profitKrw = (sellAmount - targetPos.buy_amount) - feeAndTax;
-        const profitPct = parseFloat(((profitKrw / targetPos.buy_amount) * 100).toFixed(2));
+        const priceInfo = isKr
+          ? await kiwoomClient.getCurrentPrice(targetPos.stock_code)
+          : await tossClient.getCurrentPrice(targetPos.stock_code);
+        const executionPrice = Number(priceInfo?.currentPrice || targetPos.avg_buy_price || 0);
+        const sellAmount = Math.round(executionPrice * posQty);
+        const feeAndTax = Math.round(sellAmount * (0.00015 + 0.0018)) + Number(targetPos.buy_fee || 0);
+        const profitKrw = (sellAmount - posBuyAmt) - feeAndTax;
+        const profitPct = posBuyAmt > 0 ? parseFloat(((profitKrw / posBuyAmt) * 100).toFixed(2)) : 0;
 
         db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, targetPos.id);
         if (targetPos.trade_id) {
@@ -347,7 +372,7 @@ export class TradeService {
           `).run(
             orderRes.orderId || `TORD_S_${Date.now()}`,
             executionPrice,
-            targetPos.qty,
+            posQty,
             sellAmount,
             nowIso,
             feeAndTax,
@@ -391,9 +416,15 @@ export class TradeService {
       return `${y}-W${String(weekNum).padStart(2, '0')}`;
     };
 
-    // 통계는 가상 매매를 완전히 제외하고 오직 실전 매매(REAL) 데이터만 엄격하게 집계 (모의 주문 VORD 제외)
-    let sql = "SELECT * FROM trades WHERE status = 'CLOSED' AND trade_mode = 'REAL' AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL) AND buy_date >= ? ORDER BY buy_date ASC";
+    // 통계는 기본값(REAL) 시 가상 매매를 제외하고 실전 매매(REAL) 데이터만 엄격하게 집계하되, VIRTUAL/ALL 요청 시 해당 모드로 조회 지원
+    let sql = "SELECT * FROM trades WHERE status = 'CLOSED' AND buy_date >= ?";
     const params = [baseDate];
+    if (mode === 'VIRTUAL') {
+      sql += " AND trade_mode = 'VIRTUAL'";
+    } else if (mode !== 'ALL') {
+      sql += " AND trade_mode = 'REAL' AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)";
+    }
+    sql += ' ORDER BY buy_date ASC';
 
     const trades = db.prepare(sql).all(...params);
 
@@ -436,6 +467,8 @@ export class TradeService {
       const tradeYmd = toKstDateString(t.sell_date || t.buy_date);
       if (!tradeYmd) continue;
 
+      const profitKrw = isNaN(Number(t.profit_krw)) ? 0 : Math.round(Number(t.profit_krw));
+
       let key = tradeYmd;
       if (period === 'monthly') {
         key = tradeYmd.slice(0, 7);
@@ -447,9 +480,9 @@ export class TradeService {
         periodMap.set(key, { period: key, profitKrw: 0, tradesCount: 0, winCount: 0 });
       }
       const pObj = periodMap.get(key);
-      pObj.profitKrw += t.profit_krw || 0;
+      pObj.profitKrw += profitKrw;
       pObj.tradesCount += 1;
-      if ((t.profit_krw || 0) > 0) pObj.winCount += 1;
+      if (profitKrw > 0) pObj.winCount += 1;
 
       const sKey = `${t.stock_code}_${t.stock_name}`;
       if (!stockContribMap.has(sKey)) {
@@ -462,17 +495,18 @@ export class TradeService {
         });
       }
       const sObj = stockContribMap.get(sKey);
-      sObj.totalProfitKrw += t.profit_krw || 0;
+      sObj.totalProfitKrw += profitKrw;
       sObj.tradesCount += 1;
-      if ((t.profit_krw || 0) > 0) sObj.wins += 1;
+      if (profitKrw > 0) sObj.wins += 1;
     }
 
     let runningProfit = 0;
     const timeline = Array.from(periodMap.values()).map((p) => {
-      runningProfit += p.profitKrw || 0;
+      const pProfit = Number(p.profitKrw) || 0;
+      runningProfit += pProfit;
       return {
         ...p,
-        profitKrw: p.profitKrw || 0,
+        profitKrw: pProfit,
         cumulativeProfitKrw: runningProfit,
         tradesCount: p.tradesCount || 0,
         winRate: p.tradesCount > 0 ? parseFloat(((p.winCount / p.tradesCount) * 100).toFixed(1)) : 0,
@@ -482,12 +516,13 @@ export class TradeService {
     const stockRanking = Array.from(stockContribMap.values())
       .map((s) => ({
         ...s,
+        totalProfitKrw: Number(s.totalProfitKrw) || 0,
         winRate: s.tradesCount > 0 ? parseFloat(((s.wins / s.tradesCount) * 100).toFixed(1)) : 0,
       }))
       .sort((a, b) => b.totalProfitKrw - a.totalProfitKrw);
 
-    const totalProfit = trades.reduce((sum, t) => sum + (t.profit_krw || 0), 0);
-    const winCount = trades.filter((t) => (t.profit_krw || 0) > 0).length;
+    const totalProfit = trades.reduce((sum, t) => sum + (isNaN(Number(t.profit_krw)) ? 0 : Math.round(Number(t.profit_krw))), 0);
+    const winCount = trades.filter((t) => Number(t.profit_krw || 0) > 0).length;
     const totalTrades = trades.length;
 
     return {
@@ -510,5 +545,309 @@ export class TradeService {
 
   static promoteToReal(botId) {
     return virtualEngine.promoteToReal(botId);
+  }
+
+  /**
+   * [하이브리드(Flash + Pro) 기반 거래 여부 최종 판단 엔진]
+   * - 30분 단위 Flash 종합 판단(단기 속보 뉴스 및 수급)과
+   * - 1시간 단위 Pro 심층 분석(거시 지표, 20MA/60MA 이평선 괴리율, 중기 추세)의
+   * 로컬 DB 결과를 불러와 크로스체크(Cross-check/Merge) 후 최종 매수/매도/관망(HOLD) 결정
+   * 
+   * [서킷 브레이커 & Fallback]
+   * - LLM 장애 또는 서킷 브레이커 OPEN 감지 시 fallbackMode = true 플래그를 설정하여
+   *   실전 매매 엔진이 순수 퀀트 알고리즘(evaluatePureQuantAlgorithm) 50% 비중 분기 모드로 자동 전환되도록 유도
+   */
+  static evaluateWithHybridLLM(candidates = ALL_CANDIDATE_STOCKS, { db = getDb(), isCircuitOpen = false } = {}) {
+    if (!db) return [];
+
+    try {
+      // 1. DB에서 최신 Flash(30분) 및 최신 Pro(1시간) 결정 조회
+      let flashRows = [];
+      let proRows = [];
+      try {
+        flashRows = db.prepare(`
+          SELECT * FROM ai_trade_decisions
+          WHERE model_type = 'FLASH'
+            AND id IN (
+              SELECT MAX(id) FROM ai_trade_decisions
+              WHERE model_type = 'FLASH'
+              GROUP BY symbol
+            )
+        `).all() || [];
+      } catch (e) {}
+
+      try {
+        proRows = db.prepare(`
+          SELECT * FROM ai_trade_decisions
+          WHERE model_type = 'PRO'
+            AND id IN (
+              SELECT MAX(id) FROM ai_trade_decisions
+              WHERE model_type = 'PRO'
+              GROUP BY symbol
+            )
+        `).all() || [];
+      } catch (e) {}
+
+      // 서킷 브레이커 OPEN 상태이거나 DB에 결정이 전무한 경우 순수 퀀트 Fallback 모드 시그널 반환
+      const isFallback = isCircuitOpen || (flashRows.length === 0 && proRows.length === 0);
+
+      // 아직 model_type 구분이 축적되지 않은 초기 상태 시 전체 레코드 폴백
+      if (flashRows.length === 0 && proRows.length === 0) {
+        try {
+          const fallbackRows = db.prepare(`
+            SELECT * FROM ai_trade_decisions
+            WHERE id IN (
+              SELECT MAX(id) FROM ai_trade_decisions
+              GROUP BY symbol
+            )
+          `).all() || [];
+          flashRows = fallbackRows;
+          proRows = fallbackRows;
+        } catch (e) {}
+      } else if (flashRows.length === 0 && proRows.length > 0) {
+        flashRows = proRows;
+      } else if (proRows.length === 0 && flashRows.length > 0) {
+        proRows = flashRows;
+      }
+
+      const flashMap = new Map(flashRows.map((r) => [r.symbol, r]));
+      const proMap = new Map(proRows.map((r) => [r.symbol, r]));
+
+      const targetList = Array.isArray(candidates) && candidates.length > 0
+        ? candidates
+        : ALL_CANDIDATE_STOCKS;
+
+      const hybridDecisions = targetList.map((target) => {
+        const code = target.code || target.symbol;
+        const name = target.name || target.stock_name || code;
+        const market = target.market || (code.length === 6 && /^\d+$/.test(code) ? 'KR' : 'US');
+        const isFractional = target.isFractional !== undefined ? !!target.isFractional : market === 'US';
+
+        const flash = flashMap.get(code) || null;
+        const pro = proMap.get(code) || null;
+
+        // 서킷 브레이커 OPEN 또는 데이터 부재 시 순수 퀀트 Fallback 모드 객체 생성
+        if (isFallback || (!flash && !pro)) {
+          return {
+            symbol: code,
+            name,
+            market,
+            action: 'HOLD', // LLM 신호 자체는 관망이나 fallbackMode = true로 실전 엔진에 순수 퀀트 분기 유도
+            confidence: 50,
+            sentimentScore: 0,
+            reasoning: isCircuitOpen
+              ? '🛡️ LLM 서킷 브레이커(OPEN) 발동으로 순수 퀀트 알고리즘 50% 분할 매매 Fallback 모드가 적용됩니다.'
+              : 'Flash 및 Pro 분석 데이터 수집 대기 중 (보수적 관망)',
+            related_news: '',
+            consensusType: isCircuitOpen ? 'CIRCUIT_OPEN_FALLBACK' : 'NO_DATA_HOLD',
+            isFractional,
+            fallbackMode: true,
+            flashDecision: null,
+            proDecision: null,
+            evaluatedAt: new Date().toISOString(),
+          };
+        }
+
+        // 한쪽만 있는 경우 해당 모델 기준으로 안전 할인 적용
+        if (flash && !pro) {
+          return {
+            symbol: code,
+            name,
+            market,
+            action: flash.action,
+            confidence: Math.max(40, Number(flash.confidence || 50) - 5),
+            sentimentScore: Number(flash.sentiment_score || 0),
+            reasoning: `[Flash 30분 단독 시그널 | Pro 대기] ${flash.reasoning || ''}`,
+            related_news: flash.related_news || '',
+            consensusType: 'FLASH_ONLY',
+            isFractional,
+            fallbackMode: false,
+            flashDecision: flash,
+            proDecision: null,
+            evaluatedAt: new Date().toISOString(),
+          };
+        }
+
+        if (!flash && pro) {
+          return {
+            symbol: code,
+            name,
+            market,
+            action: pro.action,
+            confidence: Math.max(40, Number(pro.confidence || 50) - 5),
+            sentimentScore: Number(pro.sentiment_score || 0),
+            reasoning: `[Pro 1시간 심층 단독 시그널 | Flash 대기] ${pro.reasoning || ''}`,
+            related_news: pro.related_news || '',
+            consensusType: 'PRO_ONLY',
+            isFractional,
+            fallbackMode: false,
+            flashDecision: null,
+            proDecision: pro,
+            evaluatedAt: new Date().toISOString(),
+          };
+        }
+
+        const flashAction = String(flash.action || 'HOLD').toUpperCase();
+        const proAction = String(pro.action || 'HOLD').toUpperCase();
+        const flashConf = Number(flash.confidence || 50);
+        const proConf = Number(pro.confidence || 50);
+        const flashSent = Number(flash.sentiment_score || 0);
+        const proSent = Number(pro.sentiment_score || 0);
+
+        let finalAction = 'HOLD';
+        let hybridConfidence = 50;
+        let hybridSentiment = 0;
+        let consensusType = 'NEUTRAL_HOLD';
+        let reasoning = '';
+        const relatedNews = flash.related_news || pro.related_news || '';
+
+        // =========================================================================
+        // [1] 방어적 긴급 매도 (Defensive SELL - 자본 보호 최우선 합집합 원칙)
+        // =========================================================================
+        if (flashAction === 'SELL' && proAction === 'SELL') {
+          finalAction = 'SELL';
+          hybridConfidence = Math.min(100, Math.max(flashConf, proConf) + 5);
+          hybridSentiment = Math.min(flashSent, proSent);
+          consensusType = 'CONSENSUS_SELL';
+          reasoning = `🚨 [Flash 30분 속보 악재 ⨉ Pro 1시간 거시 추세 이탈 만장일치 매도] Flash: ${flash.reasoning} | Pro: ${pro.reasoning}`;
+        } else if (flashAction === 'SELL' && proAction !== 'SELL') {
+          finalAction = 'SELL';
+          hybridConfidence = Math.max(65, Math.round(flashConf * 0.7 + proConf * 0.3));
+          hybridSentiment = Math.min(flashSent, -3.0);
+          consensusType = 'FLASH_DEFENSIVE_SELL';
+          reasoning = `⚡ [Flash 30분 단기 악재 긴급 매도 권고] ${flash.reasoning} (Pro 심층 의견: ${proAction}, 중기 이평선 지지 여부와 별개로 단기 악재 리스크 선제 차단)`;
+        } else if (proAction === 'SELL' && flashAction !== 'SELL') {
+          finalAction = 'SELL';
+          hybridConfidence = Math.max(65, Math.round(proConf * 0.75 + flashConf * 0.25));
+          hybridSentiment = Math.min(proSent, -3.0);
+          consensusType = 'PRO_MACRO_SELL';
+          reasoning = `🏛️ [Pro 1시간 거시 퀀트 추세 붕괴 매도 권고] ${pro.reasoning} (Flash 단기 의견: ${flashAction}, 단기 반등 소음 배제 및 중기 리스크 방어 청산)`;
+        }
+        // =========================================================================
+        // [2] 보수적 교집합 매수 (Conservative Consensus BUY - 만장일치 우선 원칙)
+        // =========================================================================
+        else if (flashAction === 'BUY' && proAction === 'BUY') {
+          finalAction = 'BUY';
+          hybridConfidence = Math.min(100, Math.round(flashConf * 0.45 + proConf * 0.55) + 5);
+          hybridSentiment = parseFloat((flashSent * 0.4 + proSent * 0.6).toFixed(1));
+          consensusType = 'CONSENSUS_BUY';
+          reasoning = `💎 [Flash 30분 속보 호재 ⨉ Pro 1시간 거시 심층 퀀트 만장일치 매수] Flash: ${flash.reasoning} | Pro: ${pro.reasoning}`;
+        }
+        // =========================================================================
+        // [3] 의견 엇갈림 (Divergence - 한쪽 BUY, 다른쪽 HOLD)
+        // =========================================================================
+        else if (flashAction === 'BUY' && proAction === 'HOLD') {
+          finalAction = 'HOLD';
+          hybridConfidence = Math.round(flashConf * 0.4 + proConf * 0.6);
+          hybridSentiment = parseFloat((flashSent * 0.4 + proSent * 0.6).toFixed(1));
+          consensusType = 'FLASH_ALONE_HOLD';
+          reasoning = `⚠️ [단기 호재 vs 거시 관망 엇갈림] Flash 30분 속보 호재(확신도 ${flashConf}%)가 포착되었으나, Pro 1시간 심층 분석(확신도 ${proConf}%)이 거시 관망(HOLD)을 권고하여 보수적 자본 보호를 위해 신규 매수를 유보하고 관망(HOLD)합니다.`;
+        } else if (proAction === 'BUY' && flashAction === 'HOLD') {
+          finalAction = 'HOLD';
+          hybridConfidence = Math.round(proConf * 0.55 + flashConf * 0.45);
+          hybridSentiment = parseFloat((proSent * 0.6 + flashSent * 0.4).toFixed(1));
+          consensusType = 'PRO_ALONE_HOLD';
+          reasoning = `⏳ [거시 유망 vs 단기 수급 미확인 엇갈림] Pro 1시간 심층 퀀트(확신도 ${proConf}%)는 중기 상승 추세를 지지하나, Flash 30분 단기 수급 모멘텀(확신도 ${flashConf}%)이 미확인 상태이므로 안전한 분할 타점 형성을 위해 관망(HOLD)합니다.`;
+        }
+        // =========================================================================
+        // [4] 둘 다 HOLD (Neutral HOLD)
+        // =========================================================================
+        else {
+          finalAction = 'HOLD';
+          hybridConfidence = Math.round(flashConf * 0.5 + proConf * 0.5);
+          hybridSentiment = parseFloat(((flashSent + proSent) / 2).toFixed(1));
+          consensusType = 'NEUTRAL_HOLD';
+          reasoning = `⚖️ [방향성 탐색 중립 관망] Flash(30분)와 Pro(1시간) 양대 모델 모두 뚜렷한 모멘텀 없이 중립 지지선을 테스트 중이므로 관망(HOLD)을 유지합니다.`;
+        }
+
+        return {
+          symbol: code,
+          name,
+          market,
+          action: finalAction,
+          confidence: hybridConfidence,
+          sentimentScore: hybridSentiment,
+          reasoning,
+          related_news: relatedNews,
+          consensusType,
+          isFractional,
+          fallbackMode: false,
+          flashDecision: {
+            action: flashAction,
+            confidence: flashConf,
+            sentimentScore: flashSent,
+            reasoning: flash.reasoning || '',
+          },
+          proDecision: {
+            action: proAction,
+            confidence: proConf,
+            sentimentScore: proSent,
+            reasoning: pro.reasoning || '',
+          },
+          evaluatedAt: new Date().toISOString(),
+        };
+      });
+
+      // 배열에 서킷 브레이커/Fallback 상태 속성 부착
+      hybridDecisions.isCircuitOpen = !!isCircuitOpen;
+      hybridDecisions.isFallback = isFallback;
+      return hybridDecisions;
+    } catch (err) {
+      console.warn('[TradeService] evaluateWithHybridLLM 예외 발생 -> Fallback 모드 전환:', err.message);
+      const fallbackList = ALL_CANDIDATE_STOCKS.map((stock) => ({
+        symbol: stock.code,
+        name: stock.name,
+        market: stock.market,
+        action: 'HOLD',
+        confidence: 50,
+        sentimentScore: 0,
+        reasoning: `🛡️ 하이브리드 LLM 예외(${err.message})로 인해 순수 퀀트 Fallback 모드로 안전 전환됩니다.`,
+        related_news: '',
+        consensusType: 'ERROR_FALLBACK',
+        isFractional: !!stock.isFractional,
+        fallbackMode: true,
+        evaluatedAt: new Date().toISOString(),
+      }));
+      fallbackList.isCircuitOpen = true;
+      fallbackList.isFallback = true;
+      return fallbackList;
+    }
+  }
+
+  /**
+   * [Fallback 전용] LLM 서킷 브레이커 차단(OPEN) 또는 예외 발생 시 순수 퀀트 모드 전환
+   * 실전 담당 봇(is_real_running = 1)의 evaluatePureQuantAlgorithm() 점수만으로 매매 판단
+   * ACTION = pureAlgorithmResult.shouldBuy ? 'BUY' : 'HOLD'
+   * 주문 금액은 평소 배정 예산의 50% 수준(budgetMultiplier: 0.5)으로 축소
+   */
+  static evaluatePureQuantFallback({ bot, candidateQuotes = [], budgetMultiplier = 0.5 }) {
+    if (!bot || !Array.isArray(candidateQuotes) || candidateQuotes.length === 0) {
+      return [];
+    }
+
+    return candidateQuotes.map((quote) => {
+      const pureResult = evaluatePureQuantAlgorithm(bot, quote);
+      const shouldBuy = Boolean(pureResult && pureResult.shouldBuy);
+      const action = shouldBuy ? 'BUY' : 'HOLD';
+      const confidence = pureResult?.score ? Number(pureResult.score) : (shouldBuy ? 80 : 35);
+      const symbol = quote.code || quote.symbol;
+
+      return {
+        symbol,
+        name: quote.name || symbol,
+        market: quote.market || (symbol && symbol.length === 6 && /^\d+$/.test(symbol) ? 'KR' : 'US'),
+        action,
+        confidence,
+        sentimentScore: 0,
+        reasoning: `[🛡️순수퀀트 Fallback 모드 (예산 ${Math.round(budgetMultiplier * 100)}%)] ${pureResult?.reason || '순수 알고리즘 지표 판정'}`,
+        related_news: '',
+        consensusType: 'PURE_QUANT_FALLBACK',
+        isFractional: quote.isFractional !== undefined ? !!quote.isFractional : quote.market === 'US',
+        fallbackMode: true,
+        budgetMultiplier,
+        pureAlgorithmResult: pureResult,
+        evaluatedAt: new Date().toISOString(),
+      };
+    });
   }
 }

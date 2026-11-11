@@ -69,12 +69,15 @@ export class AiController {
 
   static getDecisions(req, res, urlObj) {
     const limit = parseInt(urlObj.searchParams.get('limit') || '20', 10);
-    const decisions = AiService.getRecentDecisions(limit);
+    const modelType = urlObj.searchParams.get('model_type') || null;
+    const decisions = AiService.getRecentDecisions(limit, modelType);
+    const hybridDecisions = AiService.getHybridDecisions();
     const latestAnalysis = AiService.getLatestAnalysis();
     const quota = AiService.getQuotaStatus();
     const briefingState = AiService.getBriefingState();
     return sendJson(res, 200, {
       decisions,
+      hybridDecisions,
       latestAnalysis,
       latest: briefingState.latest,
       has_key: briefingState.has_key,

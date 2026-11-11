@@ -1,5 +1,7 @@
 # 🇰🇷 키움증권(시세조회) ⨉ 토스증권(주문체결) 기반 다중 전략 국내주식 자동매매 & 가상매매 AI 퀀트 시스템
 
+[![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
+
 > **국내주식 시세 및 호가 조회는 키움증권 Open API**, **실전 주문 및 잔고 관리는 토스증권 Open API**를 연동한 하이브리드 고성능 국내주식 실전/가상 자동매매 & 실시간 AI 증시 인텔리전스 시스템 (Backend + Frontend + Dual DB + Virtual Paper Trading Engine + AI Streaming + Network Tunnel)
 
 ---

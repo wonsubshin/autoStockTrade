@@ -321,7 +321,7 @@ export function initDatabase() {
     CREATE TABLE IF NOT EXISTS ai_market_briefings (
       id SERIAL PRIMARY KEY,
       provider TEXT NOT NULL DEFAULT 'gemini',
-      model TEXT NOT NULL DEFAULT 'gemini-2.5-flash',
+      model TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
       kr_index_price REAL,
       kr_daily_20ma REAL,
       kr_intraday_60ma REAL,
@@ -338,8 +338,10 @@ export function initDatabase() {
       regime_status TEXT DEFAULT 'NORMAL',
       trigger_type TEXT DEFAULT 'MANUAL',
       briefing_text TEXT NOT NULL,
+      analysis_type TEXT DEFAULT 'MARKET_BRIEFING',
       created_at TEXT NOT NULL
     );
+    ALTER TABLE ai_market_briefings ADD COLUMN IF NOT EXISTS analysis_type TEXT DEFAULT 'MARKET_BRIEFING';
 
     CREATE TABLE IF NOT EXISTS stock_news (
       id SERIAL PRIMARY KEY,
@@ -380,10 +382,12 @@ export function initDatabase() {
       executed_by TEXT,
       execution_status TEXT,
       order_no TEXT,
+      model_type TEXT DEFAULT 'FLASH',
       created_at TEXT NOT NULL
     );
     CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
     ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS related_news TEXT;
+    ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS model_type TEXT DEFAULT 'FLASH';
 
     CREATE TABLE IF NOT EXISTS market_regime_filter (
       id INTEGER PRIMARY KEY CHECK (id = 1),

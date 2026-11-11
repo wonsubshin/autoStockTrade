@@ -210,7 +210,9 @@ export default function SettingsPanel({
     gemini_api_key: '',
   });
 
-  const tossAvailable = budgetSettings.tossAvailableCash || 0;
+  const tossAvailableKrw = accountBalance?.real?.availableCash ?? accountBalance?.availableCash ?? budgetSettings.tossAvailableCash ?? 0;
+  const tossAvailableUsd = Number(accountBalance?.real?.availableUsd ?? accountBalance?.availableUsd ?? budgetSettings.tossAvailableUsd ?? 0);
+  const tossAvailable = accountBalance?.real?.totalCashKrw ?? accountBalance?.totalCashKrw ?? budgetSettings.tossTotalCashKrw ?? tossAvailableKrw;
 
   return (
     <div>
@@ -222,8 +224,16 @@ export default function SettingsPanel({
         </div>
         <div className="metrics-grid">
           <div className="metric-card">
-            <div className="metric-title">주문 가능 예수금 (KRW)</div>
-            <div className="metric-value">{(accountBalance?.real?.availableCash ?? accountBalance?.availableCash ?? 0).toLocaleString()}원</div>
+            <div className="metric-title">주문 가능 예수금 (원화 / 달러)</div>
+            <div className="metric-value">
+              {tossAvailableKrw.toLocaleString()}원
+              <span style={{ fontSize: '12px', color: '#10b981', marginLeft: '6px', fontWeight: 700 }}>
+                · ${tossAvailableUsd.toFixed(2)}
+              </span>
+            </div>
+            <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+              통합 환산: 약 {tossAvailable.toLocaleString()}원
+            </div>
           </div>
           <div className="metric-card">
             <div className="metric-title">주식 매입/평가 금액</div>
@@ -246,19 +256,19 @@ export default function SettingsPanel({
       {/* 2. Dynamic Real Budget Allocation for Selected 1~3 Bots */}
       <div className="board-card" style={{ borderColor: 'rgba(59, 130, 246, 0.4)', marginBottom: '24px' }}>
         <div className="card-title-row">
-          <div className="card-title">🎯 선택된 실전 담당 봇 (3개) 동적 투자금 비율 설정</div>
+          <div className="card-title">🎯 선택된 실전 담당 봇 ({allocations.length || 3}개) 동적 투자금 비율 설정</div>
           <span className="badge-mode real">
             실전 배분 엔진
           </span>
         </div>
         <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
-          가상 아레나에서 선발된 <strong>3개의 실전 담당 봇</strong>의 투자금 비율(합계 100%)을 설정합니다. 하단의 <strong>[확인 및 실전 매매 적용]</strong>을 누르면 설정이 저장되고 즉시 <strong>실전 매매 화면으로 이동</strong>하여 매매에 적용됩니다.
+          가상 아레나에서 선발된 <strong>1~3개의 실전 담당 봇</strong>의 투자금 비율(합계 100%)을 설정합니다. 하단의 <strong>[확인 및 실전 매매 적용]</strong>을 누르면 설정이 저장되고 즉시 <strong>실전 매매 화면으로 이동</strong>하여 매매에 적용됩니다.
         </p>
 
         {allocations.length === 0 ? (
           <div style={{ padding: '20px', background: 'rgba(239, 68, 68, 0.1)', border: '1px solid rgba(239, 68, 68, 0.3)', borderRadius: '8px', color: '#fca5a5', fontSize: '13px' }}>
             <div style={{ marginBottom: '12px' }}>
-              ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 3개의 봇을 먼저 체크 후 확정해주세요.
+              ⚠️ 현재 선택된 실전 담당 봇이 없습니다. 상단 메뉴의 <strong>[⚡ 가상 경쟁 아레나]</strong>에서 실전을 담당할 1~3개의 봇을 먼저 체크 후 확정해주세요.
             </div>
             {onGoToArena && (
               <button
@@ -267,7 +277,7 @@ export default function SettingsPanel({
                 style={{ fontWeight: 700, padding: '7px 16px' }}
                 onClick={onGoToArena}
               >
-                ⚡ 가상 경쟁 아레나로 이동하여 3개 봇 선택하기
+                ⚡ 가상 경쟁 아레나로 이동하여 실전 봇 선택하기
               </button>
             )}
           </div>
@@ -284,7 +294,7 @@ export default function SettingsPanel({
                     <label className="form-label" style={{ marginBottom: 0 }}>🚨 총 실전 투자 예산 (운영원금)</label>
                     <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
                       <span style={{ fontSize: '12px', color: '#34d399', fontWeight: 600 }}>
-                        토스 주문가능 예수금: {tossAvailable.toLocaleString()}원
+                        토스 통합 주문가능 예수금: {tossAvailable.toLocaleString()}원 ({tossAvailableKrw.toLocaleString()}원 + ${tossAvailableUsd.toFixed(2)})
                       </span>
                       <button
                         type="button"
@@ -309,7 +319,7 @@ export default function SettingsPanel({
                   >
                     <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', gap: '8px' }}>
                       <div>
-                        <div style={{ fontSize: '12px', color: '#94a3b8' }}>토스증권 예수금 기반 자동 운영원금 (90%)</div>
+                        <div style={{ fontSize: '12px', color: '#94a3b8' }}>토스증권 통합 예수금(원화+달러) 기반 자동 운영원금 (90%)</div>
                         <div style={{ fontSize: '20px', fontWeight: 700, color: '#38bdf8', marginTop: '2px' }}>
                           {effectiveBudget.toLocaleString()}원
                         </div>
@@ -329,7 +339,7 @@ export default function SettingsPanel({
                       </span>
                     </div>
                     <div style={{ fontSize: '11.5px', color: '#cbd5e1', marginTop: '8px', lineHeight: 1.5 }}>
-                      💡 총 실전 투자 예산은 사용자가 수동 입력하지 않고, 실제 토스증권 계좌의 주문가능 예수금({tossAvailable.toLocaleString()}원)의 <strong>90%({effectiveBudget.toLocaleString()}원)</strong>를 운영원금으로 자동 계산합니다. 아래 슬라이더에서 각 봇의 비율(%)을 조절하면 이 금액이 비율대로 실시간 분배됩니다.
+                      💡 총 실전 투자 예산은 사용자가 수동 입력하지 않고, 실제 토스증권 계좌의 통합 주문가능 예수금({tossAvailable.toLocaleString()}원 = 원화 {tossAvailableKrw.toLocaleString()}원 + 달러 ${tossAvailableUsd.toFixed(2)})의 <strong>90%({effectiveBudget.toLocaleString()}원)</strong>를 운영원금으로 자동 계산합니다. 아래 슬라이더에서 각 봇의 비율(%)을 조절하면 이 금액이 비율대로 실시간 분배됩니다.
                     </div>
                   </div>
                 </div>

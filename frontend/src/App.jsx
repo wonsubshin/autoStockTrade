@@ -185,10 +185,10 @@ export default function App() {
       const botList = data.bots || [];
       setBots(botList);
 
-      // 5초 주기 폴링 시에도 사용자가 체크한 3개 봇 상태가 초기화되지 않도록 최초 1회만 동기화
+      // 5초 주기 폴링 시에도 사용자가 체크한 1~3개 봇 상태가 초기화되지 않도록 최초 1회만 동기화
       if (!arenaInitRef.current && botList.length > 0) {
         const realSelected = botList.filter((b) => Number(b.is_real_selected) === 1).map((b) => b.bot_id);
-        if (realSelected.length === 3) {
+        if (realSelected.length >= 1 && realSelected.length <= 3) {
           setArenaSelectedIds(realSelected);
           arenaInitRef.current = true;
         } else if (botList.length >= 3) {
@@ -300,7 +300,11 @@ export default function App() {
     fetchSettingsAndBalance();
 
     const healthInterval = setInterval(fetchHealth, 10000);
-    return () => clearInterval(healthInterval);
+    return () => {
+      clearInterval(healthInterval);
+      if (briefingStreamRef.current) briefingStreamRef.current.close();
+      if (newsStreamRef.current) newsStreamRef.current.close();
+    };
   }, [isAuthenticated, fetchHealth, fetchBots, fetchAiDecisions, fetchSettingsAndBalance]);
 
   // 자정(00:00 KST) 날짜 변경 및 보안 세션 만료 감시 타이머 (날짜가 바뀌면 즉시 인증 화면으로 이동)
@@ -474,7 +478,7 @@ export default function App() {
         confirmText: '▶ 거래 시작',
         title: isReal ? '🚨 실전 거래 시작(가동) 확인' : '▶ 거래 시작 확인',
         message: isReal
-          ? `[${botName}]의 실전 자동매매를 시작(가동)하시겠습니까?\n\n• 상태: 실전 거래 가동 중 (키움/토스 실계좌 직접 연동)\n• 배정 예산: ${(selectedBot?.real_allocated_capital || selectedBot?.allocated_capital || 0).toLocaleString()}원\n• 가용 예수금: ${(selectedBot?.real_available_krw || 0).toLocaleString()}원\n• 안내: 퀀트 알고리즘 신호에 따라 실제 증권사 계좌 주문이 즉시 집행될 수 있습니다.\n\n정말 실전 거래를 시작하시겠습니까?`
+          ? `[${botName}]의 실전 자동매매를 시작(가동)하시겠습니까?\n\n• 상태: 실전 거래 가동 중 (키움/토스 실계좌 직접 연동)\n• 배정 예산: ${Math.round(Number(selectedBot?.real_allocated_capital || selectedBot?.allocated_capital || 0)).toLocaleString()}원\n• 가용 예수금: ${Math.round(Number(selectedBot?.real_available_krw || 0)).toLocaleString()}원\n• 안내: 퀀트 알고리즘 신호에 따라 실제 증권사 계좌 주문이 즉시 집행될 수 있습니다.\n\n정말 실전 거래를 시작하시겠습니까?`
           : `[${botName}]의 자동 거래를 시작하시겠습니까?`,
         onConfirm: () => {
           executeAction();
@@ -502,10 +506,10 @@ export default function App() {
   const handleResetVirtualAll = () => handleBotAction('RESET_VIRTUAL_ALL');
 
   const handleSelectRealBots = async (selectedBotIds) => {
-    if (!Array.isArray(selectedBotIds) || selectedBotIds.length !== 3) {
+    if (!Array.isArray(selectedBotIds) || selectedBotIds.length < 1 || selectedBotIds.length > 3) {
       setModalInfo({
         title: '선택 안내',
-        message: '실전 거래를 담당할 퀀트 봇을 정확히 3개 선택해주세요.',
+        message: '실전 거래를 담당할 퀀트 봇을 1개에서 최대 3개까지 선택해주세요.',
         type: 'warning',
       });
       return;
@@ -513,6 +517,7 @@ export default function App() {
 
     if (isSelectingRealBots) return; // 더블클릭 중복 요청 방지
 
+    const count = selectedBotIds.length;
     const selectedBotNames = selectedBotIds
       .map((id) => {
         const b = bots.find((x) => x.bot_id === id);
@@ -545,9 +550,9 @@ export default function App() {
     setModalInfo({
       type: 'confirm',
       confirmColor: 'success',
-      confirmText: '✅ 3개 봇 실전 확정',
-      title: '🎯 실전 거래 담당 봇 (3개) 지정 확인',
-      message: `선택하신 3개의 퀀트 봇을 실전 매매 담당으로 확정하시겠습니까?\n\n• ${selectedBotNames}${successionPreview}\n\n'확인'을 누르면 확정 후 [환경설정] 화면으로 이동하여 투자금 배분 비율(%)을 설정하게 됩니다.`,
+      confirmText: `✅ ${count}개 봇 실전 확정`,
+      title: `🎯 실전 거래 담당 봇 (${count}개) 지정 확인`,
+      message: `선택하신 ${count}개의 퀀트 봇을 실전 매매 담당으로 확정하시겠습니까?\n\n• ${selectedBotNames}${successionPreview}\n\n'확인'을 누르면 확정 후 [환경설정] 화면으로 이동하여 투자금 배분 비율(%)을 설정하게 됩니다.`,
       onConfirm: async () => {
         setIsSelectingRealBots(true);
         try {
@@ -567,8 +572,8 @@ export default function App() {
 
           setActiveMenu('SETTINGS');
           setModalInfo({
-            title: '실전 담당 봇 (3개) 확정 완료',
-            message: `선택하신 3개의 봇이 실전 거래 담당으로 지정되었습니다.${inheritResult}\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.`,
+            title: `실전 담당 봇 (${count}개) 확정 완료`,
+            message: `선택하신 ${count}개의 봇이 실전 거래 담당으로 지정되었습니다.${inheritResult}\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.`,
             type: 'success',
           });
           await fetchBots();
@@ -593,7 +598,7 @@ export default function App() {
       confirmText: isStart ? '▶ 실전 가동 시작' : '⏹ 실전 거래 중지',
       title: isStart ? '🚨 실전 거래 시작(가동) 확인' : '⚠️ 실전 거래 중지 확인',
       message: isStart
-        ? `[${botName}]의 실전 자동매매를 시작(가동)하시겠습니까?\n\n• 상태: 실전 거래 가동 중 (키움/토스 실계좌 직접 연동)\n• 배정 예산: ${(targetBot?.real_allocated_capital || targetBot?.allocated_capital || 0).toLocaleString()}원\n• 가용 예수금: ${(targetBot?.real_available_krw || 0).toLocaleString()}원\n• 매매 대상: 국내 대표주 1주 온주 및 미국 우량주 소수점\n\n'▶ 실전 가동 시작'을 누르면 실시간 퀀트 알고리즘 신호에 따라 실제 증권사 계좌로 즉시 매수/매도 주문이 집행됩니다.`
+        ? `[${botName}]의 실전 자동매매를 시작(가동)하시겠습니까?\n\n• 상태: 실전 거래 가동 중 (키움/토스 실계좌 직접 연동)\n• 배정 예산: ${Math.round(Number(targetBot?.real_allocated_capital || targetBot?.allocated_capital || 0)).toLocaleString()}원\n• 가용 예수금: ${Math.round(Number(targetBot?.real_available_krw || 0)).toLocaleString()}원\n• 매매 대상: 국내 대표주 1주 온주 및 미국 우량주 소수점\n\n'▶ 실전 가동 시작'을 누르면 실시간 퀀트 알고리즘 신호에 따라 실제 증권사 계좌로 즉시 매수/매도 주문이 집행됩니다.`
         : `[${botName}]의 실전 자동매매를 일시 중지하시겠습니까?\n\n• 상태: 실전 거래 중지 대기\n• 안내: 중지 상태에서는 해당 봇의 신규 실전 매수/매도 주문이 전송되지 않습니다.\n\n'⏹ 실전 거래 중지'를 누르면 해당 봇의 실전 거래가 즉시 중지됩니다.`,
       onConfirm: async () => {
         try {
@@ -635,7 +640,7 @@ export default function App() {
           setActiveMenu('REAL_TRADING');
           setModalInfo({
             title: '실전 매매 적용 완료',
-            message: '선택하신 3개 봇의 투자금 배분 비율이 정상 저장되었습니다.\n\n[실전 매매] 화면으로 이동하였으며, 배정된 예산으로 실전 거래가 집행됩니다.',
+            message: `선택하신 ${allocs.length}개 봇의 투자금 배분 비율이 정상 저장되었습니다.\n\n[실전 매매] 화면으로 이동하였으며, 배정된 예산으로 실전 거래가 집행됩니다.`,
             type: 'success',
           });
           await fetchBots();

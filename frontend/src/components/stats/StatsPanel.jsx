@@ -55,10 +55,12 @@ function buildZeroFilledTimeline(rawTimeline = [], period = 'daily', baseDate = 
   if (Array.isArray(rawTimeline)) {
     for (const item of rawTimeline) {
       if (!item || !item.period) continue;
+      const profit = Number(item.profitKrw);
+      const cumProfit = Number(item.cumulativeProfitKrw);
       map.set(item.period, {
         period: item.period,
-        profitKrw: Number(item.profitKrw || 0),
-        cumulativeProfitKrw: Number(item.cumulativeProfitKrw || 0),
+        profitKrw: isNaN(profit) ? 0 : profit,
+        cumulativeProfitKrw: isNaN(cumProfit) ? 0 : cumProfit,
         tradesCount: Number(item.tradesCount || 0),
         winRate: Number(item.winRate || 0),
       });
@@ -67,9 +69,10 @@ function buildZeroFilledTimeline(rawTimeline = [], period = 'daily', baseDate = 
 
   let running = 0;
   return Array.from(map.values()).map((entry) => {
-    running += entry.profitKrw;
+    running += (Number(entry.profitKrw) || 0);
     return {
       ...entry,
+      profitKrw: Number(entry.profitKrw) || 0,
       cumulativeProfitKrw: running,
     };
   });
@@ -152,23 +155,27 @@ export default function StatsPanel({
   // Y축 스케일 범위 산출 (0선이 항상 정중앙에 오도록 대칭 바운드 적용)
   const { bound, yTicks } = useMemo(() => {
     const vals = chartTimeline.map((item) =>
-      chartMetricMode === 'cumulative' ? (item.cumulativeProfitKrw || 0) : (item.profitKrw || 0)
+      Number(chartMetricMode === 'cumulative' ? item.cumulativeProfitKrw : item.profitKrw) || 0
     );
-    const maxVal = Math.max(...vals, 0);
-    const minVal = Math.min(...vals, 0);
-    const absMax = Math.max(Math.abs(maxVal), Math.abs(minVal), 50000);
-    // 여유 마진 15% 적용
-    const rawBound = absMax * 1.15;
-    // 보기 좋은 정수 단위로 올림
-    const magnitude = Math.pow(10, Math.floor(Math.log10(rawBound)));
-    const roundedBound = Math.ceil(rawBound / magnitude) * magnitude;
+    const dataMax = Math.max(...vals.map((v) => Math.abs(v)), 0);
 
+    // 손익 규모가 소액(소수점 매매 등 수백~수천 원 단위)이더라도 그래프 곡선과 변화가 뚜렷하게 보이도록 동적 스케일링
+    // 실전 손익이 전혀 없을 때만 기본 5,000원 바운드 적용
+    let roundedBound = 5000;
+    if (dataMax > 0) {
+      const rawBound = dataMax * 1.35; // 35% 여유 마진
+      const magnitude = Math.pow(10, Math.max(0, Math.floor(Math.log10(rawBound))));
+      const step = magnitude >= 10 ? (magnitude / 2) : 10;
+      roundedBound = Math.max(100, Math.ceil(rawBound / step) * step);
+    }
+
+    const halfBound = Math.round(roundedBound / 2);
     const ticks = [
-      { val: roundedBound, label: `+${roundedBound.toLocaleString()}` },
-      { val: Math.round(roundedBound / 2), label: `+${Math.round(roundedBound / 2).toLocaleString()}` },
+      { val: roundedBound, label: `+${roundedBound.toLocaleString()}원` },
+      { val: halfBound, label: `+${halfBound.toLocaleString()}원` },
       { val: 0, label: '0원 (기준선)' },
-      { val: -Math.round(roundedBound / 2), label: `-${Math.round(roundedBound / 2).toLocaleString()}` },
-      { val: -roundedBound, label: `-${roundedBound.toLocaleString()}` },
+      { val: -halfBound, label: `-${halfBound.toLocaleString()}원` },
+      { val: -roundedBound, label: `-${roundedBound.toLocaleString()}원` },
     ];
 
     return { bound: roundedBound, yTicks: ticks };
@@ -178,10 +185,11 @@ export default function StatsPanel({
   const points = useMemo(() => {
     const len = chartTimeline.length;
     return chartTimeline.map((item, idx) => {
-      const val = chartMetricMode === 'cumulative' ? (item.cumulativeProfitKrw || 0) : (item.profitKrw || 0);
+      const rawVal = chartMetricMode === 'cumulative' ? item.cumulativeProfitKrw : item.profitKrw;
+      const val = Number(rawVal) || 0;
       const x = padding.left + (len > 1 ? (idx / (len - 1)) * plotWidth : plotWidth / 2);
       // val이 0이면 y = zeroY (정확히 0선 위!)
-      const y = zeroY - (val / bound) * (plotHeight / 2);
+      const y = bound > 0 ? zeroY - (val / bound) * (plotHeight / 2) : zeroY;
       return {
         ...item,
         val,
@@ -272,21 +280,21 @@ export default function StatsPanel({
         <div className="metric-card">
           <div className="metric-title">실전 누적 실현 손익합계 (2026.10~)</div>
           <div className="metric-value">
-            <span className={(statsData?.totalProfitKrw || 0) >= 0 ? 'num-up' : 'num-down'}>
-              {(statsData?.totalProfitKrw || 0) > 0 ? '+' : ''}
-              {(statsData?.totalProfitKrw || 0).toLocaleString()}원
+            <span className={Number(statsData?.totalProfitKrw || 0) >= 0 ? 'num-up' : 'num-down'}>
+              {Number(statsData?.totalProfitKrw || 0) > 0 ? '+' : ''}
+              {Number(statsData?.totalProfitKrw || 0).toLocaleString()}원
             </span>
           </div>
         </div>
         <div className="metric-card">
           <div className="metric-title">총 실전 체결 거래수</div>
-          <div className="metric-value">{statsData?.totalTrades || 0}회</div>
+          <div className="metric-value">{Number(statsData?.totalTrades || 0)}회</div>
         </div>
         <div className="metric-card">
           <div className="metric-title">실전 종합 승률 (Win Rate)</div>
           <div className="metric-value">
-            <span className={(statsData?.winRate || 0) >= 50 ? 'num-up' : 'num-down'}>
-              {statsData?.winRate || 0}%
+            <span className={Number(statsData?.winRate || 0) >= 50 ? 'num-up' : 'num-down'}>
+              {Number(statsData?.winRate || 0)}%
             </span>
           </div>
         </div>

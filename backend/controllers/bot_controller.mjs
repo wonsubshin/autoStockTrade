@@ -64,7 +64,7 @@ export class BotController {
         : '';
       return sendJson(res, 200, {
         success: true,
-        message: `실전 거래 담당 봇 3개가 성공적으로 선택 및 지정되었습니다.${inheritMsg}`,
+        message: `실전 거래 담당 봇 ${Array.isArray(selectedBotIds) ? selectedBotIds.length : 3}개가 성공적으로 선택 및 지정되었습니다.${inheritMsg}`,
         bots,
         inheritance,
         retained,

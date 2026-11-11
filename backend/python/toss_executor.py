@@ -190,9 +190,20 @@ class TossPythonExecutor:
         seq = self.resolve_account_seq()
         usd_rate = self.get_exchange_rate()
 
-        # 1) Buying Power
+        # 1) Buying Power (KRW & USD)
         bp = self.fetch_with_auth('/api/v1/buying-power?currency=KRW', method='GET', need_account_seq=True)
         cash_buying_power = int(bp.get('result', {}).get('cashBuyingPower', 0))
+
+        available_usd = 0.0
+        try:
+            bp_usd = self.fetch_with_auth('/api/v1/buying-power?currency=USD', method='GET', need_account_seq=True)
+            available_usd = float(bp_usd.get('result', {}).get('cashBuyingPower', 0.0))
+        except Exception:
+            available_usd = 0.0
+
+        available_usd_krw = int(available_usd * usd_rate)
+        total_cash_krw = cash_buying_power + available_usd_krw
+        operating_budget = int(total_cash_krw * 0.90)
 
         # 2) Holdings
         hold = self.fetch_with_auth('/api/v1/holdings', method='GET', need_account_seq=True)
@@ -222,8 +233,12 @@ class TossPythonExecutor:
             'accountNo': self.account_no or self.config['account_no'],
             'accountSeq': seq,
             'availableCash': cash_buying_power,
+            'availableUsd': available_usd,
+            'availableUsdKrw': available_usd_krw,
+            'totalCashKrw': total_cash_krw,
+            'operatingBudget': operating_budget,
             'stockEvalAmount': stock_eval_krw,
-            'totalAssetAmount': cash_buying_power + stock_eval_krw,
+            'totalAssetAmount': total_cash_krw + stock_eval_krw,
             'exchangeRateUsdKrw': usd_rate,
             'holdings': items
         }

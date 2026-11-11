@@ -1,6 +1,22 @@
 import React, { useState } from 'react';
 import { MarkdownViewer } from '../layout/MarketBanner';
 
+function formatKstTimestamp(isoOrStr) {
+  if (!isoOrStr) return '';
+  const d = new Date(isoOrStr);
+  if (isNaN(d.getTime())) return String(isoOrStr);
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(d);
+}
+
 export default function HybridBoard({
   aiDecisions,
   latestAnalysis,
@@ -13,6 +29,17 @@ export default function HybridBoard({
   const remaining = aiQuota?.remainingManualCalls ?? 14;
   const manualLimit = aiQuota?.manualDailyLimit ?? 14;
   const nextAutoSlot = aiQuota?.nextAutoSlotLabel || '12:00';
+
+  // 최근 분석 실행 시각 및 트리거 포맷팅 (뉴스 시황과 동일 형식)
+  const analyzedAtRaw =
+    latestAnalysis?.analyzedAt ||
+    latestAnalysis?.analyzedAtKst ||
+    latestAnalysis?.created_at ||
+    latestAnalysis?.createdAt ||
+    (aiDecisions && aiDecisions[0]?.created_at) ||
+    (aiDecisions && aiDecisions[0]?.evaluatedAt);
+  const createdAtStr = formatKstTimestamp(analyzedAtRaw);
+  const triggerType = latestAnalysis?.triggerType || latestAnalysis?.trigger_type || 'AUTO';
 
   // 한국 시장(KR) 및 미국 시장(US) 독립 체제 및 매매 판정 상태 파악
   const krRegime = latestAnalysis?.krRegime || latestAnalysis?.llm_algo_status?.kr || {};
@@ -79,14 +106,46 @@ export default function HybridBoard({
       ? `현재 미국 증시(NYSE/NASDAQ)는 거시 리스크 경보 발동으로 신규 소수점 매수 차단(🔴 HALT_NEW_BUYS) 체제입니다.`
       : `현재 미국 증시(NYSE/NASDAQ)는 나스닥 100(QQQ) 지수가 일봉 20MA 및 장중 60MA 상단 추세를 유지하며 정상 거래 허용(🟢 Normal) 체제에서 움직이고 있습니다. 글로벌 AI 인프라 투자를 주도하는 ${usTopNames} 중심으로 높은 호재 감성점수가 유지되고 있습니다.`);
 
-  const verbalOverviewText =
-    latestAnalysis?.verbalOverview ||
-    (aiDecisions.length > 0
+  const formatVerbalOverview = (rawOverview, fallbackDefault) => {
+    if (!rawOverview) return fallbackDefault;
+    if (typeof rawOverview === 'string') return rawOverview;
+    if (typeof rawOverview === 'object') {
+      const parts = [];
+      const krText = rawOverview.krMarket || rawOverview.kr;
+      const usText = rawOverview.usMarket || rawOverview.us;
+      const botText = rawOverview.botDiagnostic || rawOverview.bot || rawOverview.bots;
+
+      if (krText) {
+        parts.push(`### 🇰🇷 [한국 주식 시장 (KRX: KOSPI / KOSDAQ)] 종합 분석 & 온주 전략\n- ${krText}`);
+      }
+      if (usText) {
+        parts.push(`### 🇺🇸 [미국 주식 시장 (US: NYSE / NASDAQ)] 종합 분석 & 소수점 전략\n- ${usText}`);
+      }
+      if (botText) {
+        parts.push(`### 🤖 [실전 퀀트 봇 & 알고리즘 매매 진단]\n- ${botText}`);
+      }
+
+      if (parts.length > 0) {
+        return parts.join('\n\n');
+      }
+
+      const values = Object.entries(rawOverview)
+        .map(([k, val]) => (typeof val === 'string' ? `- **${k}**: ${val}` : ''))
+        .filter(Boolean);
+      if (values.length > 0) return values.join('\n\n');
+    }
+    return fallbackDefault;
+  };
+
+  const defaultVerbalText =
+    aiDecisions.length > 0
       ? `### 🇰🇷 [한국 주식 시장 (KRX: KOSPI / KOSDAQ)] 종합 분석 & 온주 전략\n` +
         `- ${krMarketSummaryText}\n\n` +
         `### 🇺🇸 [미국 주식 시장 (US: NYSE / NASDAQ)] 종합 분석 & 소수점 전략\n` +
         `- ${usMarketSummaryText}`
-      : `실시간 수집된 최신 뉴스와 시장 수급을 바탕으로 Gemini LLM이 한국 시장과 미국 시장을 구분하여 생생한 시황 브리핑 및 봇 진단을 안내해 드립니다. 상단의 [🔄 AI 실시간 시장분석 & 봇진단]을 눌러주세요.`);
+      : `실시간 수집된 최신 뉴스와 시장 수급을 바탕으로 Gemini LLM이 한국 시장과 미국 시장을 구분하여 생생한 시황 브리핑 및 봇 진단을 안내해 드립니다. 상단의 [🔄 AI 실시간 시장분석 & 봇진단]을 눌러주세요.`;
+
+  const verbalOverviewText = formatVerbalOverview(latestAnalysis?.verbalOverview, defaultVerbalText);
 
   const handleSpeak = (textToSpeak) => {
     if (typeof window === 'undefined' || !window.speechSynthesis) {
@@ -135,7 +194,7 @@ export default function HybridBoard({
               border: '1px solid rgba(147, 51, 234, 0.4)',
             }}
           >
-            자동분석: 0·4·8·12·16·20시 (다음 {nextAutoSlot})
+            자동배치: ⚡30분 Flash & 🏛️60분 Pro (다음 {nextAutoSlot})
           </span>
           <span
             style={{
@@ -149,6 +208,13 @@ export default function HybridBoard({
           >
             🇰🇷 국내 온주 ⨉ 🇺🇸 미국 소수점 분리 판정
           </span>
+
+          {/* 최근 분석 실행 시각 및 트리거 (뉴스 시황과 동일 형식) */}
+          {createdAtStr && (
+            <span style={{ fontSize: '11.5px', color: '#94a3b8' }}>
+              ({createdAtStr} · {triggerType === 'MANUAL' ? '⚡수동분석' : '⏰자동갱신'})
+            </span>
+          )}
         </div>
         <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
           <span
@@ -161,9 +227,9 @@ export default function HybridBoard({
               border: remaining > 0 ? '1px solid rgba(16, 185, 129, 0.4)' : '1px solid rgba(239, 68, 68, 0.45)',
               fontWeight: 700,
             }}
-            title="하루 전체 자동분석 예약(6회)을 제외한 금일 수동 무료 Gemini API 잔여 호출 건수"
+            title={`일일 총 무료 한도 ${aiQuota?.dailyTotalLimit || 50}회 중 정기 자동배치 예약(${aiQuota?.autoReservedCalls || 36}회)을 제외한 금일 수동 Gemini API 잔여 호출 건수 (다음 자동갱신: ${nextAutoSlot})`}
           >
-            금일 무료 API 잔여: {remaining} / {manualLimit}회 (자동예약 6회 제외)
+            금일 무료 API 잔여: {remaining} / {manualLimit}회 (자동예약 제외)
           </span>
           <button
             className="btn-action"
@@ -177,7 +243,7 @@ export default function HybridBoard({
       </div>
 
       <div style={{ fontSize: '12px', color: '#94a3b8', marginBottom: '12px', lineHeight: 1.5 }}>
-        💡 <strong>4시간 주기 자동 분석 & 수동 즉시 분석</strong>: 매일 <strong>0시, 4시, 8시, 12시, 16시, 20시</strong>에 자동으로 실시간 증시 뉴스 및 한·미 시장 지표를 분석하여 갱신하며, 사용자가 수동 요청한 경우에도 즉시 분석 후 정해진 시각에 변함없이 자동 분석이 실행됩니다.
+        💡 <strong>다중 LLM 하이브리드 자동 배치 (30분 Flash & 60분 Pro) & 수동 즉시 분석</strong>: <strong>30분 주기(매시 00분·30분) Gemini Flash</strong>가 실시간 속보 뉴스와 단기 시황을 신속 진단하고, <strong>1시간 주기(매시 정각) Gemini Pro</strong>가 거시 경제 및 심층 퀀트 데이터를 종합 분석합니다. 실전 매매는 두 모델의 교차검증(Consensus)을 통해 최종 집행되며, 수동 분석 요청 시에도 즉시 반영됩니다.
       </div>
 
       {/* 한·미 분리 LLM 알고리즘 매매 판정 & 작동 지침 안내 박스 */}
@@ -277,11 +343,11 @@ export default function HybridBoard({
             <span style={{ fontSize: '18px' }}>🎙️</span>
             <strong style={{ fontSize: '14px', color: '#f3e8ff' }}>Gemini LLM 실시간 시장 분석 & 봇 진단 종합 리포트</strong>
             <span className="badge-mode real" style={{ fontSize: '11px', background: 'rgba(147, 51, 234, 0.25)', color: '#d8b4fe', borderColor: 'rgba(147, 51, 234, 0.4)' }}>
-              {latestAnalysis?.triggerType === 'MANUAL' ? '수동 분석 반영됨' : '4시간 주기 자동 분석'}
+              {latestAnalysis?.triggerType === 'MANUAL' ? '⚡ 수동 분석 반영됨' : '⚡ 30분 Flash & 🏛️ 60분 Pro 하이브리드 자동 분석'}
             </span>
-            {latestAnalysis?.analyzedAtKst && (
+            {createdAtStr && (
               <span style={{ fontSize: '11px', color: '#94a3b8' }}>
-                (최근 갱신: {latestAnalysis.analyzedAtKst})
+                ({createdAtStr} · {triggerType === 'MANUAL' ? '⚡수동분석' : '⏰자동갱신'})
               </span>
             )}
           </div>
@@ -333,12 +399,12 @@ export default function HybridBoard({
                     fontWeight: 700,
                     padding: '2px 7px',
                     borderRadius: '4px',
-                    background: isKrHalted ? 'rgba(239, 68, 68, 0.2)' : 'rgba(16, 185, 129, 0.18)',
-                    color: isKrHalted ? '#f87171' : '#34d399',
-                    border: isKrHalted ? '1px solid rgba(239, 68, 68, 0.45)' : '1px solid rgba(16, 185, 129, 0.4)',
+                    background: isKrHalted ? 'rgba(239, 68, 68, 0.2)' : isKrReduced ? 'rgba(245, 158, 11, 0.2)' : 'rgba(16, 185, 129, 0.18)',
+                    color: isKrHalted ? '#f87171' : isKrReduced ? '#fbbf24' : '#34d399',
+                    border: isKrHalted ? '1px solid rgba(239, 68, 68, 0.45)' : isKrReduced ? '1px solid rgba(245, 158, 11, 0.45)' : '1px solid rgba(16, 185, 129, 0.4)',
                   }}
                 >
-                  {isKrHalted ? '🔴 신규 매수 차단' : '🟢 정상 매매'} (매수 {krBuyList.length} · 관망 {krHoldList.length} · 매도 {krSellList.length})
+                  {isKrHalted ? '🔴 신규 매수 차단' : isKrReduced ? '🟡 비중 50% 축소 매매' : '🟢 정상 매매'} (매수 {krBuyList.length} · 관망 {krHoldList.length} · 매도 {krSellList.length})
                 </span>
               </div>
               <button
@@ -387,7 +453,7 @@ export default function HybridBoard({
                     border: isUsHalted ? '1px solid rgba(239, 68, 68, 0.45)' : '1px solid rgba(99, 102, 241, 0.45)',
                   }}
                 >
-                  {isUsHalted ? '🔴 신규 매수 차단' : '🟢 정상 매매'} (매수 {usBuyList.length} · 관망 {usHoldList.length} · 매도 {usSellList.length})
+                  {isUsHalted ? '🔴 신규 매수 차단' : isUsReduced ? '🟡 비중 50% 축소 매매' : '🟢 정상 매매'} (매수 {usBuyList.length} · 관망 {usHoldList.length} · 매도 {usSellList.length})
                 </span>
               </div>
               <button

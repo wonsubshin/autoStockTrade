@@ -56,18 +56,24 @@ export default function BudgetBar({
         </div>
         <div className="metrics-grid">
           <div className="metric-card">
-            <div className="metric-title">주문 가능 예수금 (토스)</div>
+            <div className="metric-title">주문 가능 예수금 (원화 / 달러)</div>
             <div className="metric-value">
               {(accountBalance?.real?.availableCash ?? accountBalance?.availableCash ?? 0).toLocaleString()}원
+              <span style={{ fontSize: '12px', color: '#10b981', marginLeft: '6px', fontWeight: 700 }}>
+                · ${(Number(accountBalance?.real?.availableUsd ?? accountBalance?.availableUsd ?? 0)).toFixed(2)}
+              </span>
+            </div>
+            <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
+              통합 환산: 약 {(accountBalance?.real?.totalCashKrw ?? accountBalance?.totalCashKrw ?? ((accountBalance?.real?.availableCash ?? 0) + Math.floor((accountBalance?.real?.availableUsd ?? 0) * 1345))).toLocaleString()}원
             </div>
           </div>
           <div className="metric-card" style={{ border: '1px solid rgba(56, 189, 248, 0.45)', background: 'rgba(56, 189, 248, 0.08)' }}>
             <div className="metric-title" style={{ color: '#38bdf8' }}>총 실전 운영원금 (90% 자동)</div>
             <div className="metric-value" style={{ color: '#38bdf8' }}>
-              {(accountBalance?.real?.operatingBudget ?? accountBalance?.operatingBudget ?? Math.floor((accountBalance?.real?.availableCash ?? accountBalance?.availableCash ?? 0) * 0.9)).toLocaleString()}원
+              {(accountBalance?.real?.operatingBudget ?? accountBalance?.operatingBudget ?? 0).toLocaleString()}원
             </div>
             <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '2px' }}>
-              ⚡ 주문가능금액의 90% 실시간 분배
+              ⚡ 원화 + 달러 통합 예수금의 90% 실시간 배분
             </div>
           </div>
           <div className="metric-card">
@@ -89,7 +95,7 @@ export default function BudgetBar({
                 {profitRate >= 0 ? '+' : ''}{profitRate}%
               </span>
               <span style={{ fontSize: '11px', color: '#94a3b8', marginLeft: '6px' }}>
-                (할당: {(selectedBot?.real_allocated_capital || selectedBot?.allocated_capital || 0).toLocaleString()}원, {selectedBot?.real_allocation_ratio || 33.3}%)
+                (할당: {Math.round(Number(selectedBot?.real_allocated_capital || selectedBot?.allocated_capital || 0)).toLocaleString()}원, {selectedBot?.real_allocation_ratio || 33.3}%)
               </span>
             </div>
           </div>

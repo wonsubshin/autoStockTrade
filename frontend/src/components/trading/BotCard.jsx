@@ -1,5 +1,21 @@
 import React from 'react';
 
+function formatKstTimestamp(isoOrStr) {
+  if (!isoOrStr) return '';
+  const d = new Date(isoOrStr);
+  if (isNaN(d.getTime())) return String(isoOrStr);
+  return new Intl.DateTimeFormat('ko-KR', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+    hour: '2-digit',
+    minute: '2-digit',
+    second: '2-digit',
+    hour12: true,
+  }).format(d);
+}
+
 export default function BotCard({
   bots,
   selectedBotId,
@@ -107,12 +123,12 @@ export default function BotCard({
             </div>
             <div className="metric-value">
               {selectedBot.is_real_selected === 1
-                ? (selectedBot.real_allocated_capital || selectedBot.allocated_capital || 0).toLocaleString() + '원'
-                : (selectedBot.virtual_krw || 0).toLocaleString() + '원'}
+                ? Math.round(Number(selectedBot.real_allocated_capital || selectedBot.allocated_capital || 0)).toLocaleString() + '원'
+                : Math.round(Number(selectedBot.virtual_krw || 0)).toLocaleString() + '원'}
             </div>
             {selectedBot.is_real_selected === 1 && (
               <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
-                가용 잔고: {(selectedBot.real_available_krw || 0).toLocaleString()}원 ({selectedBot.real_allocation_ratio || 0}%)
+                가용 잔고: {Math.round(Number(selectedBot.real_available_krw || 0)).toLocaleString()}원 ({selectedBot.real_allocation_ratio || 0}%)
               </div>
             )}
           </div>
@@ -129,10 +145,15 @@ export default function BotCard({
             </div>
           </div>
           <div className="metric-card">
-            <div className="metric-title">현재 봇 상태</div>
+            <div className="metric-title">현재 봇 상태 & 실행시간</div>
             <div style={{ fontSize: '13px', color: '#cbd5e1', marginTop: '6px', lineHeight: 1.4 }}>
               {selectedBot.is_real_selected === 1 ? (selectedBot.real_status_msg || selectedBot.last_status_msg || '실전 대기 중') : (selectedBot.virtual_status_msg || selectedBot.last_status_msg || '상시 가상 경쟁 중')}
             </div>
+            {selectedBot.updated_at && (
+              <div style={{ fontSize: '11px', color: '#94a3b8', marginTop: '4px' }}>
+                ({formatKstTimestamp(selectedBot.updated_at)} · ⚡자율엔진 실행)
+              </div>
+            )}
           </div>
         </div>
       )}

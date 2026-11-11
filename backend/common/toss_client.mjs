@@ -630,15 +630,22 @@ export class TossClient {
           const accountNo = accInfo ? accInfo.accountNo : config.account_no;
           const usdRate = await this.getExchangeRate();
 
-          // 1) KRW 주문 가능 예수금 (GET /api/v1/buying-power?currency=KRW)
+          // 1) KRW 및 USD 주문 가능 예수금 (GET /api/v1/buying-power)
           let availableCash = null;
+          let availableUsd = null;
           try {
             const bpResp = await this.fetchWithAuth('/api/v1/buying-power?currency=KRW', { method: 'GET' }, true);
             if (bpResp.ok) {
               const bpData = await bpResp.json();
               availableCash = parseInt(bpData.result?.cashBuyingPower || '0', 10);
             } else {
-              console.warn('[Toss] buying-power 조회 실패:', bpResp.status, await bpResp.text());
+              console.warn('[Toss] buying-power(KRW) 조회 실패:', bpResp.status, await bpResp.text());
+            }
+
+            const bpUsdResp = await this.fetchWithAuth('/api/v1/buying-power?currency=USD', { method: 'GET' }, true);
+            if (bpUsdResp.ok) {
+              const bpUsdData = await bpUsdResp.json();
+              availableUsd = parseFloat(bpUsdData.result?.cashBuyingPower || '0');
             }
           } catch (e) {
             console.warn('[Toss] buying-power 호출 오류:', e.message);
@@ -706,11 +713,18 @@ export class TossClient {
           const finalCash = availableCash !== null ? availableCash : (this._balanceCache?.availableCash || 0);
           const finalEval = stockEvalAmount !== null ? stockEvalAmount : (this._balanceCache?.stockEvalAmount || 0);
           const finalHoldings = holdings !== null ? holdings : (this._balanceCache?.holdings || []);
-          const totalAssetAmount = finalCash + finalEval;
+          const finalUsd = availableUsd !== null ? availableUsd : (this._balanceCache?.availableUsd ?? 0.0);
+          const availableUsdKrw = Math.floor(finalUsd * usdRate);
+          const totalCashKrw = finalCash + availableUsdKrw;
+          const totalAssetAmount = totalCashKrw + finalEval;
           const totalProfitKrw = finalEval - totalPurchaseAmount;
 
           const resObj = {
             availableCash: finalCash,
+            availableUsd: finalUsd,
+            availableUsdKrw,
+            totalCashKrw,
+            usdRate,
             stockEvalAmount: finalEval,
             totalAssetAmount,
             totalProfitKrw,

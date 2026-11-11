@@ -24,6 +24,8 @@ export class MarketController {
       },
       virtual: virtualSummary,
       availableCash: tossBalance.availableCash,
+      availableUsd: tossBalance.availableUsd,
+      totalCashKrw: tossBalance.totalCashKrw,
       operatingBudget,
       stockEvalAmount: tossBalance.stockEvalAmount,
       totalAssetAmount: tossBalance.totalAssetAmount,

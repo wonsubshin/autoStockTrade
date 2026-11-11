@@ -6,17 +6,21 @@ export const virtualEngine = new VirtualPaperTradingEngine(getDb, kiwoomClient);
 
 export class BotService {
   /**
-   * 토스증권 실제 주문가능 예수금(availableCash)의 90%를 계산하여
+   * 토스증권 실제 주문가능 예수금(원화 availableCash + 달러 availableUsd 원화 환산액)의 90%를 계산하여
    * 총 실전 운영원금(real_total_budget)으로 자동 설정하고,
    * 실전 선택된 봇들에게 설정된 비율(real_allocation_ratio)대로 실시간 분배
    * @param {Object} db DB 인스턴스 (선택)
-   * @param {Object} tossBal 토스 잔고 객체 ({ availableCash, ... })
+   * @param {Object} tossBal 토스 잔고 객체 ({ availableCash, availableUsd, ... })
    * @returns {number} 동적 산출된 총 실전 운영원금
    */
   static syncDynamicRealBudget(db = getDb(), tossBal = null) {
     if (!db || !tossBal) return 0;
     const availableCash = Number(tossBal.availableCash || 0);
-    const dynamicBudget = Math.floor(availableCash * 0.90);
+    const availableUsd = Number(tossBal.availableUsd || 0);
+    const usdRate = Number(tossBal.usdRate || 1345);
+    const availableUsdKrw = tossBal.availableUsdKrw !== undefined ? Number(tossBal.availableUsdKrw) : Math.floor(availableUsd * usdRate);
+    const totalCash = availableCash + availableUsdKrw;
+    const dynamicBudget = Math.floor(totalCash * 0.90);
     const nowIso = new Date().toISOString();
 
     try {
@@ -37,7 +41,9 @@ export class BotService {
 
           const openAmt = db.prepare(`
             SELECT COALESCE(SUM(buy_amount), 0) as amt
-            FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+            FROM bot_positions
+            WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+              AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
           `).get(b.bot_id)?.amt || 0;
 
           const availKrw = Math.max(0, allocatedCap - Number(openAmt));
@@ -115,8 +121,8 @@ export class BotService {
       `).get(bot.bot_id);
 
       const ratio = bot.allocation_ratio || (Number(bot.real_allocation_ratio) / 100) || 0.1;
-      const realAllocated = bot.real_allocated_capital || Math.floor(realTotal * (Number(bot.real_allocation_ratio || 33.3) / 100));
-      const virtualAllocated = bot.virtual_initial_capital || 1000000;
+      const realAllocated = Math.round(Number(bot.real_allocated_capital || Math.floor(realTotal * (Number(bot.real_allocation_ratio || 33.3) / 100))));
+      const virtualAllocated = Math.round(Number(bot.virtual_initial_capital || 1000000));
 
       return {
         ...bot,
@@ -134,6 +140,7 @@ export class BotService {
         real_trade_count: Number(rStats.total_trades),
         real_open_count: Number(rOpen.open_count || 0),
         real_allocated_capital: realAllocated,
+        real_available_krw: Math.round(Number(bot.real_available_krw || 0)),
         virtual_allocated_capital: virtualAllocated,
         allocated_capital: bot.is_real_selected === 1 ? realAllocated : virtualAllocated,
       };
@@ -145,25 +152,25 @@ export class BotService {
     return db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
   }
 
-  // 3개 실전 담당 봇 선택 확정 (정확히 3개 필수)
+  // 1~3개 실전 담당 봇 선택 확정
   // - 유지된 봇: 기존 실전 거래정보/미매도 포지션/투자 비율을 그대로 보유
   // - 교체된 봇: 해제되는 기존 봇의 실전 거래정보(거래내역 + 미매도 포지션)와 투자 비율을
   //   신규 봇이 1:1로 승계하여 이어서 매매 (해제 봇 순서 ↔ 신규 봇 선택 순서로 매칭)
   static async selectRealTradingBots(selectedBotIds) {
-    if (!Array.isArray(selectedBotIds) || selectedBotIds.length !== 3) {
-      throw new Error('실전 거래 담당 봇은 정확히 3개를 선택해야 합니다.');
+    if (!Array.isArray(selectedBotIds) || selectedBotIds.length < 1 || selectedBotIds.length > 3) {
+      throw new Error('실전 거래 담당 봇은 1개에서 최대 3개까지 선택해야 합니다.');
     }
     if (new Set(selectedBotIds).size !== selectedBotIds.length) {
-      throw new Error('실전 거래 담당 봇은 서로 다른 3개를 선택해야 합니다.');
+      throw new Error('실전 거래 담당 봇은 서로 다른 봇을 선택해야 합니다.');
     }
 
     const db = getDb();
 
-    // 토스 실시간 주문가능 예수금의 90%를 총 실전 운영원금으로 동적 산출
+    // 토스 실시간 주문가능 예수금(원화 + 달러 환산)의 90%를 총 실전 운영원금으로 동적 산출
     let dynamicBudget = 0;
     try {
       const tossBal = await tossClient.getAccountBalance();
-      dynamicBudget = Math.floor(Number(tossBal?.availableCash || 0) * 0.90);
+      dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
     } catch (e) {}
 
     const settingRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
@@ -253,11 +260,18 @@ export class BotService {
       }
       const totalRatio = [...ratioMap.values()].reduce((a, b) => a + b, 0);
       if (Math.abs(totalRatio - 100) > 0.5) {
-        // 합계가 100%가 아니면 기존 균등 배분으로 복구
-        selectedBotIds.forEach((id, idx) => ratioMap.set(id, idx === 2 ? 33.4 : 33.3));
+        // 합계가 100%가 아니면 선택된 봇 개수에 맞춰 균등 배분으로 복구
+        const count = selectedBotIds.length;
+        let acc = 0;
+        selectedBotIds.forEach((id, idx) => {
+          const r = idx === count - 1 ? Number((100 - acc).toFixed(1)) : Number((100 / count).toFixed(1));
+          acc += r;
+          ratioMap.set(id, r);
+        });
       }
 
       // 3) 미선택 봇은 실전 담당 해제
+      const notInPlaceholders = selectedBotIds.map(() => '?').join(', ');
       db.prepare(`
         UPDATE bots
         SET is_real_selected = 0,
@@ -267,7 +281,7 @@ export class BotService {
             real_available_krw = 0,
             real_status_msg = '가상 아레나 전용 (실전 미선택)',
             updated_at = ?
-        WHERE bot_id NOT IN (?, ?, ?)
+        WHERE bot_id NOT IN (${notInPlaceholders})
       `).run(nowIso, ...selectedBotIds);
 
       // 4) 선택 봇 실전 지정 (승계된 포지션 반영 후 가용 자금 재계산)
@@ -277,7 +291,9 @@ export class BotService {
 
         const openReal = db.prepare(`
           SELECT COALESCE(SUM(buy_amount), 0) as amt
-          FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+          FROM bot_positions
+          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+            AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
         `).get(botId)?.amt || 0;
 
         const available = Math.max(0, allocated - Number(openReal));
@@ -322,10 +338,10 @@ export class BotService {
     }
   }
 
-  // 환경설정에서 선택된 3개 실전 봇의 동적 투자금 비율(%) 및 총 예산 저장
+  // 환경설정에서 선택된 1~3개 실전 봇의 동적 투자금 비율(%) 및 총 예산 저장
   static async updateRealBudgetAllocations(realTotalBudget, allocations) {
-    if (!Array.isArray(allocations) || allocations.length !== 3) {
-      throw new Error('실전 거래 담당 봇 3개의 비율을 모두 설정해야 합니다.');
+    if (!Array.isArray(allocations) || allocations.length < 1 || allocations.length > 3) {
+      throw new Error('실전 거래 담당 봇(1~3개)의 비율을 설정해야 합니다.');
     }
 
     const sum = allocations.reduce((acc, cur) => acc + Number(cur.ratio || 0), 0);
@@ -335,11 +351,11 @@ export class BotService {
 
     const db = getDb();
 
-    // 토스 실시간 주문가능 예수금의 90%를 총 실전 운영원금으로 동적 산출
+    // 토스 실시간 주문가능 예수금(원화 + 달러 환산)의 90%를 총 실전 운영원금으로 동적 산출
     let dynamicBudget = 0;
     try {
       const tossBal = await tossClient.getAccountBalance();
-      dynamicBudget = Math.floor(Number(tossBal?.availableCash || 0) * 0.90);
+      dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
     } catch (e) {}
 
     const targetBudget = dynamicBudget > 0 ? dynamicBudget : (Number(realTotalBudget) || 10000000);
@@ -359,7 +375,9 @@ export class BotService {
 
         const openReal = db.prepare(`
           SELECT COALESCE(SUM(buy_amount), 0) as amt
-          FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+          FROM bot_positions
+          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+            AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
         `).get(item.bot_id)?.amt || 0;
 
         const available = Math.max(0, allocated - Number(openReal));
