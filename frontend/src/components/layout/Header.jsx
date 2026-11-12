@@ -8,6 +8,7 @@ export default function Header({
 }) {
   const marketStatus = healthData?.marketStatus;
   const regime = healthData?.marketRegime;
+  const appVersion = healthData?.version || (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.7');
 
   const [remainingSessionStr, setRemainingSessionStr] = React.useState('자정(00:00) 만료');
   const [mobileStatusOpen, setMobileStatusOpen] = React.useState(false);
@@ -46,7 +47,12 @@ export default function Header({
         <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
           <div className="brand-icon">📈</div>
           <div>
-            <div className="brand-title">Kiwoom ⨉ Toss</div>
+            <div className="brand-title" style={{ display: 'flex', alignItems: 'center', gap: '6px' }}>
+              <span>Kiwoom ⨉ Toss</span>
+              <span className="brand-version-badge" title="시스템 버전">
+                v{appVersion}
+              </span>
+            </div>
             <div className="brand-subtitle">AI Quant Trader</div>
           </div>
         </div>
@@ -156,7 +162,10 @@ export default function Header({
 
       {/* Sidebar Footer */}
       <div className={`sidebar-footer ${mobileStatusOpen ? 'mobile-open' : ''}`}>
-        <div>PostgreSQL: {healthData?.pgConnected ? '🟢 동기화 정상' : '🟡 대기/로컬모드'}</div>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+          <span>PostgreSQL: {healthData?.pgConnected ? '🟢 정상' : '🟡 대기/로컬'}</span>
+          <span style={{ fontSize: '10px', color: '#38bdf8', fontWeight: 600 }}>v{appVersion}</span>
+        </div>
         <div>Database: PostgreSQL 16</div>
         <div style={{ color: '#38bdf8', marginTop: '4px', fontSize: '10.5px' }}>
           ⏱️ 인증 만료: {remainingSessionStr}

@@ -1,6 +1,7 @@
 import React, { useState } from 'react';
 
 export default function SettingsPanel({
+  appVersion,
   accountBalance,
   budgetSettings,
   setBudgetSettings,
@@ -848,6 +849,37 @@ export default function SettingsPanel({
             📤 JSON 백업 파일 복원 (Import)
             <input type="file" accept=".json" style={{ display: 'none' }} onChange={onImportBackup} />
           </label>
+        </div>
+      </div>
+
+      {/* 6. System Version & History Info */}
+      <div className="board-card">
+        <div className="card-title-row">
+          <div className="card-title">🏷️ 시스템 버전 및 릴리즈 정보</div>
+          <span className="app-footer-badge" style={{ borderColor: 'rgba(56, 189, 248, 0.4)', color: '#38bdf8', padding: '4px 10px', fontSize: '12px' }}>
+            v{appVersion || '0.0.7'}
+          </span>
+        </div>
+        <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '14px', lineHeight: 1.5 }}>
+          autoStockTrader는 Git 커밋 1건당 버전이 0.0.X 형태로 1씩 증가하는 체계를 엄격히 유지합니다.
+        </p>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '12px', background: 'rgba(0,0,0,0.25)', padding: '14px', borderRadius: '8px' }}>
+          <div>
+            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>CURRENT VERSION</div>
+            <div style={{ fontSize: '15px', color: '#38bdf8', fontWeight: 700, marginTop: '2px' }}>v{appVersion || '0.0.7'}</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>VERSION RULE</div>
+            <div style={{ fontSize: '13px', color: '#e2e8f0', fontWeight: 600, marginTop: '2px' }}>0.0.X (Git Commit +1)</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>CHANGELOG FILE</div>
+            <div style={{ fontSize: '13px', color: '#a78bfa', fontWeight: 600, marginTop: '2px' }}>history.md</div>
+          </div>
+          <div>
+            <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>LICENSE</div>
+            <div style={{ fontSize: '13px', color: '#34d399', fontWeight: 600, marginTop: '2px' }}>Apache-2.0</div>
+          </div>
         </div>
       </div>
     </div>

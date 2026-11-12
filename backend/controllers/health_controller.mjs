@@ -1,6 +1,7 @@
 import { MarketService } from '../services/market_service.mjs';
 import { getDb } from '../db/index.mjs';
 import { sendJson, sendError, parseJsonBody } from '../routes/router_helpers.mjs';
+import { APP_VERSION } from '../config/version.mjs';
 
 export class HealthController {
   static async getHealth(req, res) {
@@ -10,6 +11,7 @@ export class HealthController {
 
     return sendJson(res, 200, {
       ok: true,
+      version: APP_VERSION,
       service: 'autoStockTrader',
       architecture: '국내(키움 실시간 시세) · 미국(토스 실시간 시세) ⨉ Gemini LLM ⨉ Python/토스(소수점 매매)',
       hybridModel: {

@@ -96,7 +96,11 @@ console.log('  -> 백엔드 코어 및 Python 토스 주문 브릿지 복사 완
 // 프론트엔드 정적 파일 복사
 const distSrc = path.join(PROJECT_ROOT, 'frontend', 'dist');
 if (fs.existsSync(distSrc)) {
-  copyDirRecursive(distSrc, path.join(INSTALL_DIR, 'app', 'frontend_dist'));
+  const targetDist = path.join(INSTALL_DIR, 'app', 'frontend_dist');
+  if (fs.existsSync(targetDist)) {
+    fs.rmSync(targetDist, { recursive: true, force: true });
+  }
+  copyDirRecursive(distSrc, targetDist);
   console.log('  -> 프론트엔드 정적 빌드(frontend_dist/) 복사 완료');
 }
 
@@ -124,11 +128,33 @@ copyDirRecursive(
   ['__pycache__', 'installer_templates', 'build_installer.mjs']
 );
 
-// package.json 복사
+// package.json 및 메타데이터(version.json, history.md, LICENSE) 복사
 fs.copyFileSync(
   path.join(PROJECT_ROOT, 'package.json'),
   path.join(INSTALL_DIR, 'app', 'package.json')
 );
+if (fs.existsSync(path.join(PROJECT_ROOT, 'version.json'))) {
+  fs.copyFileSync(
+    path.join(PROJECT_ROOT, 'version.json'),
+    path.join(INSTALL_DIR, 'app', 'version.json')
+  );
+}
+if (fs.existsSync(path.join(PROJECT_ROOT, 'history.md'))) {
+  fs.copyFileSync(
+    path.join(PROJECT_ROOT, 'history.md'),
+    path.join(INSTALL_DIR, 'app', 'history.md')
+  );
+  fs.copyFileSync(
+    path.join(PROJECT_ROOT, 'history.md'),
+    path.join(INSTALL_DIR, 'history.md')
+  );
+}
+if (fs.existsSync(path.join(PROJECT_ROOT, 'LICENSE'))) {
+  fs.copyFileSync(
+    path.join(PROJECT_ROOT, 'LICENSE'),
+    path.join(INSTALL_DIR, 'LICENSE')
+  );
+}
 if (fs.existsSync(path.join(PROJECT_ROOT, 'package-lock.json'))) {
   fs.copyFileSync(
     path.join(PROJECT_ROOT, 'package-lock.json'),

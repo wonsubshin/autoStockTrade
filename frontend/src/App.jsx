@@ -1358,6 +1358,7 @@ export default function App() {
             ======================================================== */}
         {activeMenu === 'SETTINGS' && (
           <SettingsPanel
+            appVersion={healthData?.version || (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.7')}
             accountBalance={accountBalance}
             budgetSettings={budgetSettings}
             setBudgetSettings={setBudgetSettings}
@@ -1380,9 +1381,12 @@ export default function App() {
           />
         )}
 
-        {/* 4.3 푸터: Apache 2.0 라이선스 배지 및 투자 손실 법적 면책 조항 */}
+        {/* 4.3 푸터: 버전, Apache 2.0 라이선스 배지 및 투자 손실 법적 면책 조항 */}
         <footer className="app-footer">
           <div className="app-footer-top">
+            <span className="app-footer-badge" style={{ borderColor: 'rgba(56, 189, 248, 0.4)', color: '#38bdf8' }}>
+              v{healthData?.version || (typeof __APP_VERSION__ !== 'undefined' ? __APP_VERSION__ : '0.0.7')}
+            </span>
             <span className="app-footer-badge">
               License: Apache-2.0
             </span>
