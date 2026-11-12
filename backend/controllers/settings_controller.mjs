@@ -16,7 +16,10 @@ export class SettingsController {
       settingsMap.purchase_priority = JSON.stringify(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
     }
     if (!settingsMap.gate_passcode) {
-      settingsMap.gate_passcode = 'coin';
+      settingsMap.gate_passcode = process.env.GATE_PASSCODE || 'sws@2129';
+    }
+    if (!settingsMap.virtual_fast_cycle_mode) {
+      settingsMap.virtual_fast_cycle_mode = '0';
     }
 
     let tunnelUrl = process.env.PUBLIC_URL || '';

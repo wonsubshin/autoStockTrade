@@ -276,6 +276,41 @@ export class TossClient {
     return this.cachedExchangeRate || 1340;
   }
 
+  // 1.1 미국 소수점 최소 주문 단위($10) 상당의 실시간 동적 원화 최소 예산 반환
+  async getMinFractionalOrderBudgetKrw() {
+    const rate = await this.getExchangeRate();
+    return Math.ceil(rate * 10);
+  }
+
+  // 1.3 평일 주간 정규장(09:00~15:30) 사전 수동 환전 권장 여부 판별
+  checkDaytimeExchangeRecommendation(availableUsd, availableCash) {
+    const now = new Date();
+    const utcHours = now.getUTCHours();
+    const utcMinutes = now.getUTCMinutes();
+    const kstMinutes = (utcHours * 60 + utcMinutes + 9 * 60) % (24 * 60);
+    const day = (now.getUTCDay() + (utcHours + 9 >= 24 ? 1 : 0)) % 7; // 0=Sun, 6=Sat
+
+    const isWeekday = day >= 1 && day <= 5;
+    const isDaytimeRegular = isWeekday && kstMinutes >= 9 * 60 && kstMinutes <= 15 * 60 + 30;
+
+    const usd = Number(availableUsd || 0);
+    const krw = Number(availableCash || 0);
+    const isRecommended = isDaytimeRegular && usd < 50 && krw >= 10000;
+
+    return {
+      isRecommended,
+      isDaytimeRegular,
+      availableUsd: usd,
+      availableCash: krw,
+      discountDaytime: '95% 우대',
+      discountNight: '50% 우대',
+      nightBufferNotice: '야간 원화 자동 환전 시 50% 우대 및 시장가 주문 ±3% 여유금 환전 발생',
+      message: isRecommended
+        ? `💡 [주간 사전 환전 권장] 평일 정규장 시간(09:00~15:30)에는 토스증권 95% 환율 우대가 적용됩니다. 야간 미국장 원화 자동 환전(50% 우대 및 ±3% 여유금 발생) 전, 토스 앱에서 미리 달러(USD)로 환전해두시면 수수료를 대폭 절감할 수 있습니다. (현재 보유 외화: $${usd.toFixed(2)})`
+        : null,
+    };
+  }
+
   // 4. 토스증권 API 통신 및 인증 상태 확인
   async getApiHealth() {
     const config = this.loadConfig();
@@ -719,6 +754,8 @@ export class TossClient {
           const totalAssetAmount = totalCashKrw + finalEval;
           const totalProfitKrw = finalEval - totalPurchaseAmount;
 
+          const daytimeExchange = this.checkDaytimeExchangeRecommendation(finalUsd, finalCash);
+
           const resObj = {
             availableCash: finalCash,
             availableUsd: finalUsd,
@@ -734,6 +771,7 @@ export class TossClient {
             accountSeq,
             provider: '토스증권(실전)',
             isMock: false,
+            daytimeExchange,
           };
           this._balanceCache = resObj;
           this._balanceCacheTime = Date.now();
@@ -749,6 +787,10 @@ export class TossClient {
       // API 키 미설정 시의 기본 반환
       const fallbackObj = {
         availableCash: 0,
+        availableUsd: 0,
+        availableUsdKrw: 0,
+        totalCashKrw: 0,
+        usdRate: 1345,
         stockEvalAmount: 0,
         totalAssetAmount: 0,
         totalProfitKrw: 0,
@@ -756,6 +798,7 @@ export class TossClient {
         holdings: [],
         provider: '토스증권(미연결)',
         isMock: true,
+        daytimeExchange: this.checkDaytimeExchangeRecommendation(0, 0),
       };
       this._balanceCache = fallbackObj;
       this._balanceCacheTime = Date.now();

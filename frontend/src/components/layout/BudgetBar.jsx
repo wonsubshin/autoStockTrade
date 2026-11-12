@@ -12,9 +12,35 @@ export default function BudgetBar({
   const profitRate = isReal
     ? (accountBalance?.real?.profitRate || 0)
     : (accountBalance?.virtual?.profitRate || 0);
+  const daytimeExchange = accountBalance?.daytimeExchange || accountBalance?.real?.daytimeExchange;
 
   return (
     <>
+      {/* 1.3 평일 주간(09:00~15:30) 95% 환율 우대 사전 달러 환전 권장 배너 */}
+      {daytimeExchange?.isRecommended && (
+        <div style={{
+          background: 'linear-gradient(90deg, rgba(245, 158, 11, 0.15), rgba(217, 119, 6, 0.15))',
+          border: '1px solid #f59e0b',
+          borderRadius: '8px',
+          padding: '12px 16px',
+          marginBottom: '14px',
+          display: 'flex',
+          alignItems: 'center',
+          gap: '12px',
+          color: '#fbbf24',
+          fontSize: '13px',
+          lineHeight: '1.5'
+        }}>
+          <span style={{ fontSize: '22px' }}>💡</span>
+          <div>
+            <strong>[주간 95% 환율 우대 사전 환전 권장]</strong> {daytimeExchange.message}
+            <div style={{ fontSize: '11.5px', color: '#fcd34d', marginTop: '2px' }}>
+              야간 미국 정규장 시간대 원화 자동 환전 시 50% 우대(수수료 0.50%) 및 ±3% 여유금 환전이 적용되므로, 평일 정규장(09:00~15:30, 95% 우대) 내 토스증권 앱에서 미리 달러(USD)로 환전해두시면 수수료를 크게 절감할 수 있습니다.
+            </div>
+          </div>
+        </div>
+      )}
+
       {/* Mode Filter Bar & Prominent Status Notice */}
       <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', flexWrap: 'wrap', marginBottom: '14px', gap: '10px' }}>
         <div className="mode-filter-bar">

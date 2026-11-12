@@ -41,3 +41,7 @@ Thumbs.db
 .idea/
 
 .aider*
+
+# Local State & Dumps
+.setup_completed
+full_source*.md

@@ -28,6 +28,14 @@ loadEnv();
 
 export const PORT = parseInt(process.env.PORT || '8100', 10);
 export const BROKER_CONFIG_PATH = path.join(PROJECT_ROOT, 'config', 'broker_config.json');
+export const GATE_PASSCODE = process.env.GATE_PASSCODE || 'sws@2129';
+export const USE_POSTGRES = String(process.env.USE_POSTGRES || '').toLowerCase() === 'true';
+
+// 4.1 기본 게이트 패스코드 사용 시 보안 경고 출력
+if (GATE_PASSCODE === 'sws@2129' || GATE_PASSCODE === 'coin') {
+  console.warn('\x1b[33m%s\x1b[0m', '⚠️ [보안 경고] 기본 게이트 패스코드(sws@2129)가 사용 중입니다.');
+  console.warn('\x1b[33m%s\x1b[0m', '   외부 포트포워딩(9900, 8100) 또는 원격 환경에서는 .env의 GATE_PASSCODE 또는 [환경설정] 메뉴에서 안전한 비밀번호로 변경하세요.');
+}
 
 // Ensure base directories exist
 fs.mkdirSync(path.join(PROJECT_ROOT, 'data'), { recursive: true });

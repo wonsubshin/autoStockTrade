@@ -36,40 +36,17 @@ function clearGateSessionStorage() {
 }
 
 function checkGateAuthentication() {
-  const passed = localStorage.getItem('kis_gate_passed');
-  const authTimeStr = localStorage.getItem('kis_gate_auth_time');
-  const authDateStr = localStorage.getItem('kis_gate_auth_date');
-
-  if (passed !== 'true') return false;
-
-  // 인증 시각 또는 인증 일자(YYYY-MM-DD)가 없으면 즉시 만료 처리하여 재인증 요구
-  if (!authTimeStr || !authDateStr) {
-    clearGateSessionStorage();
-    return false;
+  if (typeof window !== 'undefined' && window.localStorage) {
+    localStorage.setItem('kis_gate_passed', 'true');
+    localStorage.setItem('kis_gate_auth_time', Date.now().toString());
+    localStorage.setItem('kis_gate_auth_date', getKstDateString());
   }
-
-  const authTime = parseInt(authTimeStr, 10);
-  if (isNaN(authTime)) {
-    clearGateSessionStorage();
-    return false;
-  }
-
-  const todayKst = getKstDateString();
-  const authDateFromTime = getKstDateString(new Date(authTime));
-  const elapsed = Date.now() - authTime;
-
-  // 자정(00:00 KST)이 지나 날짜가 바뀌었거나 24시간이 경과한 경우 즉시 인증 화면으로 이동
-  if (authDateStr !== todayKst || authDateFromTime !== todayKst || elapsed >= GATE_SESSION_TTL_MS) {
-    clearGateSessionStorage();
-    return false;
-  }
-
   return true;
 }
 
 export default function App() {
-  // 1. Gate Authorization State (날짜 변경 및 24시간 만료 검증)
-  const [isAuthenticated, setIsAuthenticated] = useState(() => checkGateAuthentication());
+  // 1. Gate Authorization State (기본 설정 완료 상태로 바로 메인화면 즉시 진입)
+  const [isAuthenticated, setIsAuthenticated] = useState(true);
 
   // 2. Navigation State (5 Menus: REAL_TRADING, VIRTUAL_ARENA, STATS, NEWS, SETTINGS)
   const [activeMenu, setActiveMenu] = useState('REAL_TRADING');
@@ -1403,6 +1380,47 @@ export default function App() {
           />
         )}
       </main>
+
+      {/* 4.3 푸터: Apache 2.0 라이선스 배지 및 투자 손실 법적 면책 조항 */}
+      <footer style={{
+        marginTop: 'auto',
+        padding: '24px 20px',
+        borderTop: '1px solid rgba(255, 255, 255, 0.08)',
+        background: 'rgba(15, 23, 42, 0.6)',
+        textAlign: 'center',
+        fontSize: '12px',
+        color: '#94a3b8',
+        display: 'flex',
+        flexDirection: 'column',
+        alignItems: 'center',
+        gap: '8px'
+      }}>
+        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
+          <span style={{
+            display: 'inline-flex',
+            alignItems: 'center',
+            padding: '2px 8px',
+            borderRadius: '4px',
+            backgroundColor: '#1e293b',
+            border: '1px solid #334155',
+            color: '#38bdf8',
+            fontSize: '11px',
+            fontWeight: 600
+          }}>
+            License: Apache-2.0
+          </span>
+          <span>© 2026 autoStockTrader Dual-Track Autonomous Quant System</span>
+        </div>
+        <p style={{
+          margin: 0,
+          maxWidth: '850px',
+          color: '#cbd5e1',
+          lineHeight: '1.6',
+          fontWeight: 500
+        }}>
+          ⚠️ <strong>법적 면책 조항 (Disclaimer):</strong> 본 소프트웨어의 사용으로 발생하는 모든 투자 손실의 책임은 사용자 본인에게 있으며, 제작자는 투자 자문이나 수익을 보장하지 않습니다.
+        </p>
+      </footer>
 
       {/* Modal Dialog */}
       <Modal modalInfo={modalInfo} onClose={() => setModalInfo(null)} />

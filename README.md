@@ -6,6 +6,72 @@
 
 ---
 
+## 🚀 0. [비개발자용] 크로스 플랫폼(Windows / Linux) 원클릭 배포 패키지 (`/install`)
+
+비개발자(일반 사용자)도 복잡한 빌드나 명령어 입력 없이 **`/install` 폴더 하나만 전달받으면 Windows와 Linux 어디서든 더블클릭 한 번으로 즉시 구동**할 수 있습니다.
+
+```text
+autoStockTrader/
+└── install/                                  # [완전 독립형 배포 패키지] 이 폴더만 압축해서 전달하면 즉시 구동 가능
+    ├── AutoStockTrader_Windows_Run.bat       # Windows 원클릭 설치 & 실행 런처 (더블클릭 실행)
+    ├── AutoStockTrader_Windows_Stop.bat      # Windows 서비스 일괄 종료 스크립트
+    ├── AutoStockTrader_Linux_Run.sh          # Linux 원클릭 설치 & 실행 런처 (바탕화면 아이콘 자동 생성)
+    ├── AutoStockTrader_Linux_Stop.sh         # Linux 서비스 일괄 종료 스크립트
+    ├── setup_wizard/                         # 최초 실행 시 자동으로 뜨는 Step-by-Step 설정 마법사
+    │   ├── wizard_server.mjs                 # 마법사 전용 경량 백엔드 (포트 9901)
+    │   └── wizard_ui.html                    # 반응형 다크 테마 온보딩 인터페이스
+    ├── app/                                  # 자급자족(Self-Contained) 코어 애플리케이션
+    │   ├── backend/                          # 백엔드 엔진 & Python 토스 주문 브릿지
+    │   ├── frontend_dist/                    # 사전 빌드된 React 웹 대시보드 (9900 포트)
+    │   ├── frontend_server.mjs               # Node.js 내장 정적 서빙 & 리버스 프록시 서버
+    │   ├── config/                           # broker_config.json 저장 위치
+    │   ├── data/                             # 내장 SQLite DB(auto_stock_trade.db) 저장 위치
+    │   ├── logs/                             # 실행 로그 저장 위치
+    │   └── node_modules/                     # 필수 런타임 의존성 번들링
+    └── README_INSTALL.txt                    # 비개발자용 1분 요약 안내서
+```
+
+### 📋 1) 사전 준비 사항
+1. **Node.js 런타임 (v20 이상 설치 권장, v22 LTS 추천)**
+   - [공식 다운로드 링크 (https://nodejs.org)](https://nodejs.org)
+   - 설치 프로그램(MSI/PKG/RPM)을 기본값으로 설치합니다.
+2. **Python 3.12 (또는 Python 3.10 이상)**
+   - [공식 다운로드 링크 (https://www.python.org/downloads)](https://www.python.org/downloads/)
+   - ⚠️ **Windows 사용자 필수 주의**: 설치 첫 화면 하단의 **`Add python.exe to PATH`** 체크박스를 반드시 선택하고 설치하세요.
+3. **증권사 및 AI API 키 발급처 (마법사 또는 대시보드 환경설정에서 등록)**
+   - **키움증권 Open API (국내 실시간 시세/호가용)**: [키움 Open API 서비스 포털](https://openapi.kiwoom.com) (미보유 시 시뮬레이션 호가 모드로 즉시 체험 가능)
+   - **토스증권 Open API (국내/미국 실전 주문 및 잔고용)**: [토스 개발자 센터](https://openapi.tossinvest.com)
+   - **Google Gemini API Key (뉴스 감성 분석 & 퀀트 리스크 제어용)**: [Google AI Studio (무료 발급)](https://aistudio.google.com)
+
+### 🖥️ 2) 운영체제별 원클릭 실행 방법
+- **Windows 환경**:
+  1. `/install` 폴더 내의 `AutoStockTrader_Windows_Run.bat` 파일을 더블클릭합니다.
+  2. 최초 실행 시 웹 브라우저에 **Step-by-Step 설정 마법사 창(http://127.0.0.1:9901)**이 자동으로 뜹니다.
+  3. 설정 완료 시 백엔드(8100)와 프론트엔드(9900)가 자동 기동되며 메인 대시보드로 이동합니다.
+- **Linux 환경**:
+  1. 터미널에서 `./AutoStockTrader_Linux_Run.sh`를 실행하거나 바탕화면에 자동 생성된 `AutoStockTrader` 아이콘을 더블클릭합니다.
+  2. 브라우저에서 마법사를 완료하면 자동으로 `http://127.0.0.1:9900` 대시보드로 연결됩니다.
+
+### 🗄️ 3) 데이터베이스(DB) 선택 기준 (마법사 2단계)
+- 🟢 **`[DB 서버 없음 (추천 · 기본값)] - 내장 SQLite 사용`**:
+  - 별도의 데이터베이스 서버가 없어도 PC 내부 파일(`data/auto_stock_trade.db`, WAL 초고속 모드)로 모든 거래 내역과 10대 퀀트 봇 데이터를 안전하게 보관합니다.
+  - 외부 DB 설치 및 비밀번호 관리 부담이 없어 **일반 사용자에게 강력히 권장**합니다.
+- 🔵 **`[DB 서버 있음 (고급)] - 외부/로컬 PostgreSQL 16 서버 연동`**:
+  - 이미 PostgreSQL 데이터베이스를 보유 중인 경우 호스트, 포트, 계정을 입력하고 `[🔌 접속 테스트 및 테이블 자동 생성]`을 클릭하면 8개 핵심 테이블과 시드 데이터를 자동 생성하고 실시간 이중 백업을 수행합니다.
+
+### 🪄 4) Step-by-Step 초기 설정 마법사 단계 안내
+- **[Step 1] 환경 점검**: OS 사양, Node.js v20+, Python 3.12+, 포트 8100/9900 가용성 자동 진단
+- **[Step 2] DB 선택**: 내장 SQLite (권장) 또는 외부 PostgreSQL 16 분기 선택
+- **[Step 3] API 키 연동**: 키움증권, 토스증권, Gemini AI 키 입력 (시뮬레이션 모드 지원)
+- **[Step 4] 보안 & 예산**: 대시보드 입장 패스코드 (기본값: `coin`), 실전 예산 (기본 1천만원), 10대 봇 가상 시드 설정
+- **[Step 5] 원클릭 기동**: 설정 파일 자동 생성, DB 스키마 주입, 백엔드/프론트엔드 백그라운드 자동 기동 및 메인 화면 자동 이동
+
+### 🛑 5) 서비스 종료 방법
+- **Windows**: `AutoStockTrader_Windows_Stop.bat` 더블클릭
+- **Linux**: `./AutoStockTrader_Linux_Stop.sh` 실행
+
+---
+
 ## 1. 주요 특징 및 핵심 아키텍처
 
 - **하이브리드 증권사 분리 연동 아키텍처 (Kiwoom Quotes ⨉ Toss Trading)**
@@ -95,20 +161,28 @@ autoStockTrader/
 ```
 - 백엔드 (`http://127.0.0.1:8100`) 및 프론트엔드 (`http://127.0.0.1:9900`)가 백그라운드로 구동되고 헬스체크가 수행됩니다.
 - 사내 LAN: `http://<내부IP>:9900`
-- 게이트 입장 코드: `coin` (환경설정에서 변경 가능)
+- 게이트 입장 코드: `sws@2129` (환경변수 `GATE_PASSCODE` 또는 환경설정에서 변경 가능)
 
 ### 2) 서비스 종료
 ```bash
 ./stop_services.sh
 ```
 
-### 3) PostgreSQL 16 설정 및 관리
+### 3) Docker 원클릭 구동 (SQLite 모드 & 듀얼 컨테이너)
+```bash
+# 루트 디렉터리 또는 install 디렉터리에서 즉시 실행
+docker compose up -d
+```
+- 백엔드 (`http://127.0.0.1:8100`)와 프로덕션 정적 프론트엔드 (`http://127.0.0.1:9900`)가 격리된 컨테이너 환경에서 즉시 실행됩니다.
+- 데이터베이스(`data/`), 실행 로그(`logs/`), 설정 파일(`config/`)이 볼륨으로 호스트에 영구 보존됩니다.
+
+### 4) PostgreSQL 16 설정 및 관리 (선택 사항)
 ```bash
 # PostgreSQL DB 및 사용자 생성 (필요 시 root/sudo 권한으로 실행)
 sudo ./scripts/setup_postgresql.sh
 ```
 
-### 4) 외부 접속 (Cloudflare Quick Tunnel)
+### 5) 외부 접속 (Cloudflare Quick Tunnel)
 ```bash
 # 터널 시작
 ./start_tunnel.sh
@@ -117,7 +191,7 @@ sudo ./scripts/setup_postgresql.sh
 ./stop_tunnel.sh
 ```
 - 발급된 보안 HTTPS 주소(`https://*.trycloudflare.com`)를 통해 외부 모바일, 태블릿, 외부 PC 어디서나 포트포워딩 없이 안전하게 접속할 수 있습니다.
-- 백엔드 API (`/api/*`)와 게이트 보안(`coin`)이 그대로 연동됩니다.
+- 백엔드 API (`/api/*`)와 게이트 보안(`sws@2129`)이 그대로 연동됩니다.
 
 ---
 
@@ -126,3 +200,14 @@ sudo ./scripts/setup_postgresql.sh
 - 키움증권 및 토스증권 API Key, Secret, 계좌번호 및 Gemini API 키 등 모든 민감 정보는 `.env` 및 `config/broker_config.json`에만 저장되며 Git 추적에서 제외됩니다.
 - 원격 저장소: `https://github.com/wonsubshin/autoStockTrade.git`
 - 커밋 메시지에는 개인정보나 계좌/키 정보가 일절 포함되지 않습니다.
+
+---
+
+## ⚖️ 6. 라이선스 및 법적 면책 조항 (Disclaimer)
+
+### 라이선스 (License)
+본 프로젝트는 **[Apache License 2.0](LICENSE)**에 따라 배포됩니다.
+
+### 법적 면책 조항 (Legal Disclaimer)
+> ⚠️ **주의 및 고지**: **본 소프트웨어의 사용으로 발생하는 모든 투자 손실의 책임은 사용자 본인에게 있으며, 제작자는 투자 자문이나 수익을 보장하지 않습니다.**  
+> 본 프로그램은 퀀트 알고리즘 연구 및 시스템 개발을 목적으로 제작된 오픈소스 소프트웨어입니다. 실제 금융 시장 매매 주문 집행 및 자금 운용에 따른 모든 법적, 금전적 위험 부담은 전적으로 사용자 본인에게 있습니다.

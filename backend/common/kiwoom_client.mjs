@@ -348,29 +348,47 @@ export class KiwoomClient {
     };
   }
 
-  // 시장 체제 필터 (Market Regime Filter: KOSPI / KOSDAQ 지수 및 20/60 MA)
+  // 1.3 국내 시장 전용 체제 필터 (Market Regime Filter: KOSPI / KOSDAQ 지수 및 20/60 MA)
+  // KOSPI 20일선 및 KOSDAQ 60일선 기반 HOLD_CASH 판별은 국내 주식(KR) 매수에만 적용되며 미국 주식(US)을 차단하지 않음
   async getMarketRegime() {
     let filterRow = null;
     try {
       const { getDb } = await import('../db/index.mjs');
       const db = getDb();
-      filterRow = db.prepare('SELECT * FROM market_regime_filter WHERE id = 1').get();
+      filterRow = db ? db.prepare('SELECT * FROM market_regime_filter WHERE id = 1').get() : null;
     } catch (e) {}
 
-    const isHalt = filterRow && (filterRow.market_regime === 'CRASH_SHOCK' || filterRow.recommended_action === 'HALT_NEW_BUYS' || filterRow.risk_alert === 1);
-    const isBear = filterRow && (filterRow.market_regime === 'BEAR' || filterRow.recommended_action === 'REDUCE_SIZE');
+    const isHalt = filterRow && (
+      filterRow.kr_recommended_action === 'HALT_NEW_BUYS' ||
+      filterRow.market_regime === 'CRASH_SHOCK' ||
+      filterRow.recommended_action === 'HALT_NEW_BUYS' ||
+      filterRow.risk_alert === 1 ||
+      filterRow.kr_risk_alert === 1
+    );
+    const isBear = filterRow && (
+      filterRow.kr_recommended_action === 'REDUCE_SIZE' ||
+      filterRow.market_regime === 'BEAR' ||
+      filterRow.recommended_action === 'REDUCE_SIZE'
+    );
+
+    const krRegime = isHalt ? 'HOLD_CASH' : isBear ? 'REDUCE_SIZE' : 'NORMAL';
 
     return {
+      targetMarket: 'KR',
       kospiIndex: 5383.80,
       kosdaqIndex: 678.40,
       kospi20MA: 5789.06,
       kosdaq60MA: 710.50,
-      regime: isHalt ? 'HOLD_CASH' : isBear ? 'REDUCE_SIZE' : 'NORMAL',
+      regime: krRegime, // 하위 호환
+      krRegime,
+      usRegime: 'NORMAL', // 미국 장세는 토스/미국 거시 필터에서 독립 관리
+      isKrHalt: !!isHalt,
+      isUsHalt: false,
       statusText: isHalt
-        ? `⚠️ 시장 폭락 및 리스크 경보: ${filterRow?.reason || '신규 매수 차단 (현금보유)'}`
+        ? `⚠️ [국내 전용] 시장 폭락 및 리스크 경보: ${filterRow?.reason || '국내 신규 매수 차단 (현금보유, 미국 매매 정상)'}`
         : isBear
-        ? `🟡 시장 급락/변동성 확대: ${filterRow?.reason || '1회 투자 비중 50% 축소 방어'}`
-        : '🟢 시장 체제 정상 (정상 매매 가동)',
+        ? `🟡 [국내 전용] 시장 급락/변동성 확대: ${filterRow?.reason || '국내 1회 투자 비중 50% 축소 방어'}`
+        : '🟢 국내 시장 체제 정상 (국내 정규장 정상 매매)',
     };
   }
 }

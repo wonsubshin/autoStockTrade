@@ -1,9 +1,10 @@
-import { getDb } from '../db/index.mjs';
+import { getDb, runTransaction, safeNum } from '../db/index.mjs';
 import { PROJECT_ROOT } from '../config/env.mjs';
 import { kiwoomClient, tossClient, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
 import { virtualEngine, BotService } from './bot_service.mjs';
 import { PythonExecutorBridge } from '../common/python_executor_bridge.mjs';
 import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
+import { NotificationService } from '../common/notification_service.mjs';
 
 export const pythonBridge = new PythonExecutorBridge(PROJECT_ROOT);
 
@@ -225,15 +226,31 @@ export class TradeService {
             });
             const fee = Math.round(unitPriceKrw * 0.0025);
 
-            const insTrade = db.prepare(`
-              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-              VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
-            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
+            runTransaction(() => {
+              const insTrade = db.prepare(`
+                INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
+              `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
 
-            db.prepare(`
-              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-              VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
-            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
+              db.prepare(`
+                INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
+              `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
+            });
+
+            // 4.3 실전 매수 체결 알림 발송
+            NotificationService.notifyRealTrade({
+              botName: bot.name,
+              botNickname: bot.nickname,
+              side: 'BUY',
+              stockName: targetStock.name,
+              stockCode: targetStock.code,
+              price: unitPriceKrw,
+              qty: 1,
+              amount: unitPriceKrw,
+              reason: '웹 수동 미국 1주 온주 매수',
+              orderId: orderRes.orderId,
+            });
 
             return {
               success: true,
@@ -241,19 +258,18 @@ export class TradeService {
               orderRes,
             };
           } else {
-            // 미국 소수점 금액 주문 ($1.00 ~ $10.00 가용 달러/원화 예산 맞춤 동적 산정)
+            // 1.1 미국 소수점 $10 금액 매수 Fallback 및 동적 환율 연동
             const usdRate = priceInfo.exchangeRate || tossBal.usdRate || 1345;
             const actualUsd = Number(tossBal.availableUsd || 0);
-            const botRemainingUsd = remainingCap / usdRate;
-            const cashBasedUsd = (availableCash * 0.96) / usdRate;
-            const effectiveUsdPool = actualUsd >= 1.0 ? Math.min(actualUsd * 0.98, Math.max(1.0, botRemainingUsd)) : cashBasedUsd;
-            const affordableUsd = Math.floor(effectiveUsdPool * 100) / 100;
-            const targetUsd = Math.min(10.0, affordableUsd);
-            const targetKrw = Math.round(targetUsd * usdRate);
+            const minFractionalKrw = Math.ceil(usdRate * 10); // $10 상당 원화
+            const totalCashPoolKrw = Number(tossBal.availableCash || 0) + Math.floor(actualUsd * usdRate);
 
-            if (targetUsd < 1.0) {
-              throw new Error(`주문 가능 달러/예수금 부족 (소수점 최소 $1.00 필요, 현재 주문가능 달러: $${actualUsd.toFixed(2)}, 원화: ${availableCash.toLocaleString()}원)`);
+            if (totalCashPoolKrw < minFractionalKrw && remainingCap < minFractionalKrw) {
+              throw new Error(`주문 가능 달러/예수금 부족 (소수점 최소 $10.00 상당 약 ${minFractionalKrw.toLocaleString()}원 필요, 가용: ${totalCashPoolKrw.toLocaleString()}원)`);
             }
+
+            const targetUsd = 10.0;
+            const targetKrw = Math.round(targetUsd * usdRate);
 
             const orderRes = await pythonBridge.executeOrder({
               symbol: targetStock.code,
@@ -268,15 +284,31 @@ export class TradeService {
             const fractionalQty = parseFloat((targetKrw / executionPrice).toFixed(6));
             const fee = Math.round(targetKrw * 0.0025);
 
-            const insTrade = db.prepare(`
-              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, executionPrice, fractionalQty, targetKrw, nowIso);
+            runTransaction(() => {
+              const insTrade = db.prepare(`
+                INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+              `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, executionPrice, fractionalQty, targetKrw, nowIso);
 
-            db.prepare(`
-              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, executionPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
+              db.prepare(`
+                INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+              `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, executionPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
+            });
+
+            // 4.3 실전 매수 체결 알림 발송
+            NotificationService.notifyRealTrade({
+              botName: bot.name,
+              botNickname: bot.nickname,
+              side: 'BUY',
+              stockName: targetStock.name,
+              stockCode: targetStock.code,
+              price: executionPrice,
+              qty: fractionalQty,
+              amount: targetKrw,
+              reason: `웹 수동 미국 소수점 매수 ($${targetUsd.toFixed(2)})`,
+              orderId: orderRes.orderId,
+            });
 
             return {
               success: true,
@@ -305,15 +337,31 @@ export class TradeService {
           const executionPrice = priceInfo.currentPrice;
           const fee = Math.round(totalCost * 0.00015);
 
-          const insTrade = db.prepare(`
-            INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-            VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
-          `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, executionPrice, buyQty, totalCost, nowIso);
+          runTransaction(() => {
+            const insTrade = db.prepare(`
+              INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
+            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TORD_${Date.now()}`, executionPrice, buyQty, totalCost, nowIso);
 
-          db.prepare(`
-            INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-            VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
-          `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, buyQty, executionPrice, totalCost, fee, insTrade.lastInsertRowid, nowIso);
+            db.prepare(`
+              INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+              VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+            `).run(botId, targetStock.code, targetStock.name, orderRes.orderId || `TPOS_${Date.now()}`, buyQty, executionPrice, totalCost, fee, insTrade.lastInsertRowid, nowIso);
+          });
+
+          // 4.3 실전 매수 체결 알림 발송
+          NotificationService.notifyRealTrade({
+            botName: bot.name,
+            botNickname: bot.nickname,
+            side: 'BUY',
+            stockName: targetStock.name,
+            stockCode: targetStock.code,
+            price: executionPrice,
+            qty: buyQty,
+            amount: totalCost,
+            reason: `웹 수동 국내 1주 온주 매수 (${buyQty}주)`,
+            orderId: orderRes.orderId,
+          });
 
           return {
             success: true,
@@ -363,24 +411,42 @@ export class TradeService {
         const profitKrw = (sellAmount - posBuyAmt) - feeAndTax;
         const profitPct = posBuyAmt > 0 ? parseFloat(((profitKrw / posBuyAmt) * 100).toFixed(2)) : 0;
 
-        db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, targetPos.id);
-        if (targetPos.trade_id) {
-          db.prepare(`
-            UPDATE trades
-            SET sell_order_no = ?, sell_price = ?, sell_qty = ?, sell_amount = ?, sell_date = ?, fee_and_tax = ?, profit_krw = ?, profit_pct = ?, status = 'CLOSED'
-            WHERE id = ?
-          `).run(
-            orderRes.orderId || `TORD_S_${Date.now()}`,
-            executionPrice,
-            posQty,
-            sellAmount,
-            nowIso,
-            feeAndTax,
-            profitKrw,
-            profitPct,
-            targetPos.trade_id
-          );
-        }
+        runTransaction(() => {
+          db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, targetPos.id);
+          if (targetPos.trade_id) {
+            db.prepare(`
+              UPDATE trades
+              SET sell_order_no = ?, sell_price = ?, sell_qty = ?, sell_amount = ?, sell_date = ?, fee_and_tax = ?, profit_krw = ?, profit_pct = ?, status = 'CLOSED'
+              WHERE id = ?
+            `).run(
+              orderRes.orderId || `TORD_S_${Date.now()}`,
+              executionPrice,
+              posQty,
+              sellAmount,
+              nowIso,
+              feeAndTax,
+              profitKrw,
+              profitPct,
+              targetPos.trade_id
+            );
+          }
+        });
+
+        // 4.3 실전 매도 체결 알림 발송
+        NotificationService.notifyRealTrade({
+          botName: bot.name,
+          botNickname: bot.nickname,
+          side: 'SELL',
+          stockName: targetPos.stock_name,
+          stockCode: targetPos.stock_code,
+          price: executionPrice,
+          qty: posQty,
+          amount: sellAmount,
+          profitKrw,
+          profitPct,
+          reason: '웹 수동 실전 매도 청산',
+          orderId: orderRes.orderId,
+        });
 
         return {
           success: true,
@@ -467,7 +533,7 @@ export class TradeService {
       const tradeYmd = toKstDateString(t.sell_date || t.buy_date);
       if (!tradeYmd) continue;
 
-      const profitKrw = isNaN(Number(t.profit_krw)) ? 0 : Math.round(Number(t.profit_krw));
+      const profitKrw = Math.round(safeNum(t.profit_krw, 0));
 
       let key = tradeYmd;
       if (period === 'monthly') {
@@ -502,7 +568,7 @@ export class TradeService {
 
     let runningProfit = 0;
     const timeline = Array.from(periodMap.values()).map((p) => {
-      const pProfit = Number(p.profitKrw) || 0;
+      const pProfit = safeNum(p.profitKrw, 0);
       runningProfit += pProfit;
       return {
         ...p,
@@ -516,12 +582,12 @@ export class TradeService {
     const stockRanking = Array.from(stockContribMap.values())
       .map((s) => ({
         ...s,
-        totalProfitKrw: Number(s.totalProfitKrw) || 0,
+        totalProfitKrw: safeNum(s.totalProfitKrw, 0),
         winRate: s.tradesCount > 0 ? parseFloat(((s.wins / s.tradesCount) * 100).toFixed(1)) : 0,
       }))
       .sort((a, b) => b.totalProfitKrw - a.totalProfitKrw);
 
-    const totalProfit = trades.reduce((sum, t) => sum + (isNaN(Number(t.profit_krw)) ? 0 : Math.round(Number(t.profit_krw))), 0);
+    const totalProfit = trades.reduce((sum, t) => sum + Math.round(safeNum(t.profit_krw, 0)), 0);
     const winCount = trades.filter((t) => Number(t.profit_krw || 0) > 0).length;
     const totalTrades = trades.length;
 

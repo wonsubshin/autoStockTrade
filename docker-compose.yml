@@ -1,0 +1,38 @@
+version: '3.8'
+
+services:
+  backend:
+    build:
+      context: .
+      target: backend
+    container_name: autostocktrader-backend
+    restart: unless-stopped
+    ports:
+      - "8100:8100"
+    environment:
+      - PORT=8100
+      - USE_POSTGRES=false
+      - DB_MODE=SQLITE_ONLY
+      - GATE_PASSCODE=${GATE_PASSCODE:-sws@2129}
+      - TELEGRAM_BOT_TOKEN=${TELEGRAM_BOT_TOKEN:-}
+      - TELEGRAM_CHAT_ID=${TELEGRAM_CHAT_ID:-}
+      - DISCORD_WEBHOOK_URL=${DISCORD_WEBHOOK_URL:-}
+    volumes:
+      - ./data:/app/data
+      - ./logs:/app/logs
+      - ./config:/app/config
+
+  frontend:
+    build:
+      context: .
+      target: frontend
+    container_name: autostocktrader-frontend
+    restart: unless-stopped
+    ports:
+      - "9900:9900"
+    environment:
+      - FRONTEND_PORT=9900
+      - BACKEND_HOST=backend
+      - PORT=8100
+    depends_on:
+      - backend

@@ -46,7 +46,16 @@ export class BotService {
               AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
           `).get(b.bot_id)?.amt || 0;
 
-          const availKrw = Math.max(0, allocatedCap - Number(openAmt));
+          // 2.3 누적 실현손익 복리 반영
+          const rProfitRow = db.prepare(`
+            SELECT COALESCE(SUM(profit_krw), 0) as profit
+            FROM trades
+            WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED'
+              AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)
+          `).get(b.bot_id);
+          const rProfit = Number(rProfitRow?.profit || 0);
+
+          const availKrw = Math.max(0, allocatedCap + rProfit - Number(openAmt));
 
           db.prepare(`
             UPDATE bots
@@ -66,6 +75,10 @@ export class BotService {
   }
 
   static getBots() {
+    return this.getAllBotsWithArenaMetrics();
+  }
+
+  static getAllBotsWithMetrics() {
     return this.getAllBotsWithArenaMetrics();
   }
 
@@ -97,9 +110,29 @@ export class BotService {
         WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
       `).get(bot.bot_id);
 
+      // 2.2 가상 평가자산(virtual_total_assets)의 실시간 시가 평가(Mark-to-Market) 반영
+      const vOpenPositions = db.prepare(`
+        SELECT stock_code, qty, avg_buy_price, buy_amount, buy_fee
+        FROM bot_positions
+        WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
+      `).all(bot.bot_id);
+
+      let vOpenEvalSum = 0;
+      let vOpenUnrealizedSum = 0;
+      for (const pos of vOpenPositions) {
+        const quote = kiwoomClient.priceCache.get(pos.stock_code)?.data || tossClient.priceCache.get(pos.stock_code)?.data;
+        const curPrice = Number(quote?.currentPrice || pos.avg_buy_price || 0);
+        const qty = Number(pos.qty || 0);
+        const buyAmt = Number(pos.buy_amount || 0);
+        const buyFee = Number(pos.buy_fee || 0);
+        const evalAmt = Math.round(curPrice * qty);
+        vOpenEvalSum += evalAmt;
+        vOpenUnrealizedSum += (evalAmt - buyAmt - buyFee);
+      }
+
       const initCap = Number(bot.virtual_initial_capital || 1000000);
-      const totalEval = Number(bot.virtual_krw || 0) + Number(vOpen.open_amount || 0);
-      const returnPct = ((totalEval - initCap) / initCap) * 100;
+      const totalEval = Number(bot.virtual_krw || 0) + vOpenEvalSum;
+      const returnPct = initCap > 0 ? ((totalEval - initCap) / initCap) * 100 : 0;
       const totalTrades = Number(vStats?.total_trades || 0);
       const winTrades = Number(vStats?.wins || 0);
       const lossTrades = totalTrades - winTrades;
@@ -184,13 +217,14 @@ export class BotService {
       }
     }
 
-    // 기존 실전 담당 봇 및 비율 스냅샷
+    // 기존 실전 담당 봇 및 비율, 가동 상태 스냅샷
     const prevSelected = db.prepare(`
-      SELECT bot_id, name, nickname, real_allocation_ratio
+      SELECT bot_id, name, nickname, real_allocation_ratio, is_real_running
       FROM bots WHERE is_real_selected = 1 ORDER BY bot_id ASC
     `).all();
     const prevIds = prevSelected.map((b) => b.bot_id);
     const prevRatioMap = new Map(prevSelected.map((b) => [b.bot_id, Number(b.real_allocation_ratio || 0)]));
+    const prevRunningMap = new Map(prevSelected.map((b) => [b.bot_id, Number(b.is_real_running || 0)]));
 
     // 실전 선택 해제는 되었지만 아직 미매도 실전 포지션이 남아있는 봇(과거 교체로 고아가 된 포지션)도 승계 대상에 포함
     const orphanIds = db.prepare(`
@@ -202,11 +236,13 @@ export class BotService {
     const addedIds = selectedBotIds.filter((id) => !prevIds.includes(id));
     const removedIds = [...prevIds.filter((id) => !selectedBotIds.includes(id)), ...orphanIds];
 
-    // 승계 매핑: 해제 봇[i] → 신규 봇[i] (신규 봇보다 해제 봇이 많으면 신규 봇에 순환 배정)
+    // 1.2 승계 매핑: 해제되는 봇의 미청산 포지션이 고아 상태로 방치되지 않도록
+    // 신규 추가 봇(addedIds) 또는 남은 선택 봇(selectedBotIds)으로 100% 인계
     const successionMap = []; // { from, to }
-    if (addedIds.length > 0) {
+    const targetSuccessors = addedIds.length > 0 ? addedIds : selectedBotIds;
+    if (targetSuccessors.length > 0 && removedIds.length > 0) {
       removedIds.forEach((fromId, idx) => {
-        successionMap.push({ from: fromId, to: addedIds[idx % addedIds.length] });
+        successionMap.push({ from: fromId, to: targetSuccessors[idx % targetSuccessors.length] });
       });
     }
 
@@ -296,11 +332,27 @@ export class BotService {
             AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
         `).get(botId)?.amt || 0;
 
-        const available = Math.max(0, allocated - Number(openReal));
+        // 2.3 실전 가용 현금(real_available_krw)에 누적 실현손익 복리 반영
+        const rProfitRow = db.prepare(`
+          SELECT COALESCE(SUM(profit_krw), 0) as profit
+          FROM trades
+          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED'
+            AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)
+        `).get(botId);
+        const rProfit = Number(rProfitRow?.profit || 0);
+
+        const available = Math.max(0, allocated + rProfit - Number(openReal));
 
         const inherited = inheritance.filter((i) => i.to === botId);
         const inheritedPos = inherited.reduce((a, b) => a + b.open_positions, 0);
-        let statusMsg = retainedIds.includes(botId) ? '실전 담당 유지 및 가동 중' : '실전 담당 지정 및 가동 중';
+
+        // 1.2 기존에 이미 실전 담당으로 가동 중이던(is_real_running = 1) 봇이 재선택된 경우 기존 가동 상태 그대로 유지
+        const prevRun = prevRunningMap.get(botId);
+        const targetRunning = prevRun !== undefined ? prevRun : 1;
+
+        let statusMsg = retainedIds.includes(botId)
+          ? (targetRunning === 1 ? '실전 담당 유지 및 가동 중' : '실전 담당 유지 (일시 정지 상태)')
+          : '실전 담당 지정 및 가동 중';
         if (inherited.length > 0) {
           statusMsg = `실전 담당 지정 및 가동 중 (${inherited.map((i) => i.from).join(', ')} 거래정보 승계 · 미매도 ${inheritedPos}건 인수)`;
         }
@@ -308,7 +360,7 @@ export class BotService {
         db.prepare(`
           UPDATE bots
           SET is_real_selected = 1,
-              is_real_running = 1,
+              is_real_running = ?,
               trade_mode = 'REAL',
               real_allocation_ratio = ?,
               real_allocated_capital = ?,
@@ -318,7 +370,7 @@ export class BotService {
               real_status_msg = ?,
               updated_at = ?
           WHERE bot_id = ?
-        `).run(ratio, allocated, available, allocated, ratio / 100, statusMsg, nowIso, botId);
+        `).run(targetRunning, ratio, allocated, available, allocated, ratio / 100, statusMsg, nowIso, botId);
       }
 
       db.exec('COMMIT');
@@ -380,7 +432,16 @@ export class BotService {
             AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
         `).get(item.bot_id)?.amt || 0;
 
-        const available = Math.max(0, allocated - Number(openReal));
+        // 2.3 실전 가용 현금(real_available_krw)에 누적 실현손익 복리 반영
+        const rProfitRow = db.prepare(`
+          SELECT COALESCE(SUM(profit_krw), 0) as profit
+          FROM trades
+          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED'
+            AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)
+        `).get(item.bot_id);
+        const rProfit = Number(rProfitRow?.profit || 0);
+
+        const available = Math.max(0, allocated + rProfit - Number(openReal));
 
         db.prepare(`
           UPDATE bots

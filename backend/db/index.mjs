@@ -1,9 +1,11 @@
 import fs from 'node:fs';
 import path from 'node:path';
 import { fileURLToPath } from 'node:url';
+import { createRequire } from 'node:module';
 import { Worker, MessageChannel, receiveMessageOnPort } from 'node:worker_threads';
 import { PROJECT_ROOT } from '../config/env.mjs';
 
+const require = createRequire(import.meta.url);
 const __filename = fileURLToPath(import.meta.url);
 const __dirname = path.dirname(__filename);
 
@@ -20,7 +22,7 @@ const TABLES_WITH_SERIAL_ID = new Set([
   'ai_trade_decisions'
 ]);
 
-function loadDbConfig() {
+export function loadDbConfig() {
   const envPath = path.join(PROJECT_ROOT, '.env');
   const env = {};
   if (fs.existsSync(envPath)) {
@@ -37,9 +39,21 @@ function loadDbConfig() {
     }
   }
 
+  const dbMode = (process.env.DB_MODE || env.DB_MODE || '').toUpperCase();
+  const usePostgresEnv = String(process.env.USE_POSTGRES || env.USE_POSTGRES || '').toLowerCase();
+
+  // 4.2 USE_POSTGRES=false 또는 DB_MODE=SQLITE_ONLY 시 SQLite 단독 모드로 완전 격리
+  if (usePostgresEnv === 'false' || usePostgresEnv === '0' || dbMode === 'SQLITE_ONLY' || dbMode === 'SQLITE') {
+    return {
+      type: 'sqlite',
+      filePath: path.join(PROJECT_ROOT, 'data', 'auto_stock_trade.db')
+    };
+  }
+
   const location = (env.LOCATION || 'local').toLowerCase();
   if (location === 'outer') {
     return {
+      type: 'postgres',
       location: 'outer',
       host: env.OUTER_PG_HOST || '',
       port: parseInt(env.OUTER_PG_PORT || env.PGPORT || '5432', 10),
@@ -49,13 +63,23 @@ function loadDbConfig() {
     };
   }
 
+  // If DB_MODE is POSTGRESQL or explicit PG config
+  if (dbMode === 'POSTGRESQL' || dbMode === 'POSTGRES' || env.LOCAL_PG_PASSWORD) {
+    return {
+      type: 'postgres',
+      location: 'local',
+      host: env.LOCAL_PG_HOST || '127.0.0.1',
+      port: parseInt(env.LOCAL_PG_PORT || env.PGPORT || '5432', 10),
+      database: env.LOCAL_PG_DATABASE || 'stock',
+      user: env.LOCAL_PG_USER || 'stock_trader',
+      password: env.LOCAL_PG_PASSWORD || '',
+    };
+  }
+
+  // Default to SQLite
   return {
-    location: 'local',
-    host: env.LOCAL_PG_HOST || '127.0.0.1',
-    port: parseInt(env.LOCAL_PG_PORT || env.PGPORT || '5432', 10),
-    database: env.LOCAL_PG_DATABASE || 'stock',
-    user: env.LOCAL_PG_USER || 'stock_trader',
-    password: env.LOCAL_PG_PASSWORD || '',
+    type: 'sqlite',
+    filePath: path.join(PROJECT_ROOT, 'data', 'auto_stock_trade.db')
   };
 }
 
@@ -205,11 +229,524 @@ class PostgresSyncAdapter {
     };
   }
 
+  transaction(fn) {
+    return (...args) => {
+      this.exec('BEGIN');
+      try {
+        const result = fn(...args);
+        this.exec('COMMIT');
+        return result;
+      } catch (err) {
+        try { this.exec('ROLLBACK'); } catch (_) {}
+        throw err;
+      }
+    };
+  }
+
   close() {
     this._sendSync({ type: 'close' });
     this.worker.terminate();
   }
 }
+
+export class SqliteAdapter {
+  constructor(filePath) {
+    this.dbPath = filePath;
+    this.dbConfig = { type: 'sqlite', file: filePath };
+    this._txDepth = 0;
+    const dir = path.dirname(filePath);
+    if (!fs.existsSync(dir)) {
+      fs.mkdirSync(dir, { recursive: true });
+    }
+
+    try {
+      const { DatabaseSync } = require('node:sqlite');
+      this.db = new DatabaseSync(filePath);
+      this.engine = 'node:sqlite';
+    } catch (e1) {
+      try {
+        const BetterSqlite3 = require('better-sqlite3');
+        this.db = new BetterSqlite3(filePath);
+        this.engine = 'better-sqlite3';
+      } catch (e2) {
+        throw new Error(`[DB] SQLite 엔진 로드 실패: Node v22+ 내장 node:sqlite 또는 better-sqlite3가 필요합니다. (${e1.message})`);
+      }
+    }
+
+    // Enable WAL mode
+    this.db.exec('PRAGMA journal_mode = WAL;');
+    this.db.exec('PRAGMA synchronous = NORMAL;');
+  }
+
+  prepare(rawSql) {
+    const translated = rawSql.replace(/\bILIKE\b/gi, 'LIKE');
+    const stmt = this.db.prepare(translated);
+    return {
+      all(...args) {
+        const flatArgs = args.flat();
+        return stmt.all(...flatArgs);
+      },
+      get(...args) {
+        const flatArgs = args.flat();
+        return stmt.get(...flatArgs);
+      },
+      run(...args) {
+        const flatArgs = args.flat();
+        const res = stmt.run(...flatArgs);
+        return {
+          changes: res ? res.changes : 0,
+          lastInsertRowid: res && res.lastInsertRowid !== undefined ? Number(res.lastInsertRowid) : undefined,
+        };
+      },
+    };
+  }
+
+  exec(sql) {
+    const lines = sql.split(';')
+      .map(s => s.trim())
+      .filter(s => s);
+    for (const stmt of lines) {
+      const upper = stmt.toUpperCase();
+      try {
+        if (upper === 'BEGIN' || upper === 'BEGIN TRANSACTION') {
+          this._txDepth++;
+          if (this._txDepth > 1) {
+            this.db.exec(`SAVEPOINT sp_${this._txDepth};`);
+            continue;
+          }
+        } else if (upper === 'COMMIT') {
+          if (this._txDepth > 1) {
+            this.db.exec(`RELEASE SAVEPOINT sp_${this._txDepth};`);
+            this._txDepth = Math.max(0, this._txDepth - 1);
+            continue;
+          }
+          this._txDepth = 0;
+        } else if (upper === 'ROLLBACK') {
+          if (this._txDepth > 1) {
+            this.db.exec(`ROLLBACK TO SAVEPOINT sp_${this._txDepth};`);
+            this._txDepth = Math.max(0, this._txDepth - 1);
+            continue;
+          }
+          this._txDepth = 0;
+        }
+        this.db.exec(stmt + ';');
+      } catch (e) {
+        if (e.message && (
+          e.message.includes('already exists') ||
+          e.message.includes('duplicate column') ||
+          e.message.includes('cannot start a transaction within a transaction') ||
+          e.message.includes('no transaction is active')
+        )) {
+          continue;
+        }
+        throw e;
+      }
+    }
+  }
+
+  transaction(fn) {
+    return (...args) => {
+      this.exec('BEGIN');
+      try {
+        const result = fn(...args);
+        this.exec('COMMIT');
+        return result;
+      } catch (err) {
+        try { this.exec('ROLLBACK'); } catch (_) {}
+        throw err;
+      }
+    };
+  }
+
+  query(sql, params = []) {
+    const flatArgs = params.flat();
+    const cleanSql = sql.replace(/\bILIKE\b/gi, 'LIKE');
+    if (/^\s*SELECT/i.test(cleanSql)) {
+      const rows = this.db.prepare(cleanSql).all(...flatArgs);
+      return { rows, rowCount: rows.length };
+    }
+    const info = this.db.prepare(cleanSql).run(...flatArgs);
+    return { rows: [], rowCount: info.changes || 0 };
+  }
+
+  close() {
+    if (this.db && typeof this.db.close === 'function') {
+      this.db.close();
+      this.db = null;
+    }
+  }
+}
+
+export const SQLITE_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bots (
+  bot_id TEXT PRIMARY KEY,
+  name TEXT,
+  nickname TEXT,
+  strategy_type TEXT,
+  trade_mode TEXT DEFAULT 'VIRTUAL',
+  description TEXT,
+  allocation_ratio REAL,
+  allocated_capital NUMERIC,
+  virtual_krw NUMERIC,
+  is_running INTEGER,
+  min_volume_krw NUMERIC,
+  stop_loss_pct REAL,
+  take_profit_pct REAL,
+  config_json TEXT,
+  last_status_msg TEXT,
+  updated_at TEXT,
+  is_virtual_running INTEGER DEFAULT 1,
+  virtual_initial_capital NUMERIC DEFAULT 10000000,
+  virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중',
+  is_real_selected INTEGER DEFAULT 0,
+  is_real_running INTEGER DEFAULT 0,
+  real_allocation_ratio REAL DEFAULT 0,
+  real_allocated_capital NUMERIC DEFAULT 0,
+  real_available_krw NUMERIC DEFAULT 0,
+  real_status_msg TEXT DEFAULT '실전 대기 중'
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot_id TEXT,
+  trade_mode TEXT DEFAULT 'VIRTUAL',
+  stock_code TEXT,
+  stock_name TEXT,
+  buy_order_no TEXT,
+  sell_order_no TEXT,
+  buy_price NUMERIC,
+  buy_qty NUMERIC,
+  buy_amount NUMERIC,
+  buy_date TEXT,
+  sell_price NUMERIC,
+  sell_qty NUMERIC,
+  sell_amount NUMERIC,
+  sell_date TEXT,
+  fee_and_tax NUMERIC,
+  profit_krw NUMERIC,
+  profit_pct REAL,
+  status TEXT DEFAULT 'HOLDING',
+  origin_bot_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bot_positions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot_id TEXT,
+  trade_mode TEXT DEFAULT 'VIRTUAL',
+  stock_code TEXT,
+  stock_name TEXT,
+  order_no TEXT UNIQUE,
+  qty NUMERIC,
+  avg_buy_price NUMERIC,
+  buy_amount NUMERIC,
+  buy_fee NUMERIC,
+  trade_id INTEGER,
+  status TEXT DEFAULT 'OPEN',
+  created_at TEXT,
+  closed_at TEXT,
+  origin_bot_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS virtual_performance_logs (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  bot_id TEXT,
+  eval_date TEXT,
+  initial_capital NUMERIC,
+  eval_assets NUMERIC,
+  cumulative_return_pct REAL,
+  win_rate REAL,
+  profit_factor REAL,
+  mdd_pct REAL,
+  sharpe_ratio REAL,
+  total_trades INTEGER,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_market_briefings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT NOT NULL DEFAULT 'gemini',
+  model TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
+  kr_index_price REAL,
+  kr_daily_20ma REAL,
+  kr_intraday_60ma REAL,
+  kr_regime_status TEXT DEFAULT 'NORMAL',
+  us_index_price REAL,
+  us_daily_20ma REAL,
+  us_intraday_60ma REAL,
+  us_regime_status TEXT DEFAULT 'NORMAL',
+  usd_krw_rate REAL,
+  kospi_index REAL,
+  kosdaq_index REAL,
+  kospi_20ma REAL,
+  kosdaq_60ma REAL,
+  regime_status TEXT DEFAULT 'NORMAL',
+  trigger_type TEXT DEFAULT 'MANUAL',
+  briefing_text TEXT NOT NULL,
+  analysis_type TEXT DEFAULT 'MARKET_BRIEFING',
+  created_at TEXT NOT NULL
+);
+
+CREATE TABLE IF NOT EXISTS stock_news (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  title TEXT,
+  link TEXT UNIQUE,
+  source TEXT,
+  published_at TEXT,
+  summary TEXT,
+  sentiment TEXT DEFAULT 'NEUTRAL',
+  keywords TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stock_news_pubdate ON stock_news (published_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_news_briefings (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  provider TEXT,
+  model TEXT,
+  news_count INTEGER,
+  bullish_count INTEGER,
+  bearish_count INTEGER,
+  neutral_count INTEGER,
+  briefing_text TEXT,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_trade_decisions (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  symbol TEXT NOT NULL,
+  stock_name TEXT NOT NULL,
+  market TEXT NOT NULL,
+  action TEXT NOT NULL,
+  confidence INTEGER NOT NULL,
+  sentiment_score REAL NOT NULL,
+  reasoning TEXT NOT NULL,
+  related_news TEXT,
+  suggested_order_type TEXT,
+  executed_by TEXT,
+  execution_status TEXT,
+  order_no TEXT,
+  model_type TEXT DEFAULT 'FLASH',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
+
+CREATE TABLE IF NOT EXISTS market_regime_filter (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  sentiment_score REAL DEFAULT 0.0,
+  market_regime TEXT DEFAULT 'SIDEWAYS',
+  risk_alert INTEGER DEFAULT 0,
+  recommended_action TEXT DEFAULT 'NORMAL',
+  position_size_multiplier REAL DEFAULT 1.0,
+  blacklist_tickers_json TEXT DEFAULT '[]',
+  reason TEXT DEFAULT '초기 정상 가동 상태',
+  kr_market_regime VARCHAR(32) DEFAULT 'SIDEWAYS',
+  kr_recommended_action VARCHAR(32) DEFAULT 'NORMAL',
+  kr_position_size_multiplier NUMERIC DEFAULT 1.0,
+  kr_risk_alert INTEGER DEFAULT 0,
+  kr_reason TEXT DEFAULT '한국 초기 정상 상태',
+  kr_blacklist_tickers_json TEXT DEFAULT '[]',
+  us_market_regime VARCHAR(32) DEFAULT 'SIDEWAYS',
+  us_recommended_action VARCHAR(32) DEFAULT 'NORMAL',
+  us_position_size_multiplier NUMERIC DEFAULT 1.0,
+  us_risk_alert INTEGER DEFAULT 0,
+  us_reason TEXT DEFAULT '미국 초기 정상 상태',
+  us_blacklist_tickers_json TEXT DEFAULT '[]',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+`;
+
+export const PG_SCHEMA_SQL = `
+CREATE TABLE IF NOT EXISTS system_settings (
+  key TEXT PRIMARY KEY,
+  value TEXT,
+  updated_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bots (
+  bot_id TEXT PRIMARY KEY,
+  name TEXT,
+  nickname TEXT,
+  strategy_type TEXT,
+  trade_mode TEXT DEFAULT 'VIRTUAL',
+  description TEXT,
+  allocation_ratio REAL,
+  allocated_capital NUMERIC,
+  virtual_krw NUMERIC,
+  is_running INTEGER,
+  min_volume_krw NUMERIC,
+  stop_loss_pct REAL,
+  take_profit_pct REAL,
+  config_json TEXT,
+  last_status_msg TEXT,
+  updated_at TEXT,
+  is_virtual_running INTEGER DEFAULT 1,
+  virtual_initial_capital NUMERIC DEFAULT 10000000,
+  virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중',
+  is_real_selected INTEGER DEFAULT 0,
+  is_real_running INTEGER DEFAULT 0,
+  real_allocation_ratio REAL DEFAULT 0,
+  real_allocated_capital NUMERIC DEFAULT 0,
+  real_available_krw NUMERIC DEFAULT 0,
+  real_status_msg TEXT DEFAULT '실전 대기 중'
+);
+
+CREATE TABLE IF NOT EXISTS trades (
+  id SERIAL PRIMARY KEY,
+  bot_id TEXT,
+  trade_mode TEXT DEFAULT 'VIRTUAL',
+  stock_code TEXT,
+  stock_name TEXT,
+  buy_order_no TEXT,
+  sell_order_no TEXT,
+  buy_price NUMERIC,
+  buy_qty NUMERIC,
+  buy_amount NUMERIC,
+  buy_date TEXT,
+  sell_price NUMERIC,
+  sell_qty NUMERIC,
+  sell_amount NUMERIC,
+  sell_date TEXT,
+  fee_and_tax NUMERIC,
+  profit_krw NUMERIC,
+  profit_pct REAL,
+  status TEXT DEFAULT 'HOLDING',
+  origin_bot_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS bot_positions (
+  id SERIAL PRIMARY KEY,
+  bot_id TEXT,
+  trade_mode TEXT DEFAULT 'VIRTUAL',
+  stock_code TEXT,
+  stock_name TEXT,
+  order_no TEXT UNIQUE,
+  qty NUMERIC,
+  avg_buy_price NUMERIC,
+  buy_amount NUMERIC,
+  buy_fee NUMERIC,
+  trade_id INTEGER,
+  status TEXT DEFAULT 'OPEN',
+  created_at TEXT,
+  closed_at TEXT,
+  origin_bot_id TEXT
+);
+
+CREATE TABLE IF NOT EXISTS virtual_performance_logs (
+  id SERIAL PRIMARY KEY,
+  bot_id TEXT,
+  eval_date TEXT,
+  initial_capital NUMERIC,
+  eval_assets NUMERIC,
+  cumulative_return_pct REAL,
+  win_rate REAL,
+  profit_factor REAL,
+  mdd_pct REAL,
+  sharpe_ratio REAL,
+  total_trades INTEGER,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_market_briefings (
+  id SERIAL PRIMARY KEY,
+  provider TEXT NOT NULL DEFAULT 'gemini',
+  model TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
+  kr_index_price REAL,
+  kr_daily_20ma REAL,
+  kr_intraday_60ma REAL,
+  kr_regime_status TEXT DEFAULT 'NORMAL',
+  us_index_price REAL,
+  us_daily_20ma REAL,
+  us_intraday_60ma REAL,
+  us_regime_status TEXT DEFAULT 'NORMAL',
+  usd_krw_rate REAL,
+  kospi_index REAL,
+  kosdaq_index REAL,
+  kospi_20ma REAL,
+  kosdaq_60ma REAL,
+  regime_status TEXT DEFAULT 'NORMAL',
+  trigger_type TEXT DEFAULT 'MANUAL',
+  briefing_text TEXT NOT NULL,
+  analysis_type TEXT DEFAULT 'MARKET_BRIEFING',
+  created_at TEXT NOT NULL
+);
+ALTER TABLE ai_market_briefings ADD COLUMN IF NOT EXISTS analysis_type TEXT DEFAULT 'MARKET_BRIEFING';
+
+CREATE TABLE IF NOT EXISTS stock_news (
+  id SERIAL PRIMARY KEY,
+  title TEXT,
+  link TEXT UNIQUE,
+  source TEXT,
+  published_at TEXT,
+  summary TEXT,
+  sentiment TEXT DEFAULT 'NEUTRAL',
+  keywords TEXT,
+  created_at TEXT
+);
+CREATE INDEX IF NOT EXISTS idx_stock_news_pubdate ON stock_news (published_at DESC);
+
+CREATE TABLE IF NOT EXISTS ai_news_briefings (
+  id SERIAL PRIMARY KEY,
+  provider TEXT,
+  model TEXT,
+  news_count INTEGER,
+  bullish_count INTEGER,
+  bearish_count INTEGER,
+  neutral_count INTEGER,
+  briefing_text TEXT,
+  created_at TEXT
+);
+
+CREATE TABLE IF NOT EXISTS ai_trade_decisions (
+  id SERIAL PRIMARY KEY,
+  symbol TEXT NOT NULL,
+  stock_name TEXT NOT NULL,
+  market TEXT NOT NULL,
+  action TEXT NOT NULL,
+  confidence INTEGER NOT NULL,
+  sentiment_score REAL NOT NULL,
+  reasoning TEXT NOT NULL,
+  related_news TEXT,
+  suggested_order_type TEXT,
+  executed_by TEXT,
+  execution_status TEXT,
+  order_no TEXT,
+  model_type TEXT DEFAULT 'FLASH',
+  created_at TEXT NOT NULL
+);
+CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS related_news TEXT;
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS model_type TEXT DEFAULT 'FLASH';
+
+CREATE TABLE IF NOT EXISTS market_regime_filter (
+  id INTEGER PRIMARY KEY CHECK (id = 1),
+  sentiment_score REAL DEFAULT 0.0,
+  market_regime TEXT DEFAULT 'SIDEWAYS',
+  risk_alert INTEGER DEFAULT 0,
+  recommended_action TEXT DEFAULT 'NORMAL',
+  position_size_multiplier REAL DEFAULT 1.0,
+  blacklist_tickers_json TEXT DEFAULT '[]',
+  reason TEXT DEFAULT '초기 정상 가동 상태',
+  kr_market_regime VARCHAR(32) DEFAULT 'SIDEWAYS',
+  kr_recommended_action VARCHAR(32) DEFAULT 'NORMAL',
+  kr_position_size_multiplier NUMERIC DEFAULT 1.0,
+  kr_risk_alert INTEGER DEFAULT 0,
+  kr_reason TEXT DEFAULT '한국 초기 정상 상태',
+  kr_blacklist_tickers_json TEXT DEFAULT '[]',
+  us_market_regime VARCHAR(32) DEFAULT 'SIDEWAYS',
+  us_recommended_action VARCHAR(32) DEFAULT 'NORMAL',
+  us_position_size_multiplier NUMERIC DEFAULT 1.0,
+  us_risk_alert INTEGER DEFAULT 0,
+  us_reason TEXT DEFAULT '미국 초기 정상 상태',
+  us_blacklist_tickers_json TEXT DEFAULT '[]',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+`;
 
 export function getDb() {
   if (!dbInstance) {
@@ -222,202 +759,39 @@ export function initDatabase() {
   if (dbInstance) return dbInstance;
 
   const dbConfig = loadDbConfig();
+
+  if (dbConfig.type === 'sqlite') {
+    console.log(`[DB] 내장 SQLite 데이터베이스 연결 중 (WAL 모드): ${dbConfig.filePath}`);
+    dbInstance = new SqliteAdapter(dbConfig.filePath);
+    dbInstance.exec(SQLITE_SCHEMA_SQL);
+    seedInitialData();
+    migrateAndSeedTenBots(dbInstance);
+    console.log('[DB] SQLite 스키마 및 10대 퀀트 봇 초기 데이터 설정 완료');
+    return dbInstance;
+  }
+
   console.log(`[DB] PostgreSQL 데이터베이스 연결 중: ${dbConfig.user}@${dbConfig.host}:${dbConfig.port}/${dbConfig.database}`);
-
-  dbInstance = new PostgresSyncAdapter(dbConfig);
-
-  // PostgreSQL 16 스키마 초기화
-  dbInstance.exec(`
-    CREATE TABLE IF NOT EXISTS system_settings (
-      key TEXT PRIMARY KEY,
-      value TEXT,
-      updated_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS bots (
-      bot_id TEXT PRIMARY KEY,
-      name TEXT,
-      nickname TEXT,
-      strategy_type TEXT,
-      trade_mode TEXT DEFAULT 'VIRTUAL',
-      description TEXT,
-      allocation_ratio REAL,
-      allocated_capital NUMERIC,
-      virtual_krw NUMERIC,
-      is_running INTEGER,
-      min_volume_krw NUMERIC,
-      stop_loss_pct REAL,
-      take_profit_pct REAL,
-      config_json TEXT,
-      last_status_msg TEXT,
-      updated_at TEXT,
-      is_virtual_running INTEGER DEFAULT 1,
-      virtual_initial_capital NUMERIC DEFAULT 10000000,
-      virtual_status_msg TEXT DEFAULT '가상 아레나 상시 경쟁 가동 중',
-      is_real_selected INTEGER DEFAULT 0,
-      is_real_running INTEGER DEFAULT 0,
-      real_allocation_ratio REAL DEFAULT 0,
-      real_allocated_capital NUMERIC DEFAULT 0,
-      real_available_krw NUMERIC DEFAULT 0,
-      real_status_msg TEXT DEFAULT '실전 대기 중'
-    );
-
-    CREATE TABLE IF NOT EXISTS trades (
-      id SERIAL PRIMARY KEY,
-      bot_id TEXT,
-      trade_mode TEXT DEFAULT 'VIRTUAL',
-      stock_code TEXT,
-      stock_name TEXT,
-      buy_order_no TEXT,
-      sell_order_no TEXT,
-      buy_price NUMERIC,
-      buy_qty NUMERIC,
-      buy_amount NUMERIC,
-      buy_date TEXT,
-      sell_price NUMERIC,
-      sell_qty NUMERIC,
-      sell_amount NUMERIC,
-      sell_date TEXT,
-      fee_and_tax NUMERIC,
-      profit_krw NUMERIC,
-      profit_pct REAL,
-      status TEXT DEFAULT 'HOLDING',
-      origin_bot_id TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS bot_positions (
-      id SERIAL PRIMARY KEY,
-      bot_id TEXT,
-      trade_mode TEXT DEFAULT 'VIRTUAL',
-      stock_code TEXT,
-      stock_name TEXT,
-      order_no TEXT UNIQUE,
-      qty NUMERIC,
-      avg_buy_price NUMERIC,
-      buy_amount NUMERIC,
-      buy_fee NUMERIC,
-      trade_id INTEGER,
-      status TEXT DEFAULT 'OPEN',
-      created_at TEXT,
-      closed_at TEXT,
-      origin_bot_id TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS virtual_performance_logs (
-      id SERIAL PRIMARY KEY,
-      bot_id TEXT,
-      eval_date TEXT,
-      initial_capital NUMERIC,
-      eval_assets NUMERIC,
-      cumulative_return_pct REAL,
-      win_rate REAL,
-      profit_factor REAL,
-      mdd_pct REAL,
-      sharpe_ratio REAL,
-      total_trades INTEGER,
-      created_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS ai_market_briefings (
-      id SERIAL PRIMARY KEY,
-      provider TEXT NOT NULL DEFAULT 'gemini',
-      model TEXT NOT NULL DEFAULT 'gemini-1.5-flash',
-      kr_index_price REAL,
-      kr_daily_20ma REAL,
-      kr_intraday_60ma REAL,
-      kr_regime_status TEXT DEFAULT 'NORMAL',
-      us_index_price REAL,
-      us_daily_20ma REAL,
-      us_intraday_60ma REAL,
-      us_regime_status TEXT DEFAULT 'NORMAL',
-      usd_krw_rate REAL,
-      kospi_index REAL,
-      kosdaq_index REAL,
-      kospi_20ma REAL,
-      kosdaq_60ma REAL,
-      regime_status TEXT DEFAULT 'NORMAL',
-      trigger_type TEXT DEFAULT 'MANUAL',
-      briefing_text TEXT NOT NULL,
-      analysis_type TEXT DEFAULT 'MARKET_BRIEFING',
-      created_at TEXT NOT NULL
-    );
-    ALTER TABLE ai_market_briefings ADD COLUMN IF NOT EXISTS analysis_type TEXT DEFAULT 'MARKET_BRIEFING';
-
-    CREATE TABLE IF NOT EXISTS stock_news (
-      id SERIAL PRIMARY KEY,
-      title TEXT,
-      link TEXT UNIQUE,
-      source TEXT,
-      published_at TEXT,
-      summary TEXT,
-      sentiment TEXT DEFAULT 'NEUTRAL',
-      keywords TEXT,
-      created_at TEXT
-    );
-    CREATE INDEX IF NOT EXISTS idx_stock_news_pubdate ON stock_news (published_at DESC);
-
-    CREATE TABLE IF NOT EXISTS ai_news_briefings (
-      id SERIAL PRIMARY KEY,
-      provider TEXT,
-      model TEXT,
-      news_count INTEGER,
-      bullish_count INTEGER,
-      bearish_count INTEGER,
-      neutral_count INTEGER,
-      briefing_text TEXT,
-      created_at TEXT
-    );
-
-    CREATE TABLE IF NOT EXISTS ai_trade_decisions (
-      id SERIAL PRIMARY KEY,
-      symbol TEXT NOT NULL,
-      stock_name TEXT NOT NULL,
-      market TEXT NOT NULL,
-      action TEXT NOT NULL,
-      confidence INTEGER NOT NULL,
-      sentiment_score REAL NOT NULL,
-      reasoning TEXT NOT NULL,
-      related_news TEXT,
-      suggested_order_type TEXT,
-      executed_by TEXT,
-      execution_status TEXT,
-      order_no TEXT,
-      model_type TEXT DEFAULT 'FLASH',
-      created_at TEXT NOT NULL
-    );
-    CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
-    ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS related_news TEXT;
-    ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS model_type TEXT DEFAULT 'FLASH';
-
-    CREATE TABLE IF NOT EXISTS market_regime_filter (
-      id INTEGER PRIMARY KEY CHECK (id = 1),
-      sentiment_score REAL DEFAULT 0.0,
-      market_regime TEXT DEFAULT 'SIDEWAYS',
-      risk_alert INTEGER DEFAULT 0,
-      recommended_action TEXT DEFAULT 'NORMAL',
-      position_size_multiplier REAL DEFAULT 1.0,
-      blacklist_tickers_json TEXT DEFAULT '[]',
-      reason TEXT DEFAULT '초기 정상 가동 상태',
-      kr_market_regime VARCHAR(32) DEFAULT 'SIDEWAYS',
-      kr_recommended_action VARCHAR(32) DEFAULT 'NORMAL',
-      kr_position_size_multiplier NUMERIC DEFAULT 1.0,
-      kr_risk_alert INTEGER DEFAULT 0,
-      kr_reason TEXT DEFAULT '한국 초기 정상 상태',
-      kr_blacklist_tickers_json TEXT DEFAULT '[]',
-      us_market_regime VARCHAR(32) DEFAULT 'SIDEWAYS',
-      us_recommended_action VARCHAR(32) DEFAULT 'NORMAL',
-      us_position_size_multiplier NUMERIC DEFAULT 1.0,
-      us_risk_alert INTEGER DEFAULT 0,
-      us_reason TEXT DEFAULT '미국 초기 정상 상태',
-      us_blacklist_tickers_json TEXT DEFAULT '[]',
-      updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
-    );
-  `);
-
-  seedInitialData();
-  migrateAndSeedTenBots(dbInstance);
-  console.log('[DB] PostgreSQL 스키마 및 초기 데이터 설정 완료');
-  return dbInstance;
+  try {
+    dbInstance = new PostgresSyncAdapter(dbConfig);
+    dbInstance.exec(PG_SCHEMA_SQL);
+    seedInitialData();
+    migrateAndSeedTenBots(dbInstance);
+    console.log('[DB] PostgreSQL 스키마 및 초기 데이터 설정 완료');
+    return dbInstance;
+  } catch (err) {
+    console.error(`[DB] PostgreSQL 연결 실패: ${err.message}`);
+    const envMode = (process.env.DB_MODE || '').toUpperCase();
+    if (envMode !== 'POSTGRESQL' && envMode !== 'POSTGRES') {
+      console.warn('[DB] PostgreSQL 대신 내장 SQLite(WAL 모드)로 자동 안전 폴백을 수행합니다.');
+      const sqlitePath = path.join(PROJECT_ROOT, 'data', 'auto_stock_trade.db');
+      dbInstance = new SqliteAdapter(sqlitePath);
+      dbInstance.exec(SQLITE_SCHEMA_SQL);
+      seedInitialData();
+      migrateAndSeedTenBots(dbInstance);
+      return dbInstance;
+    }
+    throw err;
+  }
 }
 
 export function seedInitialData() {
@@ -429,8 +803,10 @@ export function seedInitialData() {
     day: '2-digit',
   }).format(new Date());
 
+  const configuredPasscode = process.env.GATE_PASSCODE || 'sws@2129';
   const initSettings = [
-    { key: 'gate_passcode', value: 'coin' },
+    { key: 'gate_passcode', value: configuredPasscode },
+    { key: 'virtual_fast_cycle_mode', value: '0' },
     { key: 'total_capital', value: '30000000' },
     { key: 'virtual_seed_money', value: '1000000' },
     { key: 'virtual_total_budget', value: '10000000' },
@@ -452,6 +828,15 @@ export function seedInitialData() {
   `);
   for (const s of initSettings) {
     stmtSetting.run(s.key, s.value, nowIso);
+  }
+
+  // GATE_PASSCODE 환경변수가 명시된 경우 기존 'coin' 기본값을 덮어써서 최신화
+  if (process.env.GATE_PASSCODE) {
+    dbInstance.prepare(`
+      UPDATE system_settings
+      SET value = ?, updated_at = ?
+      WHERE key = 'gate_passcode' AND value IN ('coin', 'sws@2129')
+    `).run(process.env.GATE_PASSCODE, nowIso);
   }
 
   // Ensure default market_regime_filter row exists
@@ -598,4 +983,34 @@ export function closeDatabase() {
     dbInstance.close();
     dbInstance = null;
   }
+}
+
+/**
+ * 3.2 안전한 동기 트랜잭션 헬퍼 함수
+ * 중첩 호출 시 자동으로 SQLite SAVEPOINT를 적용하여 DB 락/크래시 방지
+ */
+export function runTransaction(fn) {
+  const db = getDb();
+  if (!db) throw new Error('DB 인스턴스가 초기화되지 않았습니다.');
+  if (typeof db.transaction === 'function') {
+    return db.transaction(fn)();
+  }
+  db.exec('BEGIN');
+  try {
+    const res = fn(db);
+    db.exec('COMMIT');
+    return res;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    throw err;
+  }
+}
+
+/**
+ * 3.2 수치 연산 방어 헬퍼 함수 (NULL, NaN, Infinity 방어)
+ */
+export function safeNum(val, fallback = 0) {
+  if (val === null || val === undefined) return fallback;
+  const num = Number(val);
+  return Number.isFinite(num) ? num : fallback;
 }

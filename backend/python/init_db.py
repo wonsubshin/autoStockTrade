@@ -1,23 +1,16 @@
 """
-init_db.py - PostgreSQL 16 데이터베이스 연결 및 초기화 모듈 (Python)
-- SQLite 완전 제거 및 PostgreSQL 16 전용
+init_db.py - SQLite (내장 WAL 모드) & PostgreSQL 16 듀얼 모드 데이터베이스 연결 및 초기화 모듈 (Python)
+- DB_MODE=SQLITE_ONLY (기본/초간편): Python 내장 sqlite3 모듈 사용, data/auto_stock_trade.db 연결
+- DB_MODE=POSTGRESQL (고급): psycopg2를 통한 PostgreSQL 16 연결
 - LLM 시장 체제 & 감성 필터 상태 테이블 (market_regime_filter, id=1 단일 행)
 """
 
 import logging
 import os
+import sqlite3
+import sys
 from pathlib import Path
 from typing import Optional
-
-try:
-    import psycopg2
-    from psycopg2.extras import RealDictCursor
-except ImportError:
-    import sys
-    auto_venv_python = Path("/home/asura/dev/sourceCode/autoCoinTrade/.venv/bin/python3")
-    if auto_venv_python.exists() and sys.executable != str(auto_venv_python):
-        os.execv(str(auto_venv_python), [str(auto_venv_python)] + sys.argv)
-    raise
 
 logging.basicConfig(
     level=logging.INFO,
@@ -40,11 +33,55 @@ def load_env():
                 if "=" in line:
                     k, v = line.split("=", 1)
                     k, v = k.strip(), v.strip()
-                    if k:
+                    if k and k not in os.environ:
                         os.environ[k] = v
 
 
 load_env()
+
+
+class SqliteCursorWrapper:
+    def __init__(self, cur):
+        self.cur = cur
+
+    def execute(self, sql, params=None):
+        sql = sql.replace("%s", "?")
+        if params is None:
+            return self.cur.execute(sql)
+        return self.cur.execute(sql, tuple(params))
+
+    def fetchall(self):
+        return [dict(r) for r in self.cur.fetchall()]
+
+    def fetchone(self):
+        r = self.cur.fetchone()
+        return dict(r) if r else None
+
+    def __enter__(self):
+        return self
+
+    def __exit__(self, exc_type, exc_val, exc_tb):
+        pass
+
+
+class SqliteConnectionWrapper:
+    def __init__(self, conn):
+        self.conn = conn
+        self.conn.row_factory = sqlite3.Row
+        self.autocommit = True
+
+    def cursor(self):
+        return SqliteCursorWrapper(self.conn.cursor())
+
+    def commit(self):
+        self.conn.commit()
+
+    def close(self):
+        try:
+            self.conn.commit()
+        except Exception:
+            pass
+        self.conn.close()
 
 
 def get_pg_config():
@@ -67,18 +104,44 @@ def get_pg_config():
 
 
 def get_db_connection(db_path: Optional[str] = None):
-    cfg = get_pg_config()
-    conn = psycopg2.connect(
-        host=cfg["host"],
-        port=cfg["port"],
-        dbname=cfg["dbname"],
-        user=cfg["user"],
-        password=cfg["password"],
-        cursor_factory=RealDictCursor,
-        connect_timeout=5,
-    )
-    conn.autocommit = True
-    return conn
+    db_mode = os.getenv("DB_MODE", "").strip().upper()
+
+    # 1. SQLite 전용 모드인 경우
+    if db_mode in ("SQLITE_ONLY", "SQLITE") or not os.getenv("LOCAL_PG_PASSWORD") and db_mode != "POSTGRESQL":
+        target_path = Path(db_path) if db_path else PROJECT_ROOT / "data" / "auto_stock_trade.db"
+        target_path.parent.mkdir(parents=True, exist_ok=True)
+        raw_conn = sqlite3.connect(str(target_path))
+        raw_conn.execute("PRAGMA journal_mode = WAL;")
+        raw_conn.execute("PRAGMA synchronous = NORMAL;")
+        return SqliteConnectionWrapper(raw_conn)
+
+    # 2. PostgreSQL 모드
+    try:
+        import psycopg2
+        from psycopg2.extras import RealDictCursor
+
+        cfg = get_pg_config()
+        conn = psycopg2.connect(
+            host=cfg["host"],
+            port=cfg["port"],
+            dbname=cfg["dbname"],
+            user=cfg["user"],
+            password=cfg["password"],
+            cursor_factory=RealDictCursor,
+            connect_timeout=5,
+        )
+        conn.autocommit = True
+        return conn
+    except Exception as pg_err:
+        if db_mode != "POSTGRESQL":
+            logger.warning("PostgreSQL 연결 불가(%s). 내장 SQLite로 안전 폴백합니다.", pg_err)
+            target_path = Path(db_path) if db_path else PROJECT_ROOT / "data" / "auto_stock_trade.db"
+            target_path.parent.mkdir(parents=True, exist_ok=True)
+            raw_conn = sqlite3.connect(str(target_path))
+            raw_conn.execute("PRAGMA journal_mode = WAL;")
+            raw_conn.execute("PRAGMA synchronous = NORMAL;")
+            return SqliteConnectionWrapper(raw_conn)
+        raise
 
 
 def init_database(db_path: Optional[str] = None) -> None:
@@ -122,7 +185,7 @@ def init_database(db_path: Optional[str] = None) -> None:
                 ON CONFLICT (id) DO NOTHING;
                 """
             )
-        logger.info("PostgreSQL market_regime_filter 테이블 초기화 완료")
+        logger.info("market_regime_filter 테이블 초기화 완료")
     except Exception as exc:
         logger.error("DB 초기화 실패: %s", exc)
         raise

@@ -471,7 +471,25 @@ export class VirtualPaperTradingEngine {
       }
     }
 
-    const cumulativeReturnPct = parseFloat(((totalProfitKrw / initialCapital) * 100).toFixed(2));
+    // 2.2 가상 평가자산(virtual_total_assets)의 실시간 시가 평가(Mark-to-Market) 반영
+    let openPositionsEvalSum = 0;
+    let openUnrealizedProfitKrw = 0;
+    for (const pos of openPositions) {
+      const quote = this.kiwoomClient?.priceCache?.get(pos.stock_code)?.data;
+      const curPrice = Number(quote?.currentPrice || pos.avg_buy_price || 0);
+      const qty = Number(pos.qty || 0);
+      const buyAmt = Number(pos.buy_amount || 0);
+      const buyFee = Number(pos.buy_fee || 0);
+      const evalAmt = Math.round(curPrice * qty);
+      openPositionsEvalSum += evalAmt;
+      openUnrealizedProfitKrw += (evalAmt - buyAmt - buyFee);
+    }
+
+    const currentTotalAssets = Number(bot.virtual_krw || 0) + openPositionsEvalSum;
+    const totalMarkToMarketProfitKrw = totalProfitKrw + openUnrealizedProfitKrw;
+    const cumulativeReturnPct = initialCapital > 0
+      ? parseFloat((((currentTotalAssets - initialCapital) / initialCapital) * 100).toFixed(2))
+      : 0;
 
     return {
       botId: bot.bot_id,
@@ -482,9 +500,14 @@ export class VirtualPaperTradingEngine {
       isRunning: bot.is_running,
       virtualKrw: bot.virtual_krw,
       initialCapital,
-      currentEquity,
-      totalProfitKrw,
+      currentEquity: currentTotalAssets,
+      virtualTotalAssets: currentTotalAssets,
+      virtual_total_assets: currentTotalAssets,
+      totalProfitKrw: totalMarkToMarketProfitKrw,
+      realizedProfitKrw: totalProfitKrw,
+      unrealizedProfitKrw: openUnrealizedProfitKrw,
       cumulativeReturnPct,
+      virtual_return_pct: cumulativeReturnPct,
       winRate,
       profitFactor,
       mddPct: parseFloat(maxDrawdownPct.toFixed(2)),

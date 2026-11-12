@@ -1,5 +1,6 @@
 import fs from 'fs';
 import path from 'path';
+import { NotificationService } from './notification_service.mjs';
 
 export const GEMINI_FLASH_MODELS = [
   'gemini-3.5-flash',
@@ -75,6 +76,16 @@ export class CircuitBreaker {
       this.lastStateChange = Date.now();
       const waitMin = Math.round(this.resetTimeoutMs / 60000);
       console.warn(`[CircuitBreaker:${this.name}] 🔴 서킷 브레이커 발동(OPEN): 연속 ${this.failureCount}회 장애로 향후 ${waitMin}분 동안 API 호출 차단 및 순수 퀀트 Fallback 모드 전환`);
+      
+      // 4.3 서킷 브레이커 발동 및 Fallback 전환 웹훅 즉시 발송
+      try {
+        NotificationService.notifyCircuitBreaker({
+          modelName: this.name,
+          failureCount: this.failureCount,
+          cooldownMin: waitMin,
+          reason: err?.message || String(err),
+        });
+      } catch (notifyErr) {}
     }
   }
 

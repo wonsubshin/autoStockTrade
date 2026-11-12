@@ -26,21 +26,41 @@ export class PythonExecutorBridge {
         '--root', this.projectRoot,
       ];
 
-      execFile('python3', args, { timeout: 20000 }, (error, stdout, stderr) => {
+      const pythonBin = process.env.PYTHON_BIN || (process.platform === 'win32' ? 'python' : 'python3');
+
+      // 3.3 명시적 15초 타임아웃 및 서브프로세스 좀비화 방지
+      const child = execFile(pythonBin, args, {
+        timeout: 15000,
+        killSignal: 'SIGTERM',
+        maxBuffer: 10 * 1024 * 1024,
+      }, (error, stdout, stderr) => {
         if (error) {
-          let errMsg = stderr || error.message;
-          try {
-            const parsed = JSON.parse(stdout);
-            if (parsed.error) errMsg = parsed.error;
-          } catch (e) {}
+          let errMsg = stderr ? stderr.trim() : error.message;
+          if (error.killed || error.signal === 'SIGTERM') {
+            errMsg = `Python 프로세스 실행 타임아웃(15000ms 초과)으로 안전하게 강제 종료되었습니다.`;
+          }
+          if (stdout) {
+            try {
+              const parsed = JSON.parse(stdout.trim());
+              if (parsed.error) errMsg = parsed.error;
+            } catch (e) {}
+          }
           return reject(new Error(`[PythonExecutor] ${errMsg}`));
         }
 
+        const raw = (stdout || '').trim();
+        if (!raw) {
+          return reject(new Error(`[PythonExecutor] 빈 응답 반환 (stderr: ${stderr || '없음'})`));
+        }
+
         try {
-          const result = JSON.parse(stdout.trim());
+          const result = JSON.parse(raw);
+          if (result && result.error) {
+            return reject(new Error(`[PythonExecutor] 브로커 주문 에러: ${result.error}`));
+          }
           resolve(result);
         } catch (e) {
-          reject(new Error(`[PythonExecutor] JSON 파싱 실패: ${stdout} (stderr: ${stderr})`));
+          reject(new Error(`[PythonExecutor] JSON 파싱 실패: "${raw.slice(0, 200)}" (stderr: ${stderr || '없음'})`));
         }
       });
     });

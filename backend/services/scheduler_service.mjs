@@ -1,9 +1,10 @@
-import { getDb } from '../db/index.mjs';
+import { getDb, runTransaction, safeNum } from '../db/index.mjs';
 import { kiwoomClient, tossClient, TOP_KR_STOCKS, TOP_US_STOCKS, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
 import { virtualEngine, BotService } from './bot_service.mjs';
 import { TradeService, pythonBridge } from './trade_service.mjs';
 import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
 import { AiService, llmDecisionService } from './ai_service.mjs';
+import { NotificationService } from '../common/notification_service.mjs';
 
 export class SchedulerService {
   constructor() {
@@ -14,25 +15,28 @@ export class SchedulerService {
     // 30분 Flash 주기 (매시 00분, 30분 KST)
     this.lastFlashSlotKey = '';
     this.isFlashAnalyzing = false;
+    this.isFlashRunning = false; // 3.2 30분 루프 동시 실행 방어 락
     this.lastFlashFailureMs = 0;
     this.lastFlashFactCheck = null; // 스마트 캐싱용 팩트 스냅샷
 
     // 60분 Pro 심층 주기 (매시 00분 정각 KST)
     this.lastProSlotKey = '';
     this.isProAnalyzing = false;
+    this.isProRunning = false; // 3.2 60분 루프 동시 실행 방어 락
     this.lastProFailureMs = 0;
     this.lastProFactCheck = null; // 스마트 캐싱용 팩트 스냅샷
 
-    // 하위 호환 플래그 및 7초 주기 중복 실행 방지 락
+    // 3.2 7초 트레이딩 주기 동시 실행 방어 락 및 타이머 보호
+    this.isTickRunning = false;
+    this.isRunningCycle = false;
     this.lastAutoSlotKey = '';
     this.isLlmAnalyzing = false;
-    this.isRunningCycle = false;
     this.lastScheduledAiFailureMs = 0;
     this.cachedHybridDecisions = [];
   }
 
   start() {
-    if (this.timer) return;
+    if (this.timer || this.aiScheduleTimer) return;
     console.log('[SchedulerService] 듀얼 트랙 스케줄러 시작 (7초 거래주기, ⚡30분 Gemini Flash 시황 & 🏛️60분 Gemini Pro 심층분석)');
     
     // 시작 시 즉시 30분 Flash 및 60분 Pro 최신 분석 상태 점검 및 실행
@@ -56,6 +60,10 @@ export class SchedulerService {
       clearInterval(this.aiScheduleTimer);
       this.aiScheduleTimer = null;
     }
+    this.isTickRunning = false;
+    this.isRunningCycle = false;
+    this.isFlashRunning = false;
+    this.isProRunning = false;
     console.log('[SchedulerService] 스케줄러 정지');
   }
 
@@ -530,6 +538,12 @@ export class SchedulerService {
       const nowMs = Date.now();
       const nowIso = new Date().toISOString();
 
+      // 2.1 system_settings의 virtual_fast_cycle_mode 확인
+      // '0' (기본값): 정밀 전략 검증 모드 (무작위 진입/초단기 청산 비활성화, 순수 퀀트 수식 및 고유 익절/손절만 적용)
+      // '1': 고속 순환/데모 모드 (Math.random < 0.65 탐색 진입 및 25초/75초 강제 청산 허용)
+      const fastCycleSetting = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_fast_cycle_mode'").get();
+      const isFastCycleMode = fastCycleSetting?.value === '1' || fastCycleSetting?.value === 'true';
+
       // 1) 보유 가상 포지션 동적 청산 검사
       const vPositions = db.prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'").all(bot.bot_id);
 
@@ -548,12 +562,12 @@ export class SchedulerService {
         } else if (returnPct >= Number(bot.take_profit_pct)) {
           shouldExit = true;
           exitReason = `익절 기준 도달 (+${bot.take_profit_pct}% 설정, 현재 +${returnPct.toFixed(2)}%)`;
-        } else if (heldTimeMs >= 25000 && (returnPct >= 0.5 || returnPct <= -1.0)) {
+        } else if (isFastCycleMode && heldTimeMs >= 25000 && (returnPct >= 0.5 || returnPct <= -1.0)) {
           shouldExit = true;
           exitReason = returnPct >= 0.5
             ? `가상 단기 목표 수익 달성 (+${returnPct.toFixed(2)}%)`
             : `가상 리스크 관리 조기 손절 (${returnPct.toFixed(2)}%)`;
-        } else if (heldTimeMs >= 75000) {
+        } else if (isFastCycleMode && heldTimeMs >= 75000) {
           shouldExit = true;
           exitReason = `가상 포지션 순환 리밸런싱 (${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%)`;
         }
@@ -608,8 +622,9 @@ export class SchedulerService {
         }
       }
 
-      // 시그널 미발생 시에도 상시 가상 거래 활성화를 위해 0포지션일 때 탐색적 진입
-      if (!bestStock && currentOpenCount === 0 && Math.random() < 0.65) {
+      // 2.1 정밀 전략 검증 모드(fastCycle = 0)에서는 무작위 진입을 비활성화하고,
+      // 오직 evaluatePureQuantAlgorithm(bot, stock)의 순수 퀀트 수식 시그널로만 매매
+      if (isFastCycleMode && !bestStock && currentOpenCount === 0 && Math.random() < 0.65) {
         bestStock = pool[Math.floor(Math.random() * pool.length)];
         bestSignal = {
           shouldBuy: true,
@@ -735,6 +750,42 @@ export class SchedulerService {
       console.warn('[SchedulerService] 실계좌 포지션 동기화 오류:', syncErr.message);
     }
 
+    // 1.2 선택 해제된 봇의 미청산 실전 포지션이 고아 상태로 방치되지 않도록 활성 실전 봇으로 자동 승계 및 청산 감시 대상 유지
+    try {
+      const activeBotIds = activeRealBots.map((b) => b.bot_id);
+      if (activeBotIds.length > 0) {
+        const notInPlaceholders = activeBotIds.map(() => '?').join(', ');
+        const orphanPositions = db.prepare(`
+          SELECT * FROM bot_positions
+          WHERE trade_mode = 'REAL' AND status = 'OPEN' AND bot_id NOT IN (${notInPlaceholders})
+        `).all(...activeBotIds);
+
+        if (orphanPositions.length > 0) {
+          for (let i = 0; i < orphanPositions.length; i++) {
+            const orphan = orphanPositions[i];
+            const targetBot = activeRealBots[i % activeRealBots.length];
+            db.prepare(`
+              UPDATE bot_positions
+              SET origin_bot_id = COALESCE(origin_bot_id, bot_id),
+                  bot_id = ?
+              WHERE id = ?
+            `).run(targetBot.bot_id, orphan.id);
+            if (orphan.trade_id) {
+              db.prepare(`
+                UPDATE trades
+                SET origin_bot_id = COALESCE(origin_bot_id, bot_id),
+                    bot_id = ?
+                WHERE id = ?
+              `).run(targetBot.bot_id, orphan.trade_id);
+            }
+          }
+          console.log(`[SchedulerService] 🛡️ 미청산 고아 실전 포지션 ${orphanPositions.length}건을 활성 실전 봇으로 인계하여 청산 감시 유지`);
+        }
+      }
+    } catch (orphanErr) {
+      console.warn('[SchedulerService] 고아 포지션 인계 오류:', orphanErr.message);
+    }
+
     const pendingBotSellMsgs = new Map();
 
     // 1) 실전 포지션 청산 검사 (손절/익절/15:15장마감 및 Gemini LLM 뉴스 악재 SELL 신호)
@@ -812,32 +863,50 @@ export class SchedulerService {
             const profitKrw = (sellAmount - posBuyAmt) - feeAndTax;
             const profitPct = posBuyAmt > 0 ? parseFloat(((profitKrw / posBuyAmt) * 100).toFixed(2)) : 0;
 
-            db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, pos.id);
-            if (pos.trade_id) {
-              db.prepare(`
-                UPDATE trades
-                SET sell_order_no = ?,
-                    sell_price = ?,
-                    sell_qty = ?,
-                    sell_amount = ?,
-                    sell_date = ?,
-                    fee_and_tax = ?,
-                    profit_krw = ?,
-                    profit_pct = ?,
-                    status = 'CLOSED'
-                WHERE id = ?
-              `).run(
-                orderRes.orderId || `TORD_S_${Date.now()}`,
-                executionPrice,
-                posQty,
-                sellAmount,
-                nowIso,
-                feeAndTax,
-                profitKrw,
-                profitPct,
-                pos.trade_id
-              );
-            }
+            runTransaction(() => {
+              db.prepare("UPDATE bot_positions SET status = 'CLOSED', closed_at = ? WHERE id = ?").run(nowIso, pos.id);
+              if (pos.trade_id) {
+                db.prepare(`
+                  UPDATE trades
+                  SET sell_order_no = ?,
+                      sell_price = ?,
+                      sell_qty = ?,
+                      sell_amount = ?,
+                      sell_date = ?,
+                      fee_and_tax = ?,
+                      profit_krw = ?,
+                      profit_pct = ?,
+                      status = 'CLOSED'
+                  WHERE id = ?
+                `).run(
+                  orderRes.orderId || `TORD_S_${Date.now()}`,
+                  executionPrice,
+                  posQty,
+                  sellAmount,
+                  nowIso,
+                  feeAndTax,
+                  profitKrw,
+                  profitPct,
+                  pos.trade_id
+                );
+              }
+            });
+
+            // 4.3 실전 매도 체결 알림 발송
+            NotificationService.notifyRealTrade({
+              botName: bot.name,
+              botNickname: bot.nickname,
+              side: 'SELL',
+              stockName: pos.stock_name,
+              stockCode: pos.stock_code,
+              price: executionPrice,
+              qty: posQty,
+              amount: sellAmount,
+              profitKrw,
+              profitPct,
+              reason: sellReason,
+              orderId: orderRes.orderId,
+            });
 
             db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
               `[🐍 Python 실전매도] ${pos.stock_name} ${posQty}주 @ ${executionPrice.toLocaleString()}원 (${profitPct >= 0 ? '+' : ''}${profitPct}%, 이유: ${sellReason})`,
@@ -869,12 +938,12 @@ export class SchedulerService {
     // 1. DB에서 최신 LLM 시장 체제 판정서 조회 (한국 KR과 미국 US 분리 평가)
     const filterRow = db.prepare("SELECT * FROM market_regime_filter WHERE id = 1").get();
 
-    // 🇰🇷 한국 시장 체제 판정 및 매매 지침
+    // 1.3 🇰🇷 한국 시장 체제 판정 및 매매 지침 (KOSPI 20MA / KOSDAQ 60MA 체제는 국내 주식에만 적용)
     const krAction = filterRow?.kr_recommended_action || filterRow?.recommended_action || 'NORMAL';
     const krMult = Math.max(0.0, Math.min(1.0, Number(filterRow?.kr_position_size_multiplier ?? filterRow?.position_size_multiplier ?? 1.0)));
-    const krHalt = krAction === 'HALT_NEW_BUYS' || Number(filterRow?.kr_risk_alert || 0) === 1 || regimeInfo?.regime === 'HOLD_CASH';
+    const krHalt = krAction === 'HALT_NEW_BUYS' || Number(filterRow?.kr_risk_alert || 0) === 1 || regimeInfo?.isKrHalt || regimeInfo?.regime === 'HOLD_CASH';
 
-    // 🇺🇸 미국 시장 체제 판정 및 매매 지침
+    // 1.3 🇺🇸 미국 시장 체제 판정 및 매매 지침 (국내 지수 이동평균선에 의해 차단되지 않고 미국 장세로 독립 분리)
     const usAction = filterRow?.us_recommended_action || filterRow?.recommended_action || 'NORMAL';
     const usMult = Math.max(0.0, Math.min(1.0, Number(filterRow?.us_position_size_multiplier ?? filterRow?.position_size_multiplier ?? 1.0)));
     const usHalt = usAction === 'HALT_NEW_BUYS' || Number(filterRow?.us_risk_alert || 0) === 1;
@@ -917,13 +986,20 @@ export class SchedulerService {
       return;
     }
 
-    const defaultUsdRate = usMarket?.exchangeRate || 1345;
-    const minFractionalKrw = Math.ceil(defaultUsdRate * 1.05); // 토스 소수점 최소 주문($1.00) + 환율 버퍼 (약 1,415원)
+    const defaultUsdRate = usMarket?.exchangeRate || (await tossClient.getExchangeRate()) || 1345;
+    const minFractionalKrw = await tossClient.getMinFractionalOrderBudgetKrw(); // 1.1: 토스 실시간 USD/KRW 연동 소수점 최소 주문($10) 원화 기준
     const reservedSymbolsInCycle = new Set();
 
     for (const bot of activeRealBots) {
-      const openCount = db.prepare("SELECT COUNT(*) as cnt FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'").get(bot.bot_id).cnt;
+      const botPositions = db.prepare("SELECT stock_code, trade_mode FROM bot_positions WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'").all(bot.bot_id);
+      const openCount = botPositions.length;
       if (openCount >= 3) continue;
+
+      // 1.1: 봇당 최대 3개 종목 제한에서 국내(KR)와 미국(US) 포지션 슬롯 분리 (주간 국내장에서 슬롯 전량 소진 방어)
+      const krHeldCount = botPositions.filter((p) => p.stock_code && p.stock_code.length === 6 && /^\d+$/.test(p.stock_code)).length;
+      const usHeldCount = botPositions.filter((p) => !(p.stock_code && p.stock_code.length === 6 && /^\d+$/.test(p.stock_code))).length;
+      const MAX_KR_SLOTS = 2;
+      const MAX_US_SLOTS = 2;
 
       const isBotFallback = isCircuitBlocked;
       const budgetMultiplier = isBotFallback ? 0.5 : 1.0;
@@ -982,12 +1058,12 @@ export class SchedulerService {
 
           if (priority === 'KR_UNIT') {
             // 1순위: 🇰🇷 한국 주식 1주 온주 매수 (한국 LLM 판단 로직 및 krMult / budgetMultiplier 배율 적용)
-            if (krHalt) continue; // 한국 시장 리스크 경보/차단 시 국내 주식만 스킵
+            if (krHalt || krHeldCount >= MAX_KR_SLOTS) continue; // 한국 시장 리스크 경보/차단 또는 KR 슬롯 한도 도달 시 폴백
 
             const krScaledBotCap = Math.floor(botCap * (krMult > 0 ? krMult : 1.0) * budgetMultiplier);
             const krRemainingCap = Math.max(0, krScaledBotCap - usedCap);
             const availableKrCash = Math.min(tossBal?.availableCash || 0, krRemainingCap);
-            if (availableKrCash <= 0) continue;
+            if (availableKrCash <= 0) continue; // 예산 부족 시 다음 우선순위(미국 주식/소수점)로 폴백
 
             const candidateSignal = availableBuySignals.find((s) => s.market === 'KR');
             if (!candidateSignal) continue;
@@ -1011,6 +1087,7 @@ export class SchedulerService {
               const execReason = isBotFallback
                 ? `[${bot.nickname}] 🛡️순수퀀트 Fallback 매수(예산 50%): ${candidateSignal.reasoning || candidateSignal.name + ' 기술적 지표 돌파'}`
                 : `[${bot.nickname}] Gemini AI 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 매수'}`;
+              
               const orderRes = await pythonBridge.executeOrder({
                 symbol: candidateSignal.symbol,
                 side: 'BUY',
@@ -1019,29 +1096,59 @@ export class SchedulerService {
                 quantity: 1,
                 reason: execReason,
               });
+
+              if (!orderRes || orderRes.success === false) {
+                throw new Error(orderRes?.message || '한국 주식 실전 매수 주문 실행 실패');
+              }
+
               const fee = Math.round(unitPrice * 0.00015);
-              const insTrade = db.prepare(`
-                INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-                VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
-              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, unitPrice, unitPrice, nowIso);
-
-              db.prepare(`
-                INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-                VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
-              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPrice, unitPrice, fee, insTrade.lastInsertRowid, nowIso);
-
               const botLogPrefix = isBotFallback ? '[🐍 Python 실전매수(순수퀀트 Fallback 50%)]' : '[🐍 Python 실전매수]';
-              db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                `${botLogPrefix} ${candidateSignal.name} (${unitPrice.toLocaleString()}원, 점수 ${candidateSignal.confidence}%)`,
-                `${botLogPrefix} 매수: ${candidateSignal.name}`,
-                nowIso,
-                bot.bot_id
-              );
 
-              try {
-                db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE id = (SELECT id FROM ai_trade_decisions WHERE symbol = ? ORDER BY id DESC LIMIT 1)")
-                  .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
-              } catch (e) {}
+              // 3.2 & 3.3 트랜잭션 보호 및 원장 정합성 보장
+              runTransaction(() => {
+                const insTrade = db.prepare(`
+                  INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                  VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
+                `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, unitPrice, unitPrice, nowIso);
+
+                db.prepare(`
+                  INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                  VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
+                `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPrice, unitPrice, fee, insTrade.lastInsertRowid, nowIso);
+
+                db.prepare(`
+                  UPDATE bots 
+                  SET real_available_krw = MAX(0, real_available_krw - ?),
+                      real_status_msg = ?, 
+                      last_status_msg = ?, 
+                      updated_at = ? 
+                  WHERE bot_id = ?
+                `).run(
+                  unitPrice + fee,
+                  `${botLogPrefix} ${candidateSignal.name} (${unitPrice.toLocaleString()}원, 점수 ${candidateSignal.confidence}%)`,
+                  `${botLogPrefix} 매수: ${candidateSignal.name}`,
+                  nowIso,
+                  bot.bot_id
+                );
+
+                try {
+                  db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE id = (SELECT id FROM ai_trade_decisions WHERE symbol = ? ORDER BY id DESC LIMIT 1)")
+                    .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
+                } catch (e) {}
+              });
+
+              // 4.3 실시간 텔레그램/디스코드 웹훅 알림
+              NotificationService.notifyRealTrade({
+                botName: bot.nickname,
+                market: 'KR',
+                symbol: candidateSignal.symbol,
+                name: candidateSignal.name,
+                action: 'BUY',
+                qty: 1,
+                price: unitPrice,
+                totalAmount: unitPrice,
+                reason: execReason,
+              });
 
               if (tossBal) {
                 tossBal.availableCash = Math.max(0, Number(tossBal.availableCash || 0) - unitPrice - fee);
@@ -1050,12 +1157,13 @@ export class SchedulerService {
             }
           } else if (priority === 'US_UNIT') {
             // 2순위: 🇺🇸 미국 주식 1주 온주 매수 (미국 LLM 판단 로직 및 usMult / budgetMultiplier 배율 적용)
-            if (usHalt) continue; // 미국 시장 리스크 경보/차단 시 미국 주식 스킵
+            if (usHalt || usHeldCount >= MAX_US_SLOTS) continue; // 미국 시장 리스크 경보/차단 또는 US 슬롯 한도 도달 시 폴백
 
             const usScaledBotCap = Math.max(minFractionalKrw, Math.floor(botCap * (usMult > 0 ? usMult : 1.0) * budgetMultiplier));
             const usRemainingCap = Math.max(0, usScaledBotCap - usedCap);
-            const availableUsCash = Math.min(tossBal?.availableCash || 0, usRemainingCap);
-            if (availableUsCash <= 0) continue;
+            const accountPurchasingPowerKrw = Number(tossBal?.availableCash || 0) + (Number(tossBal?.availableUsd || 0) * defaultUsdRate);
+            const availableUsCash = Math.min(accountPurchasingPowerKrw, usRemainingCap);
+            if (availableUsCash <= 0) continue; // 가용 예산 부족 시 미국 소수점($10)으로 폴백
 
             const candidateSignal = availableBuySignals.find((s) => s.market === 'US');
             if (!candidateSignal) continue;
@@ -1080,6 +1188,7 @@ export class SchedulerService {
               const execReason = isBotFallback
                 ? `[${bot.nickname}] 🛡️순수퀀트 Fallback 미국 1주 매수(예산 50%): ${candidateSignal.reasoning || candidateSignal.name + ' 기술적 지표 돌파'}`
                 : `[${bot.nickname}] Gemini AI 미국 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 미국 1주 온주 매수'}`;
+              
               const orderRes = await pythonBridge.executeOrder({
                 symbol: candidateSignal.symbol,
                 side: 'BUY',
@@ -1088,29 +1197,59 @@ export class SchedulerService {
                 quantity: 1,
                 reason: execReason,
               });
+
+              if (!orderRes || orderRes.success === false) {
+                throw new Error(orderRes?.message || '미국 1주 온주 실전 매수 주문 실행 실패');
+              }
+
               const fee = Math.round(unitPriceKrw * 0.0025);
-              const insTrade = db.prepare(`
-                INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
-                VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
-              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
-
-              db.prepare(`
-                INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-                VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
-              `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
-
               const botLogPrefix = isBotFallback ? '[🐍 Python 실전매수(순수퀀트 Fallback 50%)]' : '[🐍 Python 실전매수]';
-              db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                `${botLogPrefix} 미국 1주: ${candidateSignal.name} ($${unitPriceUsd}, 점수 ${candidateSignal.confidence}%)`,
-                `${botLogPrefix} 1주 매수: ${candidateSignal.name}`,
-                nowIso,
-                bot.bot_id
-              );
 
-              try {
-                db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE id = (SELECT id FROM ai_trade_decisions WHERE symbol = ? ORDER BY id DESC LIMIT 1)")
-                  .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
-              } catch (e) {}
+              // 3.2 & 3.3 트랜잭션 보호 및 원장 정합성 보장
+              runTransaction(() => {
+                const insTrade = db.prepare(`
+                  INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
+                  VALUES (?, 'REAL', ?, ?, ?, ?, 1, ?, ?, 'HOLDING')
+                `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TORD_${Date.now()}`, unitPriceKrw, unitPriceKrw, nowIso);
+
+                db.prepare(`
+                  INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no, qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
+                  VALUES (?, 'REAL', ?, ?, ?, 1, ?, ?, ?, ?, 'OPEN', ?)
+                `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, unitPriceKrw, unitPriceKrw, fee, insTrade.lastInsertRowid, nowIso);
+
+                db.prepare(`
+                  UPDATE bots 
+                  SET real_available_krw = MAX(0, real_available_krw - ?),
+                      real_status_msg = ?, 
+                      last_status_msg = ?, 
+                      updated_at = ? 
+                  WHERE bot_id = ?
+                `).run(
+                  unitPriceKrw + fee,
+                  `${botLogPrefix} 미국 1주: ${candidateSignal.name} ($${unitPriceUsd}, 점수 ${candidateSignal.confidence}%)`,
+                  `${botLogPrefix} 1주 매수: ${candidateSignal.name}`,
+                  nowIso,
+                  bot.bot_id
+                );
+
+                try {
+                  db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE id = (SELECT id FROM ai_trade_decisions WHERE symbol = ? ORDER BY id DESC LIMIT 1)")
+                    .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
+                } catch (e) {}
+              });
+
+              // 4.3 실시간 텔레그램/디스코드 웹훅 알림
+              NotificationService.notifyRealTrade({
+                botName: bot.nickname,
+                market: 'US',
+                symbol: candidateSignal.symbol,
+                name: candidateSignal.name,
+                action: 'BUY',
+                qty: 1,
+                price: unitPriceKrw,
+                totalAmount: unitPriceKrw,
+                reason: execReason,
+              });
 
               if (tossBal) {
                 tossBal.availableCash = Math.max(0, Number(tossBal.availableCash || 0) - unitPriceKrw - fee);
@@ -1118,11 +1257,8 @@ export class SchedulerService {
               realExecuted = true;
             }
           } else if (priority === 'US_FRACTIONAL') {
-            // 3순위: 🇺🇸 미국 주식 소수점 금액 구매 (미국 LLM 판단 로직 및 usMult / budgetMultiplier 배율 적용)
-            if (usHalt) continue; // 미국 시장 리스크 경보/차단 시 미국 소수점 스킵
-
-            const usScaledBotCap = Math.max(minFractionalKrw, Math.floor(botCap * (usMult > 0 ? usMult : 1.0) * budgetMultiplier));
-            const usRemainingCap = Math.max(0, usScaledBotCap - usedCap);
+            // 3순위: 🇺🇸 미국 주식 소수점 금액 구매 (미국 LLM 판단 로직 및 $10 소수점 단위 동적 폴백)
+            if (usHalt || usHeldCount >= MAX_US_SLOTS) continue; // 미국 시장 리스크 경보/차단 또는 US 슬롯 한도 도달 시 스킵
 
             const candidateSignal = availableBuySignals.find((s) => s.market === 'US');
             if (!candidateSignal) continue;
@@ -1130,14 +1266,34 @@ export class SchedulerService {
             const priceInfo = await tossClient.getCurrentPrice(candidateSignal.symbol);
             const usdRate = priceInfo.exchangeRate || defaultUsdRate || 1345;
 
-            // 계좌의 실제 주문가능 달러(USD) 및 봇 잔여 한도(달러 환산)
+            // 1.1: 토스증권 소수점 최소 주문 단위인 $10 상당 원화 금액만 충족하면 동적 구매 집행
+            const targetUsd = 10.0;
+            const targetKrw = Math.round(targetUsd * usdRate);
+
+            const usScaledBotCap = Math.max(minFractionalKrw, Math.floor(botCap * (usMult > 0 ? usMult : 1.0) * budgetMultiplier));
+            const usRemainingCap = Math.max(0, usScaledBotCap - usedCap);
+
+            // 계좌 전체 구매력: 원화 예수금 + 달러 예수금 (원화 자동 환전 주문 지원)
             const actualUsd = tossBal?.availableUsd !== undefined ? Number(tossBal.availableUsd) : 0;
-            if (actualUsd < 1.0) {
-              const waitMsg = `[⚠️ 달러환전 필요] 토스 계좌 주문가능 달러($${actualUsd.toFixed(2)}) 부족 (최소 $1.00 필요) — 토스 앱에서 달러(USD) 환전 필요`;
+            const actualKrw = tossBal?.availableCash !== undefined ? Number(tossBal.availableCash) : 0;
+            const accountTotalPurchasingPowerKrw = actualKrw + (actualUsd * usdRate);
+
+            if (accountTotalPurchasingPowerKrw < targetKrw || (usRemainingCap < targetKrw && botCap < targetKrw)) {
+              // 계좌 잔고 부족 시에만 알림 갱신 후 루프 계속 진행
+              continue;
+            }
+
+            reservedSymbolsInCycle.add(candidateSignal.symbol);
+
+            // 토스증권 소수점 금액 주문은 미국 정규장(개장 ~ 종료 1시간 전, 23:30~05:00 KST)에만 접수 가능
+            if (!usMarket?.isFractionalOrderable) {
+              const sellPrefix = pendingBotSellMsgs.has(bot.bot_id) ? `${pendingBotSellMsgs.get(bot.bot_id)} | ` : '';
+              const fallbackPrefix = isBotFallback ? '🛡️순수퀀트 Fallback(50%) | ' : '';
+              const waitMsg = `[⏳ 소수점 예약대기] ${sellPrefix}${fallbackPrefix}매수예정: ${candidateSignal.name} $${targetUsd.toFixed(2)} (약 ${targetKrw.toLocaleString()}원, 점수 ${candidateSignal.confidence}%) — 미국 정규장(${usMarket?.nextFractionalTime || '23:30'}) 개장 즉시 자동 체결`;
               if (bot.real_status_msg !== waitMsg) {
                 db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
                   waitMsg,
-                  waitMsg,
+                  `[⏳ 소수점 예약대기] ${candidateSignal.name} $${targetUsd.toFixed(2)} (${usMarket?.nextFractionalTime || '23:30'} 개장 시 자동 주문)`,
                   nowIso,
                   bot.bot_id
                 );
@@ -1146,47 +1302,29 @@ export class SchedulerService {
               continue;
             }
 
-            const botRemainingUsd = usRemainingCap / usdRate;
-            // 봇에게 배정된 한도와 계좌 실제 보유 달러 중 작은 값 기준 (98% 안전 마진)
-            const affordableUsd = Math.floor(Math.min(actualUsd * 0.98, botRemainingUsd) * 100) / 100;
-            const maxAllowedUsd = isBotFallback ? 5.0 : 10.0; // Fallback 모드 시 50% 축소 ($10 -> $5)
-            const targetUsd = Math.min(maxAllowedUsd, affordableUsd);
-            const targetKrw = Math.round(targetUsd * usdRate);
+            const execReason = isBotFallback
+              ? `[${bot.nickname}] 🛡️순수퀀트 Fallback 소수점 매수(예산 50%): ${candidateSignal.reasoning || candidateSignal.name + ' 기술적 지표 돌파'}`
+              : `[${bot.nickname}] Gemini AI 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 소수점 매수'}`;
+            
+            const orderRes = await pythonBridge.executeOrder({
+              symbol: candidateSignal.symbol,
+              side: 'BUY',
+              orderType: 'MARKET',
+              market: 'US',
+              orderAmount: targetUsd,
+              reason: execReason,
+            });
 
-            if (targetUsd >= 1.0 && actualUsd >= targetUsd) {
-              reservedSymbolsInCycle.add(candidateSignal.symbol);
+            if (!orderRes || orderRes.success === false) {
+              throw new Error(orderRes?.message || '미국 소수점 실전 매수 주문 실행 실패');
+            }
 
-              // 토스증권 소수점 금액 주문은 미국 정규장(개장 ~ 종료 1시간 전, 23:30~05:00 KST)에만 접수 가능
-              if (!usMarket?.isFractionalOrderable) {
-                const sellPrefix = pendingBotSellMsgs.has(bot.bot_id) ? `${pendingBotSellMsgs.get(bot.bot_id)} | ` : '';
-                const fallbackPrefix = isBotFallback ? '🛡️순수퀀트 Fallback(50%) | ' : '';
-                const waitMsg = `[⏳ 소수점 예약대기] ${sellPrefix}${fallbackPrefix}매수예정: ${candidateSignal.name} $${targetUsd.toFixed(2)} (약 ${targetKrw.toLocaleString()}원, 점수 ${candidateSignal.confidence}%) — 미국 정규장(${usMarket?.nextFractionalTime || '23:30'}) 개장 즉시 자동 체결`;
-                if (bot.real_status_msg !== waitMsg) {
-                  db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
-                    waitMsg,
-                    `[⏳ 소수점 예약대기] ${candidateSignal.name} $${targetUsd.toFixed(2)} (${usMarket?.nextFractionalTime || '23:30'} 개장 시 자동 주문)`,
-                    nowIso,
-                    bot.bot_id
-                  );
-                }
-                realExecuted = true;
-                continue;
-              }
+            const fractionalQty = parseFloat((targetKrw / priceInfo.currentPrice).toFixed(6));
+            const fee = Math.round(targetKrw * 0.0025);
+            const botLogPrefix = isBotFallback ? '[🐍 Python 실전매수(순수퀀트 Fallback 50%)]' : '[🐍 Python 실전매수]';
 
-              const execReason = isBotFallback
-                ? `[${bot.nickname}] 🛡️순수퀀트 Fallback 소수점 매수(예산 50%): ${candidateSignal.reasoning || candidateSignal.name + ' 기술적 지표 돌파'}`
-                : `[${bot.nickname}] Gemini AI 추천: ${candidateSignal.reasoning || candidateSignal.name + ' 소수점 매수'}`;
-              const orderRes = await pythonBridge.executeOrder({
-                symbol: candidateSignal.symbol,
-                side: 'BUY',
-                orderType: 'MARKET',
-                market: 'US',
-                orderAmount: targetUsd,
-                reason: execReason,
-              });
-              const fractionalQty = parseFloat((targetKrw / priceInfo.currentPrice).toFixed(6));
-              const fee = Math.round(targetKrw * 0.0025);
-
+            // 3.2 & 3.3 트랜잭션 보호 및 원장 정합성 보장
+            runTransaction(() => {
               const insTrade = db.prepare(`
                 INSERT INTO trades (bot_id, trade_mode, stock_code, stock_name, buy_order_no, buy_price, buy_qty, buy_amount, buy_date, status)
                 VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, 'HOLDING')
@@ -1197,8 +1335,15 @@ export class SchedulerService {
                 VALUES (?, 'REAL', ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
               `).run(bot.bot_id, candidateSignal.symbol, candidateSignal.name, orderRes.orderId || `TPOS_${Date.now()}`, fractionalQty, priceInfo.currentPrice, targetKrw, fee, insTrade.lastInsertRowid, nowIso);
 
-              const botLogPrefix = isBotFallback ? '[🐍 Python 실전매수(순수퀀트 Fallback 50%)]' : '[🐍 Python 실전매수]';
-              db.prepare("UPDATE bots SET real_status_msg = ?, last_status_msg = ?, updated_at = ? WHERE bot_id = ?").run(
+              db.prepare(`
+                UPDATE bots 
+                SET real_available_krw = MAX(0, real_available_krw - ?),
+                    real_status_msg = ?, 
+                    last_status_msg = ?, 
+                    updated_at = ? 
+                WHERE bot_id = ?
+              `).run(
+                targetKrw + fee,
                 `${botLogPrefix} 미국 소수점: ${candidateSignal.name} $${targetUsd.toFixed(2)} (${fractionalQty}주, 점수 ${candidateSignal.confidence}%)`,
                 `${botLogPrefix} 소수점 매수: ${candidateSignal.name} ($${targetUsd.toFixed(2)})`,
                 nowIso,
@@ -1209,12 +1354,29 @@ export class SchedulerService {
                 db.prepare("UPDATE ai_trade_decisions SET execution_status = 'EXECUTED_REAL', order_no = ? WHERE id = (SELECT id FROM ai_trade_decisions WHERE symbol = ? ORDER BY id DESC LIMIT 1)")
                   .run(orderRes.orderId || `TORD_${Date.now()}`, candidateSignal.symbol);
               } catch (e) {}
+            });
 
-              if (tossBal && tossBal.availableUsd !== undefined) {
+            // 4.3 실시간 텔레그램/디스코드 웹훅 알림
+            NotificationService.notifyRealTrade({
+              botName: bot.nickname,
+              market: 'US',
+              symbol: candidateSignal.symbol,
+              name: candidateSignal.name,
+              action: 'BUY',
+              qty: fractionalQty,
+              price: priceInfo.currentPrice,
+              totalAmount: targetKrw,
+              reason: execReason,
+            });
+
+            if (tossBal) {
+              if (tossBal.availableUsd !== undefined && Number(tossBal.availableUsd) >= targetUsd) {
                 tossBal.availableUsd = Math.max(0, parseFloat((Number(tossBal.availableUsd || 0) - targetUsd).toFixed(2)));
+              } else {
+                tossBal.availableCash = Math.max(0, Number(tossBal.availableCash || 0) - targetKrw - fee);
               }
-              realExecuted = true;
             }
+            realExecuted = true;
           }
         }
       } catch (rErr) {

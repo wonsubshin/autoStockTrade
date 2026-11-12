@@ -31,6 +31,7 @@ export class MarketController {
       totalAssetAmount: tossBalance.totalAssetAmount,
       totalProfitKrw: tossBalance.totalProfitKrw,
       profitRate: tossBalance.profitRate,
+      daytimeExchange: tossBalance.daytimeExchange,
     });
   }
 }
