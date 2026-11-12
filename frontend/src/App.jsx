@@ -1379,48 +1379,20 @@ export default function App() {
             onGoToArena={() => setActiveMenu('VIRTUAL_ARENA')}
           />
         )}
-      </main>
 
-      {/* 4.3 푸터: Apache 2.0 라이선스 배지 및 투자 손실 법적 면책 조항 */}
-      <footer style={{
-        marginTop: 'auto',
-        padding: '24px 20px',
-        borderTop: '1px solid rgba(255, 255, 255, 0.08)',
-        background: 'rgba(15, 23, 42, 0.6)',
-        textAlign: 'center',
-        fontSize: '12px',
-        color: '#94a3b8',
-        display: 'flex',
-        flexDirection: 'column',
-        alignItems: 'center',
-        gap: '8px'
-      }}>
-        <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap', justifyContent: 'center' }}>
-          <span style={{
-            display: 'inline-flex',
-            alignItems: 'center',
-            padding: '2px 8px',
-            borderRadius: '4px',
-            backgroundColor: '#1e293b',
-            border: '1px solid #334155',
-            color: '#38bdf8',
-            fontSize: '11px',
-            fontWeight: 600
-          }}>
-            License: Apache-2.0
-          </span>
-          <span>© 2026 autoStockTrader Dual-Track Autonomous Quant System</span>
-        </div>
-        <p style={{
-          margin: 0,
-          maxWidth: '850px',
-          color: '#cbd5e1',
-          lineHeight: '1.6',
-          fontWeight: 500
-        }}>
-          ⚠️ <strong>법적 면책 조항 (Disclaimer):</strong> 본 소프트웨어의 사용으로 발생하는 모든 투자 손실의 책임은 사용자 본인에게 있으며, 제작자는 투자 자문이나 수익을 보장하지 않습니다.
-        </p>
-      </footer>
+        {/* 4.3 푸터: Apache 2.0 라이선스 배지 및 투자 손실 법적 면책 조항 */}
+        <footer className="app-footer">
+          <div className="app-footer-top">
+            <span className="app-footer-badge">
+              License: Apache-2.0
+            </span>
+            <span>© 2026 autoStockTrader Dual-Track Autonomous Quant System</span>
+          </div>
+          <p className="app-footer-disclaimer">
+            ⚠️ <strong>법적 면책 조항 (Disclaimer):</strong> 본 소프트웨어의 사용으로 발생하는 모든 투자 손실의 책임은 사용자 본인에게 있으며, 제작자는 투자 자문이나 수익을 보장하지 않습니다.
+          </p>
+        </footer>
+      </main>
 
       {/* Modal Dialog */}
       <Modal modalInfo={modalInfo} onClose={() => setModalInfo(null)} />
