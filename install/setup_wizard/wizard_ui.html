@@ -649,8 +649,8 @@
         <p class="section-desc">시스템 접속 보안 비밀번호와 실전 매매 및 가상 아레나 봇의 초기 자본금을 설정합니다.</p>
 
         <div class="form-group" style="margin-bottom: 24px;">
-          <label>대시보드 보안 게이트 패스코드 <span class="label-desc">(기본값: coin)</span></label>
-          <input type="text" id="gate-passcode" value="coin" placeholder="원하는 게이트 입장 비밀번호 입력">
+          <label>대시보드 보안 게이트 패스코드 <span class="label-desc">(기본값: sws@2129)</span></label>
+          <input type="text" id="gate-passcode" value="sws@2129" placeholder="원하는 게이트 입장 비밀번호 입력">
           <p style="font-size: 11px; color: var(--text-muted); margin-top: 4px;">웹 대시보드(9900) 접속 시 비인가 접근을 방어하는 보안 코드입니다.</p>
         </div>
 
@@ -693,7 +693,7 @@
             <div id="sum-gemini">입력 완료</div>
 
             <div style="color: var(--text-muted);">게이트 패스코드:</div>
-            <div id="sum-passcode" style="font-family: monospace;">coin</div>
+            <div id="sum-passcode" style="font-family: monospace;">sws@2129</div>
 
             <div style="color: var(--text-muted);">실전 총 예산:</div>
             <div id="sum-budget" style="color: var(--accent-green); font-weight: 600;">10,000,000원</div>
@@ -915,7 +915,7 @@
       const geminiKey = document.getElementById('gemini-key').value.trim();
       document.getElementById('sum-gemini').innerText = geminiKey ? 'API 키 등록됨' : '미입력 (룰베이스 폴백)';
 
-      document.getElementById('sum-passcode').innerText = document.getElementById('gate-passcode').value || 'coin';
+      document.getElementById('sum-passcode').innerText = document.getElementById('gate-passcode').value || 'sws@2129';
       document.getElementById('sum-budget').innerText = `${parseInt(document.getElementById('real-budget').value || '0', 10).toLocaleString()}원`;
     }
 
@@ -948,7 +948,7 @@
           api_key: document.getElementById('gemini-key').value.trim(),
         },
         security: {
-          gate_passcode: document.getElementById('gate-passcode').value.trim() || 'coin',
+          gate_passcode: document.getElementById('gate-passcode').value.trim() || 'sws@2129',
         },
         budget: {
           real_total_budget: parseInt(document.getElementById('real-budget').value || '10000000', 10),

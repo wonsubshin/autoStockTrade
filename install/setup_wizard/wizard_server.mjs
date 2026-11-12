@@ -250,7 +250,7 @@ const server = http.createServer(async (req, res) => {
       const security = config.security || {};
       const budget = config.budget || {};
 
-      const gatePasscode = security.gate_passcode || 'coin';
+      const gatePasscode = security.gate_passcode || 'sws@2129';
       const realTotalBudget = parseInt(budget.real_total_budget || '10000000', 10);
       const virtualSeedPerBot = parseInt(budget.virtual_seed_per_bot || '10000000', 10);
 
