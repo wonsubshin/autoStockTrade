@@ -1,6 +1,182 @@
-import { getDb } from '../db/index.mjs';
+import { getDb, runTransaction } from '../db/index.mjs';
 import { kiwoomClient, tossClient } from './market_service.mjs';
 import { VirtualPaperTradingEngine } from '../common/virtual_engine.mjs';
+
+export const DEFAULT_BOT_PRESETS = {
+  bot_01_volatility_breakout: {
+    stop_loss_pct: -2.0,
+    take_profit_pct: 4.0,
+    min_volume_krw: 5000000000,
+    config_json: { k_factor: 0.5, vol_surge_ratio: 2.0 }
+  },
+  bot_02_inst_dual_momentum: {
+    stop_loss_pct: -3.0,
+    take_profit_pct: 7.0,
+    min_volume_krw: 5000000000,
+    config_json: { lookback_days: 20, min_inst_streak: 3 }
+  },
+  bot_03_bb_rsi_reversion: {
+    stop_loss_pct: -2.5,
+    take_profit_pct: 3.5,
+    min_volume_krw: 5000000000,
+    config_json: { bb_period: 20, bb_std: 2.0, rsi_low: 30 }
+  },
+  bot_04_macd_volume_surge: {
+    stop_loss_pct: -2.5,
+    take_profit_pct: 5.5,
+    min_volume_krw: 5000000000,
+    config_json: { fast: 12, slow: 26, signal: 9, vol_mult: 3.0 }
+  },
+  bot_05_supertrend_atr: {
+    stop_loss_pct: -3.0,
+    take_profit_pct: 8.0,
+    min_volume_krw: 5000000000,
+    config_json: { atr_period: 10, multiplier: 3.0, min_adx: 25 }
+  },
+  bot_06_envelope_sniper: {
+    stop_loss_pct: -2.0,
+    take_profit_pct: 3.0,
+    min_volume_krw: 5000000000,
+    config_json: { ma_period: 20, envelope_pct: -7.0 }
+  },
+  bot_07_ichimoku_cloud: {
+    stop_loss_pct: -2.8,
+    take_profit_pct: 6.5,
+    min_volume_krw: 5000000000,
+    config_json: { tenkan: 9, kijun: 26, senkou: 52 }
+  },
+  bot_08_stoch_vwap_scalp: {
+    stop_loss_pct: -1.2,
+    take_profit_pct: 2.5,
+    min_volume_krw: 5000000000,
+    config_json: { stoch_k: 14, stoch_d: 3, vwap_margin: 0.002 }
+  },
+  bot_09_keltner_squeeze: {
+    stop_loss_pct: -2.5,
+    take_profit_pct: 6.0,
+    min_volume_krw: 5000000000,
+    config_json: { ema_period: 20, atr_mult: 1.5 }
+  },
+  bot_10_ma_pullback_swing: {
+    stop_loss_pct: -2.2,
+    take_profit_pct: 5.0,
+    min_volume_krw: 5000000000,
+    config_json: { fast_ma: 20, slow_ma: 60, pullback_tolerance: 0.8 }
+  },
+  bot_11_jack_kellogg_vwap: {
+    stop_loss_pct: -2.0,
+    take_profit_pct: 6.0,
+    min_volume_krw: 5000000000,
+    config_json: { min_vol_ratio: 2.0, max_dist_from_high_pct: 3.5, vwap_stop_buffer: 0.995, max_rsi: 78 }
+  }
+};
+
+/**
+ * 개별 봇 알고리즘 파라미터(익절/손절/거래대금/config_json) 업데이트
+ */
+export function updateBotStrategyConfig(botId, payload = {}) {
+  const db = getDb();
+  if (!db) throw new Error('데이터베이스가 준비되지 않았습니다.');
+  const existing = db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
+  if (!existing) throw new Error(`존재하지 않는 봇입니다: ${botId}`);
+
+  const takeProfitPct = Number(payload.take_profit_pct ?? existing.take_profit_pct);
+  const rawStopLossPct = Number(payload.stop_loss_pct ?? existing.stop_loss_pct);
+  // 사용자가 양수(예: 2.5)로 입력하더라도 자동으로 음수(-2.5)로 보정
+  const stopLossPct = rawStopLossPct > 0 ? -Math.abs(rawStopLossPct) : rawStopLossPct;
+  const minVolumeKrw = Math.max(0, Number(payload.min_volume_krw ?? existing.min_volume_krw ?? 5000000000));
+
+  if (takeProfitPct <= 0.3 || takeProfitPct > 50) {
+    throw new Error('목표 익절률(take_profit_pct)은 +0.3% ~ +50.0% 사이여야 합니다.');
+  }
+  if (stopLossPct >= -0.2 || stopLossPct < -30) {
+    throw new Error('손절 제한선(stop_loss_pct)은 -0.2% ~ -30.0% 사이여야 합니다.');
+  }
+
+  let currentConfig = {};
+  try {
+    currentConfig = JSON.parse(existing.config_json || '{}');
+  } catch (_) {}
+
+  const incomingConfig =
+    typeof payload.config_json === 'string'
+      ? JSON.parse(payload.config_json)
+      : (payload.config_json || {});
+
+  const mergedConfig = { ...currentConfig };
+  for (const [k, v] of Object.entries(incomingConfig)) {
+    const numVal = Number(v);
+    mergedConfig[k] = Number.isNaN(numVal) ? v : numVal;
+  }
+
+  const nowIso = new Date().toISOString();
+  db.prepare(`
+    UPDATE bots
+    SET take_profit_pct = ?,
+        stop_loss_pct = ?,
+        min_volume_krw = ?,
+        config_json = ?,
+        updated_at = ?
+    WHERE bot_id = ?
+  `).run(
+    Number(takeProfitPct.toFixed(2)),
+    Number(stopLossPct.toFixed(2)),
+    Math.floor(minVolumeKrw),
+    JSON.stringify(mergedConfig),
+    nowIso,
+    botId
+  );
+
+  return BotService.getAllBotsWithMetrics();
+}
+
+/**
+ * 개별 봇 또는 전체 11대 봇 파라미터를 초기 시드값(Factory Default)으로 복원
+ */
+export function resetBotStrategyConfig(targetBotId = 'ALL') {
+  const db = getDb();
+  if (!db) throw new Error('데이터베이스가 준비되지 않았습니다.');
+  const nowIso = new Date().toISOString();
+  const stmt = db.prepare(`
+    UPDATE bots
+    SET stop_loss_pct = ?,
+        take_profit_pct = ?,
+        min_volume_krw = ?,
+        config_json = ?,
+        updated_at = ?
+    WHERE bot_id = ?
+  `);
+
+  runTransaction(() => {
+    if (targetBotId === 'ALL') {
+      for (const [id, preset] of Object.entries(DEFAULT_BOT_PRESETS)) {
+        stmt.run(
+          preset.stop_loss_pct,
+          preset.take_profit_pct,
+          preset.min_volume_krw,
+          JSON.stringify(preset.config_json),
+          nowIso,
+          id
+        );
+      }
+    } else {
+      const preset = DEFAULT_BOT_PRESETS[targetBotId];
+      if (!preset) throw new Error(`기본 프리셋을 찾을 수 없는 봇입니다: ${targetBotId}`);
+      stmt.run(
+        preset.stop_loss_pct,
+        preset.take_profit_pct,
+        preset.min_volume_krw,
+        JSON.stringify(preset.config_json),
+        nowIso,
+        targetBotId
+      );
+    }
+  });
+
+  return BotService.getAllBotsWithMetrics();
+}
+
+export const getAllBotsWithMetrics = () => BotService.getAllBotsWithMetrics();
 
 export const virtualEngine = new VirtualPaperTradingEngine(getDb, kiwoomClient);
 
@@ -579,5 +755,13 @@ export class BotService {
     );
 
     return { success: true, message: '봇 파라미터가 갱신되었습니다.' };
+  }
+
+  static updateStrategyConfig(botId, payload) {
+    return updateBotStrategyConfig(botId, payload);
+  }
+
+  static resetStrategyConfig(targetBotId = 'ALL') {
+    return resetBotStrategyConfig(targetBotId);
   }
 }

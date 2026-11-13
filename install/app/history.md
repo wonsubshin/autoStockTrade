@@ -21,6 +21,30 @@
 
 ## 🚀 버전별 상세 변경 내역 (Changelog)
 
+### [0.0.12] - 2026-11-13
+- **커밋 성격**: `feat`
+- **커밋 메시지**: `feat: 11대 퀀트 봇 알고리즘 파라미터 UI 실시간 튜닝 및 원클릭 초기화 시스템 구축 (v0.0.12)`
+- **주요 내용**: `[⚙️ 환경설정]` 화면 내 11대 퀀트 봇 알고리즘 파라미터(`config_json`, 목표 익절, 원칙 손절, 최소 거래대금) 실시간 정밀 튜너 UI 구축, 개별 봇 및 전체 봇 팩토리 기본값(Factory Default) 원클릭 복원 API 연동, 슬라이더 및 한글 메타데이터 사전 제공, 7초 스케줄러 무중단 실시간 반영.
+- **세부 변경사항**:
+  - **백엔드 봇 파라미터 튜닝 및 초기화 서비스 신설 (`backend/services/bot_service.mjs`)**:
+    - `DEFAULT_BOT_PRESETS`: 11개 봇의 권장 기본값(익절, 손절, 최소 거래대금, 전략별 `config_json`) 프리셋 사전 정의.
+    - `updateBotStrategyConfig(botId, payload)`: 개별 봇의 `take_profit_pct`, `stop_loss_pct`, `min_volume_krw`, `config_json` 유효성 검증(익절 +0.3~50%, 손절 -0.2~-30%, 음수 자동 보정) 및 DB 갱신 함수 구현.
+    - `resetBotStrategyConfig(targetBotId)`: 개별 봇 또는 전체('ALL') 봇 설정을 초기 시드 프리셋으로 원클릭 롤백하는 트랜잭션 함수 구현.
+  - **REST API 라우트 확장 (`backend/routes/router.mjs`, `backend/controllers/bot_controller.mjs`)**:
+    - `POST /api/bots/:botId/config`: 개별 봇 알고리즘 파라미터 저장 엔드포인트 연동.
+    - `POST /api/bots/reset-config`: 개별 또는 전체 봇 파라미터 기본값 복원 엔드포인트 연동.
+  - **프론트엔드 API 클라이언트 연동 (`frontend/src/services/api.js`)**:
+    - `saveBotStrategyConfig(botId, payload)` 및 `resetBotStrategyConfig(botId)` 함수 추가.
+  - **환경설정 UI 내 11대 봇 정밀 튜닝 섹션 신설 (`frontend/src/components/settings/SettingsPanel.jsx`)**:
+    - `PARAM_META`: 11대 봇의 `config_json` 내 31개 기술적 지표 파라미터(K 계수, 볼린저 표준편차, RSI 과매도, SuperTrend ATR 배수, 일목 전환/기준선, 잭 켈로그 거래량 배수 등)에 대한 한글 라벨, 단위, 스텝, 최소/최대 범위, 설명문 매핑.
+    - `BotStrategyTunerSection`: 전체 봇 / ★ 실전 담당 봇 필터링 탭, 선택된 봇 공통 리스크 관리(익절/손절/거래대금) 카드, `config_json` 슬라이더 & 숫자 입력 폼 동적 렌더링, 개별 봇 복원 / 전체 봇 복원 / 실시간 저장 버튼 구현.
+  - **App 상태 및 모달 알림 연동 (`frontend/src/App.jsx`)**:
+    - `handleSaveBotConfig` 및 `handleResetBotConfig` 핸들러를 구현하여 설정 저장 및 복원 시 최신 봇 목록 상태(`bots`) 즉시 동기화 및 직관적 알림 모달 출력.
+  - **패키지 메타데이터 및 배포 번들 동기화**:
+    - `version.json`, `package.json`, `frontend/package.json`, `install/app/package.json` 버전을 `0.0.12`로 통일 및 인스톨러 빌드 최신화.
+
+---
+
 ### [0.0.11] - 2026-11-13
 - **커밋 성격**: `feat`
 - **커밋 메시지**: `feat: 11대 퀀트 봇 시계열 지표 엔진, 동적 config_json 및 트레일링 스탑 고도화 (v0.0.11)`

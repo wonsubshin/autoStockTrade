@@ -83,5 +83,25 @@ export class BotController {
       return sendError(res, 400, err.message);
     }
   }
+
+  static async postConfig(req, res, botId) {
+    try {
+      const body = await parseJsonBody(req);
+      const bots = BotService.updateStrategyConfig(botId, body);
+      return sendJson(res, 200, { ok: true, bots });
+    } catch (err) {
+      return sendError(res, 400, err.message);
+    }
+  }
+
+  static async postResetConfig(req, res) {
+    try {
+      const body = await parseJsonBody(req);
+      const bots = BotService.resetStrategyConfig(body?.botId || 'ALL');
+      return sendJson(res, 200, { ok: true, bots });
+    } catch (err) {
+      return sendError(res, 400, err.message);
+    }
+  }
 }
 

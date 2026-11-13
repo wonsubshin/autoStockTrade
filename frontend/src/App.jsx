@@ -905,6 +905,56 @@ export default function App() {
     });
   };
 
+  const handleSaveBotConfig = async (botId, payload) => {
+    try {
+      const res = await api.saveBotStrategyConfig(botId, payload);
+      if (res && res.bots) {
+        setBots(res.bots);
+      } else {
+        await fetchBots();
+      }
+      setModalInfo({
+        title: '알고리즘 파라미터 저장 완료',
+        message: `[${botId}] 봇의 목표 익절(+${payload.take_profit_pct}%), 손절(${payload.stop_loss_pct}%), 거래대금 및 수식 파라미터(config_json)가 성공적으로 저장되었습니다.\n\n다음 스케줄러 틱(7초)부터 즉시 가상 아레나와 실전 매매에 무중단 반영됩니다.`,
+        type: 'success',
+      });
+      return res;
+    } catch (err) {
+      setModalInfo({
+        title: '알고리즘 파라미터 저장 실패',
+        message: err.message || '봇 파라미터 저장 중 오류가 발생했습니다.',
+        type: 'error',
+      });
+      throw err;
+    }
+  };
+
+  const handleResetBotConfig = async (botId = 'ALL') => {
+    try {
+      const res = await api.resetBotStrategyConfig(botId);
+      if (res && res.bots) {
+        setBots(res.bots);
+      } else {
+        await fetchBots();
+      }
+      setModalInfo({
+        title: '알고리즘 파라미터 기본값 복원 완료',
+        message: botId === 'ALL'
+          ? '11개 모든 퀀트 봇의 알고리즘 파라미터가 팩토리 기본값(Factory Default)으로 성공적으로 복원되었습니다.'
+          : `봇 [${botId}]의 파라미터가 초기 권장 기본값으로 복원되었습니다.`,
+        type: 'info',
+      });
+      return res;
+    } catch (err) {
+      setModalInfo({
+        title: '기본값 복원 실패',
+        message: err.message || '봇 기본값 복원 중 오류가 발생했습니다.',
+        type: 'error',
+      });
+      throw err;
+    }
+  };
+
   const handleSaveGatePasscode = async (newPasscode) => {
     if (!newPasscode || !newPasscode.trim()) {
       setModalInfo({ title: '오류', message: '변경할 입장 코드를 입력해주세요.', type: 'error' });
@@ -1374,6 +1424,8 @@ export default function App() {
             onSavePriority={handleSavePurchasePriority}
             onSaveBudget={handleSaveBudget}
             onSaveRealAllocation={handleSaveRealAllocation}
+            onSaveBotConfig={handleSaveBotConfig}
+            onResetBotConfig={handleResetBotConfig}
             onSaveKeys={handleSaveKeys}
             onExportBackup={handleExportBackup}
             onImportBackup={handleImportBackup}

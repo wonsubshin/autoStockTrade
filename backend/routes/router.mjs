@@ -82,6 +82,13 @@ export class Router {
         const botId = pathname.split('/')[3];
         return await BotController.postTrade(req, res, botId);
       }
+      if (pathname.match(/^\/api\/bots\/([^/]+)\/config$/) && method === 'POST') {
+        const botId = decodeURIComponent(pathname.split('/')[3]);
+        return await BotController.postConfig(req, res, botId);
+      }
+      if (pathname === '/api/bots/reset-config' && method === 'POST') {
+        return await BotController.postResetConfig(req, res);
+      }
       if (pathname.match(/^\/api\/bots\/([^/]+)\/update$/) && method === 'POST') {
         const botId = pathname.split('/')[3];
         return await BotController.postUpdate(req, res, botId);

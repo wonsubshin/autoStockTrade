@@ -90,6 +90,16 @@ export const api = {
       method: 'POST',
       body: JSON.stringify({ action: 'RESET_VIRTUAL_ALL', seedCapital }),
     }),
+  saveBotStrategyConfig: (botId, payload) =>
+    request(`/api/bots/${encodeURIComponent(botId)}/config`, {
+      method: 'POST',
+      body: JSON.stringify(payload),
+    }),
+  resetBotStrategyConfig: (botId = 'ALL') =>
+    request('/api/bots/reset-config', {
+      method: 'POST',
+      body: JSON.stringify({ botId }),
+    }),
 
   // Trades & Positions
   getTrades: (params = {}) => {
@@ -150,6 +160,20 @@ export const api = {
   createAnalyzeStream: () => new EventSource(`${API_BASE}/api/ai/stream-analyze`),
   createNewsStream: () => new EventSource(`${API_BASE}/api/ai/stream-news-analyze`),
 };
+
+export async function saveBotStrategyConfig(botId, payload) {
+  return request(`/api/bots/${encodeURIComponent(botId)}/config`, {
+    method: 'POST',
+    body: JSON.stringify(payload),
+  });
+}
+
+export async function resetBotStrategyConfig(botId = 'ALL') {
+  return request('/api/bots/reset-config', {
+    method: 'POST',
+    body: JSON.stringify({ botId }),
+  });
+}
 
 export default api;
 

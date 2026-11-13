@@ -17,6 +17,8 @@ export default function SettingsPanel({
   onSavePriority,
   onSaveBudget,
   onSaveRealAllocation,
+  onSaveBotConfig,
+  onResetBotConfig,
   onSaveKeys,
   onExportBackup,
   onImportBackup,
@@ -426,6 +428,13 @@ export default function SettingsPanel({
           </>
         )}
       </div>
+
+      {/* 2-0. 11대 퀀트 봇 알고리즘 파라미터 정밀 튜닝 */}
+      <BotStrategyTunerSection
+        bots={bots}
+        onSaveBotConfig={onSaveBotConfig}
+        onResetBotConfig={onResetBotConfig}
+      />
 
       {/* 2-1. Virtual Budget Configuration */}
       <div className="board-card" style={{ borderColor: 'rgba(16, 185, 129, 0.4)', marginBottom: '24px' }}>
@@ -880,6 +889,326 @@ export default function SettingsPanel({
             <div style={{ fontSize: '11px', color: '#64748b', fontWeight: 600 }}>LICENSE</div>
             <div style={{ fontSize: '13px', color: '#34d399', fontWeight: 600, marginTop: '2px' }}>Apache-2.0</div>
           </div>
+        </div>
+      </div>
+    </div>
+  );
+}
+
+// 11대 봇 config_json 세부 파라미터 한글 메타데이터 사전
+export const PARAM_META = {
+  k_factor: { label: '변동성 돌파 K 계수', unit: '배', step: 0.05, min: 0.2, max: 0.9, desc: '전일 변동폭(고가-저가) 대비 당일 돌파 목표가 가중치 (래리 윌리엄스 표준 0.5)' },
+  vol_surge_ratio: { label: '최소 거래량 급증 배수', unit: '배', step: 0.1, min: 1.1, max: 5.0, desc: '평균 거래량 대비 최소 유입 거래량 배수 (2.0 = 200%)' },
+  lookback_days: { label: '모멘텀 산출 기간', unit: '일', step: 1, min: 5, max: 60, desc: '상대 모멘텀 수익률을 계산할 과거 영업일 수' },
+  min_inst_streak: { label: '외인·기관 연속 순매수', unit: '일', step: 1, min: 1, max: 10, desc: '외국인 및 기관 수급 연속 유입 최소 일수' },
+  bb_period: { label: '볼린저 밴드 중심선 기간', unit: '일', step: 1, min: 10, max: 50, desc: '볼린저 밴드 이동평균 산출 기간 (표준 20일)' },
+  bb_std: { label: '볼린저 밴드 표준편차(σ)', unit: 'σ', step: 0.1, min: 1.2, max: 3.0, desc: '하단 밴드 과매도 이탈 판정 표준편차 배수 (표준 2.0σ)' },
+  rsi_low: { label: 'RSI 과매도 진입 기준선', unit: 'pt', step: 1, min: 15, max: 45, desc: '평균회귀 매수를 트리거할 RSI(14) 상한선' },
+  fast: { label: 'MACD 단기 EMA', unit: '일', step: 1, min: 5, max: 20, desc: 'MACD 단기 지수이동평균 기간 (표준 12)' },
+  slow: { label: 'MACD 장기 EMA', unit: '일', step: 1, min: 15, max: 40, desc: 'MACD 장기 지수이동평균 기간 (표준 26)' },
+  signal: { label: 'MACD 시그널 기간', unit: '일', step: 1, min: 5, max: 15, desc: 'MACD 시그널선 산출 기간 (표준 9)' },
+  vol_mult: { label: '거래량 폭발 배수', unit: '배', step: 0.2, min: 1.5, max: 6.0, desc: '골든크로스 동반 거래량 폭발 기준 (3.0 = 300%)' },
+  atr_period: { label: 'ATR 변동성 산출 기간', unit: '일', step: 1, min: 5, max: 30, desc: '평균진폭(ATR) 계산 캔들 수' },
+  multiplier: { label: 'SuperTrend ATR 배수', unit: '배', step: 0.2, min: 1.5, max: 5.0, desc: '상단 추세선 돌파 채널 폭 배수' },
+  min_adx: { label: '최소 ADX 추세강도', unit: 'pt', step: 1, min: 15, max: 45, desc: '추세장 진입을 허용할 최소 ADX(14) 수치 (25 이상 강세장)' },
+  ma_period: { label: '엔벨로프 중심 이평선', unit: '일', step: 1, min: 10, max: 60, desc: '이격도 산출 기준 이동평균선 기간' },
+  envelope_pct: { label: '엔벨로프 하단 이격률', unit: '%', step: 0.5, min: -15.0, max: -2.0, desc: '중심선 대비 낙폭과대 매수 진입 이격도 (%)' },
+  tenkan: { label: '일목 전환선 기간', unit: '일', step: 1, min: 5, max: 15, desc: '일목균형표 단기 전환선 주기 (표준 9)' },
+  kijun: { label: '일목 기준선 기간', unit: '일', step: 1, min: 15, max: 40, desc: '일목균형표 중기 기준선 주기 (표준 26)' },
+  senkou: { label: '일목 선행스팬B 기간', unit: '일', step: 1, min: 30, max: 80, desc: '구름대(양운) 산출 장기 주기 (표준 52)' },
+  stoch_k: { label: 'Stoch-RSI %K 기간', unit: '일', step: 1, min: 5, max: 25, desc: '스토캐스틱 RSI %K 산출 기간' },
+  stoch_d: { label: 'Stoch-RSI %D 스무딩', unit: '일', step: 1, min: 2, max: 10, desc: '스토캐스틱 RSI 시그널 %D 이동평균 기간' },
+  vwap_margin: { label: 'VWAP 상단 지지 마진', unit: '비율', step: 0.001, min: 0.0, max: 0.02, desc: '당일 거래량가중평균가(VWAP) 대비 최소 상회 비율 (0.002 = +0.2%)' },
+  ema_period: { label: '켈트너 중심 EMA 기간', unit: '일', step: 1, min: 10, max: 40, desc: '켈트너 채널 중심 지수이평선 기간' },
+  atr_mult: { label: '켈트너 채널 ATR 배수', unit: '배', step: 0.1, min: 1.0, max: 3.0, desc: '스퀴즈 돌파 상단선 ATR 배수' },
+  fast_ma: { label: '단기 정배열 이평선', unit: '일', step: 1, min: 10, max: 30, desc: '눌림목 지지 기준 단기 이동평균선 (표준 20일)' },
+  slow_ma: { label: '장기 정배열 이평선', unit: '일', step: 1, min: 40, max: 120, desc: '추세 필터용 장기 이동평균선 (표준 60일)' },
+  pullback_tolerance: { label: '20일선 눌림목 허용폭', unit: '±%', step: 0.1, min: 0.2, max: 2.5, desc: '단기 이평선 부근 지지 판정 허용 오차 (%)' },
+  min_vol_ratio: { label: '잭 켈로그 최소 거래량 배수', unit: '배', step: 0.1, min: 1.5, max: 5.0, desc: '대장주 유동성 확인을 위한 평소 대비 거래량 배수 (2.0 = 200%)' },
+  max_dist_from_high_pct: { label: '당일 고가 대비 최대 이격', unit: '%', step: 0.5, min: 1.0, max: 8.0, desc: '전고점 돌파 직전 눌림 허용 범위 (고가 대비 -3.5% 이내)' },
+  vwap_stop_buffer: { label: 'VWAP 칼손절 버퍼 비율', unit: '배', step: 0.001, min: 0.98, max: 1.0, desc: 'VWAP 하향 이탈 칼손절 기준 (0.995 = VWAP -0.5% 이탈 시 즉시 손절)' },
+  max_rsi: { label: '과열 추격 방지 최대 RSI', unit: 'pt', step: 1, min: 65, max: 88, desc: '극단적 고점(Euphoria) 추격 매수를 차단할 RSI 상한선' }
+};
+
+export function BotStrategyTunerSection({ bots = [], onSaveBotConfig, onResetBotConfig }) {
+  const [filterMode, setFilterMode] = useState('ALL'); // 'ALL' | 'REAL_ONLY'
+  const [activeBotId, setActiveBotId] = useState('');
+  const [takeProfit, setTakeProfit] = useState(4.0);
+  const [stopLoss, setStopLoss] = useState(-2.0);
+  const [minVolumeEok, setMinVolumeEok] = useState(50); // 억 단위 표시
+  const [configObj, setConfigObj] = useState({});
+  const [saving, setSaving] = useState(false);
+
+  const visibleBots = filterMode === 'REAL_ONLY'
+    ? bots.filter((b) => Number(b.is_real_selected) === 1)
+    : bots;
+
+  const currentBot = bots.find((b) => b.bot_id === activeBotId) || visibleBots[0] || bots[0];
+
+  React.useEffect(() => {
+    if (!currentBot) return;
+    if (activeBotId !== currentBot.bot_id) {
+      setActiveBotId(currentBot.bot_id);
+    }
+    setTakeProfit(Number(currentBot.take_profit_pct ?? 4.0));
+    setStopLoss(Number(currentBot.stop_loss_pct ?? -2.0));
+    setMinVolumeEok(Math.round(Number(currentBot.min_volume_krw ?? 5000000000) / 100000000));
+    try {
+      const parsed = typeof currentBot.config_json === 'string'
+        ? JSON.parse(currentBot.config_json || '{}')
+        : (currentBot.config_json || {});
+      setConfigObj(parsed);
+    } catch (_) {
+      setConfigObj({});
+    }
+  }, [currentBot?.bot_id, currentBot?.take_profit_pct, currentBot?.stop_loss_pct, currentBot?.min_volume_krw, currentBot?.config_json]);
+
+  if (!currentBot) return null;
+
+  const handleParamChange = (key, rawVal) => {
+    const num = Number(rawVal);
+    setConfigObj((prev) => ({ ...prev, [key]: Number.isNaN(num) ? rawVal : num }));
+  };
+
+  const handleSave = async () => {
+    if (!onSaveBotConfig) return;
+    setSaving(true);
+    try {
+      await onSaveBotConfig(currentBot.bot_id, {
+        take_profit_pct: Number(takeProfit),
+        stop_loss_pct: Number(stopLoss),
+        min_volume_krw: Math.round(Number(minVolumeEok) * 100000000),
+        config_json: configObj,
+      });
+    } finally {
+      setSaving(false);
+    }
+  };
+
+  return (
+    <div className="board-card" style={{ borderColor: 'rgba(59, 130, 246, 0.4)', marginBottom: '24px' }}>
+      <div className="card-title-row">
+        <div>
+          <div className="card-title">🎛️ 11대 퀀트 봇 알고리즘 파라미터 정밀 튜닝</div>
+          <p style={{ fontSize: '13px', color: '#94a3b8', margin: '4px 0 0 0', lineHeight: 1.5 }}>
+            • 각 봇의 익절/손절 기준과 고유 기술적 지표 수식(<code>config_json</code>)을 실시간으로 조정합니다.<br />
+            • 저장 즉시 다음 스케줄러 주기(7초)부터 가상 경쟁 아레나와 실전 매매 양쪽에 무중단 반영됩니다.
+          </p>
+        </div>
+        <div style={{ display: 'flex', gap: '8px', flexWrap: 'wrap', alignItems: 'center' }}>
+          <button
+            type="button"
+            className={`btn-action ${filterMode === 'ALL' ? 'primary' : 'secondary'}`}
+            style={{ padding: '6px 12px', fontSize: '12px' }}
+            onClick={() => setFilterMode('ALL')}
+          >
+            전체 봇 ({bots.length}개)
+          </button>
+          <button
+            type="button"
+            className={`btn-action ${filterMode === 'REAL_ONLY' ? 'primary' : 'secondary'}`}
+            style={{ padding: '6px 12px', fontSize: '12px', borderColor: '#f59e0b', color: filterMode === 'REAL_ONLY' ? '#fff' : '#f59e0b' }}
+            onClick={() => setFilterMode('REAL_ONLY')}
+          >
+            ★ 실전 담당 봇만 보기
+          </button>
+          <button
+            type="button"
+            className="btn-action danger"
+            style={{ padding: '6px 12px', fontSize: '12px' }}
+            onClick={() => {
+              if (window.confirm('11개 모든 봇의 알고리즘 파라미터를 초기 권장 기본값으로 되돌리시겠습니까?')) {
+                if (onResetBotConfig) onResetBotConfig('ALL');
+              }
+            }}
+          >
+            🔄 전체 봇 기본값 복원
+          </button>
+        </div>
+      </div>
+
+      {/* 봇 선택 탭 리스트 */}
+      <div style={{ display: 'flex', flexWrap: 'wrap', gap: '8px', margin: '16px 0' }}>
+        {visibleBots.map((b) => {
+          const isSelected = b.bot_id === currentBot.bot_id;
+          const isReal = Number(b.is_real_selected) === 1;
+          return (
+            <button
+              key={b.bot_id}
+              type="button"
+              onClick={() => setActiveBotId(b.bot_id)}
+              className={`btn-action ${isSelected ? 'primary' : 'secondary'}`}
+              style={{
+                border: isReal ? (isSelected ? '2px solid #f59e0b' : '1px solid #f59e0b') : undefined,
+                padding: '8px 12px',
+                fontSize: '13px',
+                fontWeight: isSelected ? 700 : 500,
+                backgroundColor: isSelected ? undefined : (isReal ? 'rgba(245, 158, 11, 0.08)' : undefined),
+              }}
+            >
+              {isReal && <span style={{ color: '#f59e0b', marginRight: '4px' }}>★</span>}
+              {b.nickname || b.name}
+            </button>
+          );
+        })}
+      </div>
+
+      {/* 선택된 봇 상세 튜닝 폼 */}
+      <div style={{ background: '#111827', padding: '18px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
+          <div>
+            <h4 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+              {currentBot.name}
+              <small style={{ color: '#94a3b8', fontSize: '12px', fontWeight: 400 }}>
+                ({currentBot.nickname} · {currentBot.strategy_type})
+              </small>
+              {Number(currentBot.is_real_selected) === 1 && (
+                <span className="badge-mode real" style={{ fontSize: '11px', padding: '2px 8px' }}>★ 실전 담당</span>
+              )}
+            </h4>
+            <p style={{ margin: '4px 0 0 0', fontSize: '12px', color: '#94a3b8' }}>{currentBot.description}</p>
+          </div>
+          <span style={{ fontSize: '13px', color: '#cbd5e1', background: 'rgba(255,255,255,0.06)', padding: '6px 12px', borderRadius: '6px' }}>
+            가상 수익률: <strong style={{ color: (currentBot.virtual_return_pct ?? 0) >= 0 ? '#10b981' : '#ef4444' }}>
+              {(currentBot.virtual_return_pct ?? 0) >= 0 ? `+${currentBot.virtual_return_pct}%` : `${currentBot.virtual_return_pct}%`}
+            </strong>
+          </span>
+        </div>
+
+        {/* 공통 리스크 관리 파라미터 (익절 / 손절 / 최소 거래대금) */}
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(220px, 1fr))', gap: '14px', marginBottom: '18px' }}>
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '12px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <label style={{ fontSize: '12px', color: '#cbd5e1' }}><strong>📈 목표 익절률 (Take Profit %)</strong></label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+              <input
+                type="number"
+                step="0.1"
+                min="0.5"
+                max="50"
+                className="input-field"
+                style={{ flex: 1, padding: '6px 10px' }}
+                value={takeProfit}
+                onChange={(e) => setTakeProfit(e.target.value)}
+              />
+              <span style={{ fontSize: '13px', color: '#94a3b8' }}>%</span>
+            </div>
+          </div>
+
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '12px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <label style={{ fontSize: '12px', color: '#cbd5e1' }}><strong>🛡️ 원칙 손절선 (Stop Loss %)</strong></label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+              <input
+                type="number"
+                step="0.1"
+                min="-30"
+                max="-0.3"
+                className="input-field"
+                style={{ flex: 1, padding: '6px 10px' }}
+                value={stopLoss}
+                onChange={(e) => setStopLoss(e.target.value)}
+              />
+              <span style={{ fontSize: '13px', color: '#94a3b8' }}>%</span>
+            </div>
+          </div>
+
+          <div style={{ background: 'rgba(0,0,0,0.3)', padding: '12px 14px', borderRadius: '8px', border: '1px solid rgba(255,255,255,0.06)' }}>
+            <label style={{ fontSize: '12px', color: '#cbd5e1' }}><strong>💰 최소 거래대금 필터 (억 원)</strong></label>
+            <div style={{ display: 'flex', alignItems: 'center', gap: '8px', marginTop: '6px' }}>
+              <input
+                type="number"
+                step="10"
+                min="5"
+                max="5000"
+                className="input-field"
+                style={{ flex: 1, padding: '6px 10px' }}
+                value={minVolumeEok}
+                onChange={(e) => setMinVolumeEok(e.target.value)}
+              />
+              <span style={{ fontSize: '13px', color: '#94a3b8', whiteSpace: 'nowrap' }}>억 원 이상</span>
+            </div>
+          </div>
+        </div>
+
+        {/* 전략 고유 config_json 세부 파라미터 동적 폼 */}
+        <h5 style={{ margin: '0 0 10px 0', fontSize: '13px', color: '#cbd5e1' }}>
+          ⚙️ 전략 고유 수식 파라미터 (<code>config_json</code>)
+        </h5>
+        <div style={{ display: 'grid', gridTemplateColumns: 'repeat(auto-fit, minmax(260px, 1fr))', gap: '14px' }}>
+          {Object.entries(configObj).map(([key, val]) => {
+            const meta = PARAM_META[key] || {
+              label: key,
+              unit: '',
+              step: 0.1,
+              min: -100,
+              max: 1000,
+              desc: `${key} 파라미터 설정값`,
+            };
+            return (
+              <div
+                key={key}
+                style={{
+                  background: 'rgba(0,0,0,0.25)',
+                  padding: '12px 14px',
+                  borderRadius: '8px',
+                  border: '1px solid rgba(255,255,255,0.05)',
+                }}
+              >
+                <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center' }}>
+                  <strong style={{ fontSize: '13px', color: '#e2e8f0' }}>{meta.label}</strong>
+                  <code style={{ fontSize: '11px', color: '#94a3b8', background: 'rgba(255,255,255,0.06)', padding: '2px 5px', borderRadius: '4px' }}>{key}</code>
+                </div>
+                <p style={{ margin: '4px 0 8px 0', fontSize: '11px', color: '#94a3b8', minHeight: '32px' }}>
+                  {meta.desc}
+                </p>
+                <div style={{ display: 'flex', alignItems: 'center', gap: '8px' }}>
+                  <input
+                    type="range"
+                    min={meta.min}
+                    max={meta.max}
+                    step={meta.step}
+                    value={val}
+                    onChange={(e) => handleParamChange(key, e.target.value)}
+                    style={{ flex: 1, accentColor: '#3b82f6' }}
+                  />
+                  <input
+                    type="number"
+                    min={meta.min}
+                    max={meta.max}
+                    step={meta.step}
+                    value={val}
+                    onChange={(e) => handleParamChange(key, e.target.value)}
+                    className="input-field"
+                    style={{ width: '85px', padding: '4px 6px', fontSize: '12px', textAlign: 'center' }}
+                  />
+                  <span style={{ fontSize: '12px', color: '#94a3b8', width: '30px' }}>{meta.unit}</span>
+                </div>
+              </div>
+            );
+          })}
+        </div>
+
+        {/* 하단 저장 및 개별 초기화 버튼 */}
+        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginTop: '18px', flexWrap: 'wrap', gap: '10px' }}>
+          <button
+            type="button"
+            className="btn-action secondary"
+            onClick={() => {
+              if (window.confirm(`[${currentBot.nickname || currentBot.name}]의 알고리즘 파라미터를 초기 기본값으로 되돌리시겠습니까?`)) {
+                if (onResetBotConfig) onResetBotConfig(currentBot.bot_id);
+              }
+            }}
+          >
+            ↩️ 이 봇({currentBot.nickname || currentBot.name})만 기본값 복원
+          </button>
+          <button
+            type="button"
+            className="btn-action success"
+            disabled={saving}
+            onClick={handleSave}
+            style={{ fontWeight: 700 }}
+          >
+            {saving ? '저장 중...' : `💾 ${currentBot.nickname || currentBot.name} 파라미터 저장 및 즉시 적용`}
+          </button>
         </div>
       </div>
     </div>
