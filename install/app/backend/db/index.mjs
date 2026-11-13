@@ -448,6 +448,8 @@ CREATE TABLE IF NOT EXISTS bot_positions (
   buy_fee NUMERIC,
   trade_id INTEGER,
   status TEXT DEFAULT 'OPEN',
+  highest_price REAL DEFAULT 0,
+  trailing_active INTEGER DEFAULT 0,
   created_at TEXT,
   closed_at TEXT,
   origin_bot_id TEXT
@@ -647,6 +649,8 @@ CREATE TABLE IF NOT EXISTS bot_positions (
   buy_fee NUMERIC,
   trade_id INTEGER,
   status TEXT DEFAULT 'OPEN',
+  highest_price REAL DEFAULT 0,
+  trailing_active INTEGER DEFAULT 0,
   created_at TEXT,
   closed_at TEXT,
   origin_bot_id TEXT
@@ -836,7 +840,7 @@ export function seedInitialData() {
   const configuredPasscode = process.env.GATE_PASSCODE || 'sws@2129';
   const initSettings = [
     { key: 'gate_passcode', value: configuredPasscode },
-    { key: 'virtual_fast_cycle_mode', value: '0' },
+    { key: 'virtual_fast_cycle_mode', value: 'false' },
     { key: 'total_capital', value: '30000000' },
     { key: 'virtual_seed_money', value: '1000000' },
     { key: 'virtual_total_budget', value: '10000000' },
@@ -878,6 +882,28 @@ export function seedInitialData() {
 }
 
 export function migrateAndSeedTenBots(database = dbInstance) {
+  // 트레일링 스탑 및 최고가 추적 컬럼 안전 마이그레이션
+  const positionAlterColumns = [
+    `ALTER TABLE bot_positions ADD COLUMN highest_price REAL DEFAULT 0`,
+    `ALTER TABLE bot_positions ADD COLUMN trailing_active INTEGER DEFAULT 0`
+  ];
+  for (const sql of positionAlterColumns) {
+    try { database.exec(sql); } catch (_) {}
+  }
+
+  // 기존 OPEN 포지션의 highest_price를 avg_buy_price로 초기화
+  try {
+    database.exec(`UPDATE bot_positions SET highest_price = avg_buy_price WHERE highest_price IS NULL OR highest_price <= 0`);
+  } catch (_) {}
+
+  // 정밀 검증을 위해 초단기 무작위 사이클 모드는 기본 비활성화('false')
+  try {
+    database.prepare(`
+      INSERT INTO system_settings (key, value) VALUES ('virtual_fast_cycle_mode', 'false')
+      ON CONFLICT(key) DO UPDATE SET value = 'false' WHERE key = 'virtual_fast_cycle_mode' AND value = '0'
+    `).run();
+  } catch (_) {}
+
   const TEN_QUANT_BOTS = [
     {
       bot_id: 'bot_01_volatility_breakout',

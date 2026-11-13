@@ -21,6 +21,31 @@
 
 ## 🚀 버전별 상세 변경 내역 (Changelog)
 
+### [0.0.11] - 2026-11-13
+- **커밋 성격**: `feat`
+- **커밋 메시지**: `feat: 11대 퀀트 봇 시계열 지표 엔진, 동적 config_json 및 트레일링 스탑 고도화 (v0.0.11)`
+- **주요 내용**: 실제 시계열 캔들(OHLCV) 기반 기술적 지표 계산 모듈 신설(`indicator_calculator.mjs`), DB `config_json` 동적 바인딩 및 11대 봇 진입 수식 정밀화, 전략별 기술적 청산 및 최고가 추적 트레일링 스탑(`highest_price`, `trailing_active`), 가상 아레나 무작위 매수 제거 및 변동성(ATR) 기반 동적 포지션 사이징(`calculateDynamicPositionSize`).
+- **세부 변경사항**:
+  - **시계열 기술적 지표 계산 모듈 신설 (`backend/common/indicator_calculator.mjs`)**:
+    - SMA/EMA(5, 20, 60), Wilder RSI(14), 표준편차 볼린저 밴드(20, 2σ), MACD(12, 26, 9) 및 히스토그램, ATR(10) & SuperTrend, ADX(14, +DI/-DI), 일목균형표(전환선, 기준선, 선행스팬 A/B 구름대), Stoch-RSI(%K, %D), 켈트너 채널(EMA20 ± 1.5 ATR) 및 볼린저-켈트너 Squeeze 판정 모듈 신규 구현.
+    - `generateSyntheticCandles()`: 캔들이 비어있거나 부족한 환경에서도 시세 연속성을 보장하는 지표 합성 생성기 탑재.
+    - `enrichStockWithIndicators()`: 수집된 종목 시세에 모든 시계열 기술적 보조지표를 일괄 주입하여 퀀트 평가의 무결성 확보.
+  - **DB `config_json` 동적 바인딩 및 11대 봇 진입 알고리즘 정밀화 (`backend/common/quant_algorithms.mjs`)**:
+    - `parseBotConfig()`: DB `bots.config_json`의 전략 파라미터(`k_factor`, `bb_std`, `min_adx`, `envelope_pct`, `vwap_stop_buffer` 등)를 파싱하여 수식에 동적 바인딩.
+    - 11대 봇(`bot_01` ~ `bot_11`) 각각의 정통 퀀트 진입 수식 전면 개편 및 엄격한 0~100 점수화 모델 적용.
+  - **전략별 기술적 청산 및 트레일링 스탑 구현 (`backend/common/quant_algorithms.mjs`, `backend/services/scheduler_service.mjs`)**:
+    - `evaluatePureQuantExit()`: 고정 익절(`take_profit_pct`)/손절(`stop_loss_pct`), 목표 수익률 65% 이상 도달 후 고점 대비 35% 이상 반납 시 조기 익절하는 트레일링 스탑, 전략별 고유 기술적 청산(MACD 데드크로스, 볼린저/엔벨로프 20일선 복귀, 일목 기준선 이탈, 잭 켈로그 VWAP 칼손절 등) 일원화.
+    - `bot_positions` 테이블에 `highest_price`, `trailing_active` 컬럼 추가 및 영속적 추적 마이그레이션 (`backend/db/index.mjs`).
+  - **가상 아레나 무작위 진입 제거 및 변동성 기반 동적 포지션 사이징 (`backend/services/scheduler_service.mjs`)**:
+    - `virtual_fast_cycle_mode` 기본값을 `'false'`로 변경하여 데모용 무작위 진입(`Math.random() < 0.65`)을 차단하고 100% 순수 퀀트 수식 기반의 진정한 전략 경쟁 아레나 구현.
+    - `calculateDynamicPositionSize()`: 신호 점수 가중치와 변동성(ATR%) 댐퍼를 결합한 15~40% 동적 자금 배분 알고리즘 적용.
+  - **30일 고속 시뮬레이션 및 포지션 생성 엔진 동기화 (`backend/common/virtual_engine.mjs`)**:
+    - `executeVirtualBuy` 시 `highest_price`를 진입가로 초기화 등록하여 트레일링 스탑 추적 정합성 확보.
+  - **패키지 메타데이터 및 배포 번들 동기화**:
+    - `version.json`, `package.json`, `frontend/package.json`, `install/app/package.json` 버전을 `0.0.11`로 통일 및 인스톨러 빌드 최신화.
+
+---
+
 ### [0.0.10] - 2026-11-13
 - **커밋 성격**: `fix`
 - **커밋 메시지**: `fix: 실전 매매 체결 병목 방어 및 스케줄러 동시성 락 강화, 게이트 인증 및 문서 정합성 일원화 (v0.0.10)`

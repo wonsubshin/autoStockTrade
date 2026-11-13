@@ -2,7 +2,8 @@ import { getDb, runTransaction, safeNum } from '../db/index.mjs';
 import { kiwoomClient, tossClient, TOP_KR_STOCKS, TOP_US_STOCKS, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
 import { virtualEngine, BotService } from './bot_service.mjs';
 import { TradeService, pythonBridge } from './trade_service.mjs';
-import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
+import { evaluatePureQuantAlgorithm, evaluatePureQuantExit, calculateDynamicPositionSize } from '../common/quant_algorithms.mjs';
+import { enrichStockWithIndicators } from '../common/indicator_calculator.mjs';
 import { AiService, llmDecisionService } from './ai_service.mjs';
 import { NotificationService } from '../common/notification_service.mjs';
 import { AssetSnapshotService } from './asset_snapshot_service.mjs';
@@ -469,7 +470,7 @@ export class SchedulerService {
       const regimeInfo = await kiwoomClient.getMarketRegime();
 
       // 시세 캐시 맵 구축 (국내 및 해외)
-      const candidateQuotes = [];
+      const rawCandidateQuotes = [];
       const usCandidateStocks = ALL_CANDIDATE_STOCKS.filter((s) => s.market === 'US');
       if (usCandidateStocks.length > 0) {
         try {
@@ -481,7 +482,7 @@ export class SchedulerService {
         try {
           const isUs = stock.market === 'US';
           const pInfo = isUs ? await tossClient.getCurrentPrice(stock.code) : await kiwoomClient.getCurrentPrice(stock.code);
-          candidateQuotes.push({
+          rawCandidateQuotes.push({
             code: stock.code,
             symbol: stock.code,
             name: stock.name,
@@ -497,9 +498,13 @@ export class SchedulerService {
             bidPrice1: pInfo.bidPrice1 || pInfo.currentPrice,
             currentPriceUsd: pInfo.currentPriceUsd,
             exchangeRate: pInfo.exchangeRate,
+            candles: pInfo.candles || [],
           });
         } catch (e) {}
       }
+
+      // 시계열 기술적 지표 계산 모듈을 통해 보조지표(SMA/EMA, RSI, BB, MACD, ATR, ADX 등) 일괄 주입
+      const candidateQuotes = rawCandidateQuotes.map((q) => enrichStockWithIndicators(q, q.candles || []));
 
       // ===========================================================================
       // [TRACK A] 11대 퀀트 봇 상시 가상 경쟁 아레나 (Always-On | 순수 알고리즘 | LLM 미사용)
@@ -554,48 +559,23 @@ export class SchedulerService {
       const fastCycleSetting = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_fast_cycle_mode'").get();
       const isFastCycleMode = fastCycleSetting?.value === '1' || fastCycleSetting?.value === 'true';
 
-      // 1) 보유 가상 포지션 동적 청산 검사
+      // 1) 보유 가상 포지션 동적 청산 검사 (전략별 기술적 청산 + 트레일링 스탑 + 고정 익손절)
       const vPositions = db.prepare("SELECT * FROM bot_positions WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'").all(bot.bot_id);
 
       for (const pos of vPositions) {
         const quote = candidateQuotes.find((c) => c.code === pos.stock_code);
-        const curPrice = quote ? quote.current_price : pos.avg_buy_price;
-        const returnPct = ((curPrice - pos.avg_buy_price) / pos.avg_buy_price) * 100;
-        const heldTimeMs = nowMs - new Date(pos.created_at).getTime();
 
-        const vwapPrice = Number(quote?.vwap || curPrice);
-        const openPrice = Number(quote?.open || curPrice);
+        // 정통 퀀트 청산 및 트레일링 스탑 통합 판정
+        const exitEval = evaluatePureQuantExit(bot, pos, quote, { fastCycleEnabled: isFastCycleMode });
 
-        // 잭 켈로그 전략 전용: 주가가 VWAP(-0.5% 버퍼)과 당일 시가를 동시에 하향 이탈 시 즉시 칼손절
-        const isKelloggKeyLevelBroken =
-          bot.strategy_type === 'JACK_KELLOGG_VWAP' &&
-          curPrice < vwapPrice * 0.995 &&
-          curPrice < openPrice;
-
-        let shouldExit = false;
-        let exitReason = '';
-
-        if (returnPct <= -Math.abs(bot.stop_loss_pct)) {
-          shouldExit = true;
-          exitReason = `손절 기준 도달 (-${Math.abs(bot.stop_loss_pct)}% 설정, 현재 ${returnPct.toFixed(2)}%)`;
-        } else if (returnPct >= Number(bot.take_profit_pct)) {
-          shouldExit = true;
-          exitReason = `익절 기준 도달 (+${bot.take_profit_pct}% 설정, 현재 +${returnPct.toFixed(2)}%)`;
-        } else if (isKelloggKeyLevelBroken) {
-          shouldExit = true;
-          exitReason = `[잭켈로그 칼손절] VWAP 및 당일 시가 핵심 지지선 동시 이탈 (수익률 ${returnPct.toFixed(2)}%)`;
-        } else if (isFastCycleMode && heldTimeMs >= 25000 && (returnPct >= 0.5 || returnPct <= -1.0)) {
-          shouldExit = true;
-          exitReason = returnPct >= 0.5
-            ? `가상 단기 목표 수익 달성 (+${returnPct.toFixed(2)}%)`
-            : `가상 리스크 관리 조기 손절 (${returnPct.toFixed(2)}%)`;
-        } else if (isFastCycleMode && heldTimeMs >= 75000) {
-          shouldExit = true;
-          exitReason = `가상 포지션 순환 리밸런싱 (${returnPct >= 0 ? '+' : ''}${returnPct.toFixed(2)}%)`;
+        // 최고가 및 트레일링 스탑 활성화 상태 DB 갱신
+        if (exitEval.highestPrice > (pos.highest_price || 0) || (exitEval.trailingActive ? 1 : 0) !== (pos.trailing_active || 0)) {
+          db.prepare("UPDATE bot_positions SET highest_price = ?, trailing_active = ? WHERE id = ?")
+            .run(exitEval.highestPrice, exitEval.trailingActive ? 1 : 0, pos.id);
         }
 
-        if (shouldExit) {
-          await virtualEngine.executeVirtualSell({ positionId: pos.id, reason: exitReason });
+        if (exitEval.shouldExit) {
+          await virtualEngine.executeVirtualSell({ positionId: pos.id, reason: exitEval.exitReason });
         }
       }
 
@@ -655,32 +635,37 @@ export class SchedulerService {
         };
       }
 
-      const virtualKrw = Number(bot.virtual_krw || 0);
-      const stockMarket = bestStock?.market === 'US' ? 'US' : 'KR';
-      const multiplier = stockMarket === 'US' ? (usMult > 0 ? usMult : 1.0) : (krMult > 0 ? krMult : 1.0);
-      const investAmount = Math.floor(Math.min(virtualKrw, Math.floor(virtualKrw * 0.32)) * multiplier);
+      if (bestStock && bestSignal) {
+        const virtualKrw = Number(bot.virtual_krw || 0);
+        const stockMarket = bestStock?.market === 'US' ? 'US' : 'KR';
+        const multiplier = stockMarket === 'US' ? (usMult > 0 ? usMult : 1.0) : (krMult > 0 ? krMult : 1.0);
+        
+        // 정통 변동성(ATR) 댐퍼 및 알고리즘 점수 가중치(15%~40%) 동적 포지션 사이징
+        const baseInvest = calculateDynamicPositionSize(bot, virtualKrw, bestSignal.score, bestStock.atrPct);
+        const investAmount = Math.floor(Math.min(virtualKrw, baseInvest) * multiplier);
 
-      if (bestStock && bestSignal && investAmount >= 10000) {
-        await virtualEngine.executeVirtualBuy({
-          botId: bot.bot_id,
-          stockCode: bestStock.code,
-          stockName: bestStock.name,
-          requestedBudget: investAmount,
-          isFractional: bestStock.isFractional,
-        });
+        if (investAmount >= 10000) {
+          await virtualEngine.executeVirtualBuy({
+            botId: bot.bot_id,
+            stockCode: bestStock.code,
+            stockName: bestStock.name,
+            requestedBudget: investAmount,
+            isFractional: bestStock.isFractional,
+          });
 
-        db.prepare(`
-          UPDATE bots
-          SET virtual_status_msg = ?,
-              last_status_msg = ?,
-              updated_at = ?
-          WHERE bot_id = ?
-        `).run(
-          `[⚡가상매수] ${bestStock.name} (이유: ${bestSignal.reason})`,
-          `[⚡가상매수] ${bestStock.name} (순수 알고리즘 체결)`,
-          nowIso,
-          bot.bot_id
-        );
+          db.prepare(`
+            UPDATE bots
+            SET virtual_status_msg = ?,
+                last_status_msg = ?,
+                updated_at = ?
+            WHERE bot_id = ?
+          `).run(
+            `[⚡가상매수] ${bestStock.name} (이유: ${bestSignal.reason})`,
+            `[⚡가상매수] ${bestStock.name} (순수 알고리즘 체결)`,
+            nowIso,
+            bot.bot_id
+          );
+        }
       }
     } catch (vErr) {
       // Ignore individual bot virtual loop errors to prevent interrupting others
@@ -822,36 +807,20 @@ export class SchedulerService {
           ? Number(holdingItem.unrealizedProfitPct)
           : (pos.avg_buy_price > 0 ? ((curPrice - pos.avg_buy_price) / pos.avg_buy_price) * 100 : 0);
 
-        const vwapPrice = Number(quote?.vwap || curPrice);
-        const openPrice = Number(quote?.open || curPrice);
+        // 정통 퀀트 청산 및 트레일링 스탑 통합 판정 (실전은 고속순환 비활성화)
+        const exitEval = evaluatePureQuantExit(bot, pos, quote, { fastCycleEnabled: false });
 
-        // 잭 켈로그 전략 전용: 주가가 VWAP(-0.5% 버퍼)과 당일 시가를 동시에 하향 이탈 시 즉시 칼손절
-        const isKelloggKeyLevelBroken =
-          bot.strategy_type === 'JACK_KELLOGG_VWAP' &&
-          curPrice < vwapPrice * 0.995 &&
-          curPrice < openPrice;
+        // 최고가 및 트레일링 스탑 활성화 상태 DB 갱신
+        if (exitEval.highestPrice > (pos.highest_price || 0) || (exitEval.trailingActive ? 1 : 0) !== (pos.trailing_active || 0)) {
+          db.prepare("UPDATE bot_positions SET highest_price = ?, trailing_active = ? WHERE id = ?")
+            .run(exitEval.highestPrice, exitEval.trailingActive ? 1 : 0, pos.id);
+        }
 
-        let shouldSell = false;
-        let sellReason = '';
+        let shouldSell = exitEval.shouldExit;
+        let sellReason = exitEval.exitReason ? `실전 ${exitEval.exitReason}` : '';
 
-        if (returnPct <= -Math.abs(bot.stop_loss_pct)) {
-          shouldSell = true;
-          sellReason = `실전 손절 기준 도달 (-${Math.abs(bot.stop_loss_pct)}% 설정, 현재 ${returnPct.toFixed(2)}%)`;
-        } else if (returnPct >= Number(bot.take_profit_pct)) {
-          shouldSell = true;
-          sellReason = `실전 익절 기준 도달 (+${bot.take_profit_pct}% 설정, 현재 +${returnPct.toFixed(2)}%)`;
-        } else if (isKelloggKeyLevelBroken) {
-          shouldSell = true;
-          sellReason = `[잭켈로그 칼손절] VWAP 및 당일 시가 핵심 지지선 동시 이탈 (수익률 ${returnPct.toFixed(2)}%)`;
-        } else if (bot.strategy_type === 'VOLATILITY_BREAKOUT' && marketStatus?.kr?.phase === 'REGULAR') {
-          const now = new Date();
-          const nowMin = (now.getUTCHours() + 9) * 60 + now.getUTCMinutes();
-          if (nowMin >= 15 * 60 + 15) {
-            shouldSell = true;
-            sellReason = '15:15 당일 장마감 동시호가 전 실전 시간청산 (오버나잇 배제)';
-          }
-        } else {
-          // 다중 LLM(Flash+Pro) 하이브리드 교차검증 악재 SELL 신호 발생 시 긴급 청산
+        // 다중 LLM(Flash+Pro) 하이브리드 교차검증 악재 SELL 신호 발생 시 긴급 청산
+        if (!shouldSell) {
           const llmSignal = latestLlmDecisions.find((d) => d.symbol === pos.stock_code);
           if (llmSignal && llmSignal.action === 'SELL') {
             shouldSell = true;

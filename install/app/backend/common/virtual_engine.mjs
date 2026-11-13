@@ -98,8 +98,8 @@ export class VirtualPaperTradingEngine {
 
     const insertPosition = db.prepare(`
       INSERT INTO bot_positions (bot_id, trade_mode, stock_code, stock_name, order_no,
-                                 qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, created_at)
-      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?)
+                                 qty, avg_buy_price, buy_amount, buy_fee, trade_id, status, highest_price, trailing_active, created_at)
+      VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, 'OPEN', ?, 0, ?)
     `);
 
     const updateBotBalance = db.prepare(`
@@ -135,6 +135,7 @@ export class VirtualPaperTradingEngine {
       buyAmount,
       buyFee,
       tradeId,
+      executionPrice,
       nowIso
     );
 
