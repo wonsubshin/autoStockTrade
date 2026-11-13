@@ -21,6 +21,38 @@
 
 ## 🚀 버전별 상세 변경 내역 (Changelog)
 
+### [0.0.9] - 2026-11-13
+- **커밋 성격**: `feat`
+- **커밋 메시지**: `feat: 11번째 신규 퀀트 봇('잭 켈로그 VWAP 핵심레벨 돌파') 추가 및 전체 시스템 확장 (v0.0.9)`
+- **주요 내용**: 11번째 신규 퀀트 봇(`bot_11_jack_kellogg_vwap`) 추가, 4대 순수 퀀트 수식 진입 필터 및 VWAP·시가 이탈 칼손절(Key Level Cut) 로직 구현, 가상 아레나 및 실전 매매 연동, UI/문서 동기화
+- **세부 변경사항**:
+  - **DB 시드 확장 (`backend/db/index.mjs`)**:
+    - 11번째 퀀트 봇 객체 `bot_11_jack_kellogg_vwap` ('잭 켈로그 VWAP 핵심레벨 돌파', `KELLOGG-VWAP #11`, `JACK_KELLOGG_VWAP`) UPSERT 시드 등록
+    - 가상 시드 10,000,000원, 목표 익절 +6.0%, 고정 손절 -2.0%, `is_virtual_running = 1` 가상 아레나 상시 가동 설정
+  - **순수 퀀트 알고리즘 수식 엔진 (`backend/common/quant_algorithms.mjs`)**:
+    - `evaluatePureQuantAlgorithm` 내 `case 'JACK_KELLOGG_VWAP':` 분기 추가
+    - 4대 진입 조건 수식화:
+      1. VWAP 상단 유지 (`price >= vwap`)
+      2. 핵심 레벨 상회 (`price > openPrice && changePct >= 1.5`)
+      3. 거래량 폭발 필터 (`volumeRatio >= 2.0`)
+      4. 당일 고가 부근 눌림/횡보 후 돌파 (`distFromHighPct <= 3.5`) 및 극단적 과열 추격 방지 (`rsi <= 78`)
+  - **잭 켈로그 전용 칼손절(Key Level Cut) 청산 로직 (`backend/services/scheduler_service.mjs`)**:
+    - Track A (가상 아레나) 및 Track B (실전 매매) 청산 루프 모두에 `JACK_KELLOGG_VWAP` 전략 전용 핵심 지지선 이탈 검사 탑재
+    - 주가가 VWAP(-0.5% 버퍼)과 당일 시가를 동시에 하향 이탈(`curPrice < vwapPrice * 0.995 && curPrice < openPrice`) 시 고정 손절선(-2.0%) 도달 전이라도 즉시 조기 칼손절 집행
+  - **30일 고속 시뮬레이션 및 봇 서비스 확장 (`virtual_engine.mjs`, `bot_service.mjs`)**:
+    - 30일 고속 시뮬레이션(`runFastReplayTest`)에 11번째 봇 전략 정의 추가 및 백테스팅 지원
+    - 전체 11대 가상 봇 실시간 메트릭 산출 및 실전 1~3대 봇 선택/예산 분배 연동
+  - **프론트엔드 UI 및 설치 마법사 동기화**:
+    - `LabPanel.jsx`, `SettingsPanel.jsx`, `App.jsx`: "10대 봇" 하드코딩 표기를 동적 봇 개수 및 "11대 퀀트 봇"으로 전면 갱신
+    - 온보딩 마법사(`wizard_ui.html`) 및 독립 패키지 안내서(`README_INSTALL.txt`) 문구 동기화
+  - **공식 기술 문서 최신화**:
+    - `README.md`, `prompt.md`의 퀀트 전략 종합 요약표에 11번 `bot_11_jack_kellogg_vwap` 명세 추가
+  - **패키지 메타데이터 및 배포 번들 동기화**:
+    - `version.json`, `package.json`, `frontend/package.json`, `install/app/package.json` 버전을 `0.0.9`로 일괄 업데이트
+    - Vite 빌드 및 독립형 배포 패키지(`install/app/`) 자동 동기화
+
+---
+
 ### [0.0.8] - 2026-11-13
 - **커밋 성격**: `feat`
 - **커밋 메시지**: `feat: 실전 수익 통계 상단 이번달 1일 및 현재 평가자산 증감 표기, 월별 기록 및 그래프 시각화 추가 (v0.0.8)`

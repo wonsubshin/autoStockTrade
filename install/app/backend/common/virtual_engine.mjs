@@ -303,7 +303,7 @@ export class VirtualPaperTradingEngine {
       ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
     `).run(String(totalVirtBudget), nowIso);
 
-    // 3. 10대 봇 전원의 가상 잔고 및 지표를 100만원과 0으로 완벽 초기화
+    // 3. 11대 봇 전원의 가상 잔고 및 지표를 100만원과 0으로 완벽 초기화
     const bots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
     for (const b of bots) {
       db.prepare(`
@@ -582,6 +582,14 @@ export class VirtualPaperTradingEngine {
         lossRange: [-2.5, -1.5],
         winProb: 0.74,
         tradesPerMonth: 26,
+      },
+      {
+        botId: 'bot_11_jack_kellogg_vwap',
+        name: '잭 켈로그 VWAP 핵심레벨 돌파 봇',
+        targetReturnRange: [3.5, 6.0],
+        lossRange: [-2.0, -1.0],
+        winProb: 0.70,
+        tradesPerMonth: 20,
       },
     ];
 

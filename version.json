@@ -1,5 +1,5 @@
 {
-  "version": "0.0.8",
+  "version": "0.0.9",
   "format": "0.0.X",
   "rule": "Git commit 1건당 patch 버전 1씩 증가 (0.0.1부터 순차 증가)",
   "lastUpdated": "2026-11-13"

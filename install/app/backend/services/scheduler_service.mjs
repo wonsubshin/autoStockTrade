@@ -501,7 +501,7 @@ export class SchedulerService {
       }
 
       // ===========================================================================
-      // [TRACK A] 10대 퀀트 봇 상시 가상 경쟁 아레나 (Always-On | 순수 알고리즘 | LLM 미사용)
+      // [TRACK A] 11대 퀀트 봇 상시 가상 경쟁 아레나 (Always-On | 순수 알고리즘 | LLM 미사용)
       // ===========================================================================
       for (const bot of allBots) {
         await this.runPureVirtualArenaCycle(db, bot, candidateQuotes);
@@ -561,6 +561,15 @@ export class SchedulerService {
         const returnPct = ((curPrice - pos.avg_buy_price) / pos.avg_buy_price) * 100;
         const heldTimeMs = nowMs - new Date(pos.created_at).getTime();
 
+        const vwapPrice = Number(quote?.vwap || curPrice);
+        const openPrice = Number(quote?.open || curPrice);
+
+        // 잭 켈로그 전략 전용: 주가가 VWAP(-0.5% 버퍼)과 당일 시가를 동시에 하향 이탈 시 즉시 칼손절
+        const isKelloggKeyLevelBroken =
+          bot.strategy_type === 'JACK_KELLOGG_VWAP' &&
+          curPrice < vwapPrice * 0.995 &&
+          curPrice < openPrice;
+
         let shouldExit = false;
         let exitReason = '';
 
@@ -570,6 +579,9 @@ export class SchedulerService {
         } else if (returnPct >= Number(bot.take_profit_pct)) {
           shouldExit = true;
           exitReason = `익절 기준 도달 (+${bot.take_profit_pct}% 설정, 현재 +${returnPct.toFixed(2)}%)`;
+        } else if (isKelloggKeyLevelBroken) {
+          shouldExit = true;
+          exitReason = `[잭켈로그 칼손절] VWAP 및 당일 시가 핵심 지지선 동시 이탈 (수익률 ${returnPct.toFixed(2)}%)`;
         } else if (isFastCycleMode && heldTimeMs >= 25000 && (returnPct >= 0.5 || returnPct <= -1.0)) {
           shouldExit = true;
           exitReason = returnPct >= 0.5
@@ -808,6 +820,15 @@ export class SchedulerService {
           ? Number(holdingItem.unrealizedProfitPct)
           : (pos.avg_buy_price > 0 ? ((curPrice - pos.avg_buy_price) / pos.avg_buy_price) * 100 : 0);
 
+        const vwapPrice = Number(quote?.vwap || curPrice);
+        const openPrice = Number(quote?.open || curPrice);
+
+        // 잭 켈로그 전략 전용: 주가가 VWAP(-0.5% 버퍼)과 당일 시가를 동시에 하향 이탈 시 즉시 칼손절
+        const isKelloggKeyLevelBroken =
+          bot.strategy_type === 'JACK_KELLOGG_VWAP' &&
+          curPrice < vwapPrice * 0.995 &&
+          curPrice < openPrice;
+
         let shouldSell = false;
         let sellReason = '';
 
@@ -817,6 +838,9 @@ export class SchedulerService {
         } else if (returnPct >= Number(bot.take_profit_pct)) {
           shouldSell = true;
           sellReason = `실전 익절 기준 도달 (+${bot.take_profit_pct}% 설정, 현재 +${returnPct.toFixed(2)}%)`;
+        } else if (isKelloggKeyLevelBroken) {
+          shouldSell = true;
+          sellReason = `[잭켈로그 칼손절] VWAP 및 당일 시가 핵심 지지선 동시 이탈 (수익률 ${returnPct.toFixed(2)}%)`;
         } else if (bot.strategy_type === 'VOLATILITY_BREAKOUT' && marketStatus?.kr?.phase === 'REGULAR') {
           const now = new Date();
           const nowMin = (now.getUTCHours() + 9) * 60 + now.getUTCMinutes();

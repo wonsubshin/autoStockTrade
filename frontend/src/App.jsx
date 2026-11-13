@@ -332,7 +332,7 @@ export default function App() {
         fetchTradesAndPositions('VIRTUAL');
         fetchBots();
         fetchLeaderboard();
-      }, 5000); // 10대 봇 가상 아레나 5초 주기 자동 갱신
+      }, 5000); // 11대 퀀트 봇 가상 아레나 5초 주기 자동 갱신
       return () => clearInterval(labInterval);
     }
 
@@ -809,7 +809,7 @@ export default function App() {
       confirmColor: 'success',
       confirmText: '⚡ 시뮬레이션 시작',
       title: '⚡ 30영업일 고속 시뮬레이션 실행 확인',
-      message: '최근 30영업일 시장 데이터(코스피/코스닥/나스닥)를 기반으로 10대 알고리즘의 성과 백테스팅 및 추천 봇 선별을 진행하시겠습니까?\n\n약 1~2초가 소요됩니다.',
+      message: '최근 30영업일 시장 데이터(코스피/코스닥/나스닥)를 기반으로 11대 퀀트 알고리즘의 성과 백테스팅 및 추천 봇 선별을 진행하시겠습니까?\n\n약 1~2초가 소요됩니다.',
       onConfirm: async () => {
         setIsReplaying(true);
         setReplayResult(null);
@@ -989,7 +989,7 @@ export default function App() {
       await Promise.all([fetchLeaderboard(), fetchBots()]);
       setModalInfo({
         title: '아레나 리더보드 갱신 완료',
-        message: '10대 퀀트 알고리즘의 실시간 누적 수익률, 거래 건수, 손익 지표가 최신 시세 기준으로 갱신되었습니다.',
+        message: '11대 퀀트 알고리즘의 실시간 누적 수익률, 거래 건수, 손익 지표가 최신 시세 기준으로 갱신되었습니다.',
         type: 'info',
       });
     } catch (err) {
@@ -1187,7 +1187,7 @@ export default function App() {
                   실전 매매를 담당할 퀀트 봇(1~3개)을 먼저 선택해주세요
                 </h3>
                 <p style={{ color: '#94a3b8', fontSize: '13px', maxWidth: '580px', margin: '0 auto 22px auto', lineHeight: 1.6 }}>
-                  10대 퀀트 알고리즘이 24시간 가상 경쟁 아레나에서 상시 모의 거래를 수행하고 있습니다.<br />
+                  11대 퀀트 알고리즘이 24시간 가상 경쟁 아레나에서 상시 모의 거래를 수행하고 있습니다.<br />
                   <strong>[⚡ 가상 경쟁 아레나]</strong> 탭에서 실시간 누적 수익률을 확인하신 후, 실전을 담당할 1~3개의 봇을 체크하여 확정해주세요.
                 </p>
                 <div style={{ display: 'flex', gap: '10px', justifyContent: 'center', flexWrap: 'wrap' }}>
@@ -1281,7 +1281,7 @@ export default function App() {
         })()}
 
         {/* ========================================================
-            MENU 2: 가상 경쟁 아레나 (10대 봇 상시 거래 및 랭킹)
+            MENU 2: 가상 경쟁 아레나 (11대 퀀트 봇 상시 거래 및 랭킹)
             ======================================================== */}
         {(activeMenu === 'VIRTUAL_ARENA' || activeMenu === 'LAB') && (
           <LabPanel

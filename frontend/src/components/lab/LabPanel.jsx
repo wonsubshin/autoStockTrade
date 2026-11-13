@@ -67,7 +67,7 @@ export default function LabPanel({
           <div>
             <div style={{ display: 'flex', alignItems: 'center', gap: '10px' }}>
               <h2 style={{ fontSize: '18px', fontWeight: 800, margin: 0, color: '#f8fafc' }}>
-                ⚡ 10대 퀀트 봇 상시 가상 경쟁 아레나 (Pure Algorithm Only)
+                ⚡ {bots?.length || 11}대 퀀트 봇 상시 가상 경쟁 아레나 (Pure Algorithm Only)
               </h2>
               <span className="badge-live-pulse">
                 <span className="mode-pulse-dot virtual" style={{ width: '7px', height: '7px' }}></span>
@@ -75,7 +75,7 @@ export default function LabPanel({
               </span>
             </div>
             <p style={{ fontSize: '12.5px', color: '#cbd5e1', marginTop: '6px', lineHeight: 1.6, marginBottom: 0 }}>
-              • 10개 봇 모두 <strong>Gemini LLM 호출 없이 100% 순수 퀀트 수식 지표</strong>로 24시간 자율 가상 매매를 수행합니다.<br />
+              • {bots?.length || 11}개 봇 모두 <strong>Gemini LLM 호출 없이 100% 순수 퀀트 수식 지표</strong>로 24시간 자율 가상 매매를 수행합니다.<br />
               • 실시간 누적 수익률을 확인한 후 <strong>실전을 담당할 1~3개의 봇을 체크하고 [실전 담당으로 확정]</strong>을 누르면, <strong>[환경설정] 화면으로 이동하여 비율을 설정</strong>하게 됩니다.
             </p>
           </div>
@@ -122,7 +122,7 @@ export default function LabPanel({
       {/* 10 Bots Arena Table */}
       <div className="board-card" style={{ marginBottom: '24px' }}>
         <div className="card-title-row">
-          <div className="card-title">🏆 10대 퀀트 알고리즘 실시간 수익률 리그 리더보드</div>
+          <div className="card-title">🏆 {bots?.length || 11}대 퀀트 알고리즘 실시간 수익률 리그 리더보드</div>
           <span style={{ fontSize: '12px', color: selectedIds.length >= 1 && selectedIds.length <= 3 ? '#34d399' : '#f59e0b', fontWeight: 600 }}>
             실전 지정 봇: {selectedIds.length} / 3개 선택됨 {selectedIds.length >= 1 && selectedIds.length <= 3 ? '✓ 선택 가능 (최대 3개)' : '(1~3개 선택 필요)'}
           </span>

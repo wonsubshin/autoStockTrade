@@ -500,7 +500,7 @@ export class BotService {
       const res = virtualEngine.resetAllVirtual(targetSeed);
       return {
         success: true,
-        message: `전체 10대 가상 봇의 보유 포지션 및 누적 거래내역이 완전히 삭제되었습니다. 각 봇 초기 자본금 100만 원, 모든 성과 지표(수익률, 손익, 승률, 익절/손절) 0으로 신규 경쟁을 시작합니다.`,
+        message: `전체 ${res.count || 11}대 가상 봇의 보유 포지션 및 누적 거래내역이 완전히 삭제되었습니다. 각 봇 초기 자본금 100만 원, 모든 성과 지표(수익률, 손익, 승률, 익절/손절) 0으로 신규 경쟁을 시작합니다.`,
       };
     }
 

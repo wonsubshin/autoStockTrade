@@ -796,7 +796,7 @@ export function initDatabase() {
     dbInstance.exec(SQLITE_SCHEMA_SQL);
     seedInitialData();
     migrateAndSeedTenBots(dbInstance);
-    console.log('[DB] SQLite 스키마 및 10대 퀀트 봇 초기 데이터 설정 완료');
+    console.log('[DB] SQLite 스키마 및 11대 퀀트 봇 초기 데이터 설정 완료');
     return dbInstance;
   }
 
@@ -978,6 +978,26 @@ export function migrateAndSeedTenBots(database = dbInstance) {
       stop_loss_pct: 2.2, take_profit_pct: 5.0,
       is_real_selected: 0, is_real_running: 0, real_allocation_ratio: 0, real_allocated_capital: 0, real_available_krw: 0,
       config_json: JSON.stringify({ fast_ma: 20, slow_ma: 60, pullback_tolerance: 0.8 })
+    },
+    {
+      bot_id: 'bot_11_jack_kellogg_vwap',
+      name: '잭 켈로그 VWAP 핵심레벨 돌파',
+      nickname: 'KELLOGG-VWAP #11',
+      strategy_type: 'JACK_KELLOGG_VWAP',
+      description: '거래량 200% 폭발 대장주 중 VWAP·시가·전일종가 지지 및 전고점 돌파 매수, VWAP·시가 이탈 시 칼손절',
+      stop_loss_pct: -2.0,
+      take_profit_pct: 6.0,
+      is_real_selected: 0,
+      is_real_running: 0,
+      real_allocation_ratio: 0,
+      real_allocated_capital: 0,
+      real_available_krw: 0,
+      config_json: JSON.stringify({
+        min_vol_ratio: 2.0,
+        max_dist_from_high_pct: 3.5,
+        vwap_stop_buffer: 0.995,
+        max_rsi: 78
+      })
     }
   ];
 

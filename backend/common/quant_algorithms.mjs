@@ -1,7 +1,7 @@
 /**
  * backend/common/quant_algorithms.mjs
  * 
- * 10대 퀀트 알고리즘 봇 순수 기술적 지표 평가 엔진 (Pure Algorithm Engine)
+ * 11대 퀀트 알고리즘 봇 순수 기술적 지표 평가 엔진 (Pure Algorithm Engine)
  * - Gemini LLM 호출을 일절 수행하지 않으며,
  * - 가격, 이동평균선(MA), RSI, 볼린저밴드, 거래량, 엔벨로프, 일목균형표, VWAP, 켈트너 등
  *   100% 순수 수식만으로 각 전략 봇의 매수 여부(shouldBuy) 및 시그널 점수(score)를 산출합니다.
@@ -118,6 +118,40 @@ export function evaluatePureQuantAlgorithm(bot, stock) {
         shouldBuy: triggered,
         score: triggered ? Math.min(99, Math.round(88 + changePct * 2)) : 20,
         reason: `[순수알고리즘] 켈트너 스퀴즈 상단(${Math.round(keltnerTop).toLocaleString()}원) 폭발 돌파`
+      };
+    }
+
+    case 'JACK_KELLOGG_VWAP': {
+      // 11. 잭 켈로그 VWAP 핵심레벨 돌파
+      // 1) VWAP 및 핵심 가격 레벨(시가, 전일종가 대비 양봉) 지지 확인
+      const isAboveVwap = price >= vwap;
+      const isAboveKeyLevels = price > openPrice && changePct >= 1.5;
+
+      // 2) 거래량 폭발 필터 (평소 대비 200% 이상 유동성 유입)
+      const hasVolumeSurge = volumeRatio >= 2.0;
+
+      // 3) 고점 부근 눌림/횡보 후 돌파 확인 (당일 고가 대비 3.5% 이내 근접)
+      const distFromHighPct = high > 0 ? ((high - price) / high) * 100 : 99;
+      const isNearHighBreakout = distFromHighPct <= 3.5;
+
+      // 4) 극단적 과열(Euphoria) 꼭지 추격 매수 방지
+      const notOverheated = rsi <= 78;
+
+      const triggered =
+        isAboveVwap &&
+        isAboveKeyLevels &&
+        hasVolumeSurge &&
+        isNearHighBreakout &&
+        notOverheated;
+
+      const score = triggered
+        ? Math.min(98, 86 + volumeRatio * 2.5 + Math.max(0, 3.5 - distFromHighPct) * 1.5)
+        : 20;
+
+      return {
+        shouldBuy: triggered,
+        score: Number(score.toFixed(1)),
+        reason: `[순수알고리즘] 잭켈로그 VWAP(${Math.round(vwap).toLocaleString()})·시가 지지 + 거래량 ${(volumeRatio * 100).toFixed(0)}% 폭발 돌파`
       };
     }
 

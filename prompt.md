@@ -3,7 +3,7 @@
 [![License](https://img.shields.io/badge/License-Apache_2.0-blue.svg)](https://opensource.org/licenses/Apache-2.0)
 
 당신은 시니어 풀스택 개발자이자 퀀트 트레이딩 시스템 아키텍트, 또는 이 프로젝트의 유지보수 및 코드 검수를 담당하는 AI Agent입니다.  
-본 문서는 **키움증권(국내 실시간 시세/호가) + 토스증권(미국 실시간 시세 & 국내/미국 주식 실전 주문/소수점 매매) + Google Gemini 하이브리드 LLM(Flash/Pro 듀얼 트랙 리스크 관리) + PostgreSQL 16 + React 18/Vite** 기반의 엔터프라이즈급 멀티 봇 퀀트 트레이딩 플랫폼의 전체 아키텍처, 데이터 모델, 10대 알고리즘, 동작 원리, 최근 수정 내역 및 **다른 AI Agent를 위한 소스 코드 정밀 검수 지침(Audit Guide)**을 완벽하게 정리한 공식 기술 명세서입니다.
+본 문서는 **키움증권(국내 실시간 시세/호가) + 토스증권(미국 실시간 시세 & 국내/미국 주식 실전 주문/소수점 매매) + Google Gemini 하이브리드 LLM(Flash/Pro 듀얼 트랙 리스크 관리) + PostgreSQL 16 + React 18/Vite** 기반의 엔터프라이즈급 멀티 봇 퀀트 트레이딩 플랫폼의 전체 아키텍처, 데이터 모델, 11대 알고리즘, 동작 원리, 최근 수정 내역 및 **다른 AI Agent를 위한 소스 코드 정밀 검수 지침(Audit Guide)**을 완벽하게 정리한 공식 기술 명세서입니다.
 
 ---
 
@@ -108,7 +108,7 @@ autoStockTrader/
 │   │   ├── toss_client.mjs             # 토스증권 Open API (미국 실시간 시세, 환율)
 │   │   ├── python_executor_bridge.mjs  # Node.js <-> toss_executor.py IPC 브릿지
 │   │   ├── virtual_engine.mjs          # 가상 매매(Paper Trading) 시뮬레이션 체결 엔진
-│   │   ├── quant_algorithms.mjs        # 10대 퀀트 매매 전략 기술적 지표 계산 로직
+│   │   ├── quant_algorithms.mjs        # 11대 퀀트 매매 전략 기술적 지표 계산 로직
 │   │   ├── llm_decision_service.mjs    # 서킷 브레이커 내장 Gemini 의사결정 서비스
 │   │   └── news_service.mjs            # 네이버 금융/한경/매경/공시 RSS 수집 및 감성 분석
 │   ├── db/
@@ -155,7 +155,7 @@ autoStockTrader/
 
 본 시스템은 PostgreSQL 16(`stock` 데이터베이스)의 **17개 테이블**을 기반으로 운영됩니다.
 
-1. **`bots`**: 10대 알고리즘 봇 기본 정보 및 자금 배분
+1. **`bots`**: 11대 알고리즘 봇 기본 정보 및 자금 배분
    - `bot_id`(PK), `name`, `nickname`, `strategy_type`, `trade_mode`('REAL'|'VIRTUAL'), `description`, `is_running`, `is_virtual_running`, `is_real_running`, `is_real_selected`, `virtual_krw`, `virtual_initial_capital`, `real_allocated_capital`, `real_available_krw`, `real_allocation_ratio`, `stop_loss_pct`, `take_profit_pct`, `min_volume_krw`, `real_status_msg`, `virtual_status_msg`, `last_status_msg`, `config_json`, `updated_at`
 2. **`trades`**: 체결 및 청산 완료된 거래 원장
    - `id`(PK AUTO), `bot_id`, `trade_mode`, `stock_code`, `stock_name`, `buy_order_no`, `sell_order_no`, `buy_price`, `buy_qty`, `buy_amount`, `buy_date`, `sell_price`, `sell_qty`, `sell_amount`, `sell_date`, `fee_and_tax`, `profit_krw`, `profit_pct`, `status`('HOLDING'|'CLOSED')
@@ -181,9 +181,9 @@ autoStockTrader/
 
 ---
 
-## 4. 10대 퀀트 매매 봇 전략 상세 명세
+## 4. 11대 퀀트 매매 봇 전략 상세 명세
 
-시스템에는 시장 국면에 따라 상호 보완적으로 작동하는 10가지 퀀트 전략이 탑재되어 있습니다:
+시스템에는 시장 국면에 따라 상호 보완적으로 작동하는 11가지 퀀트 전략이 탑재되어 있습니다:
 
 | 번호 | 봇 ID | 전략명 | 전략 분류 | 목표 익절 / 손절 | 핵심 알고리즘 및 진입·청산 규칙 |
 | :---: | :--- | :--- | :---: | :---: | :--- |
@@ -197,6 +197,7 @@ autoStockTrader/
 | **08** | `bot_08_stoch_vwap_scalp` | 스토캐스틱 RSI + VWAP 초단타 | 단타스캘핑 | `+2.5%` / `-1.2%` | **진입**: 주가가 당일 거래량가중평균가(VWAP) 상회 & Stoch RSI 과매도(20) 골든크로스.<br>**청산**: VWAP 하향 이탈 시 즉시 컷. |
 | **09** | `bot_09_keltner_squeeze` | 켈트너 채널 스퀴즈 폭발 | 변동성돌파 | `+6.0%` / `-2.5%` | **진입**: 볼린저 밴드가 켈트너 채널 내부로 수축(스퀴즈) 후 밴드 상단 돌파.<br>**청산**: 모멘텀 히스토그램 감소 전환 시 청산. |
 | **10** | `bot_10_ma_pullback_swing` | 20/60일 정배열 눌림목 스윙 | 눌림목스윙 | `+5.0%` / `-2.2%` | **진입**: 20일/60일선 정배열 상태에서 주가가 20일 지지선까지 눌림 후 지지 양봉.<br>**청산**: 20일선 완전 이탈 시 손절, 전고점 익절. |
+| **11** | `bot_11_jack_kellogg_vwap` | 잭 켈로그 VWAP 핵심레벨 돌파 | 데이트레이딩 | `+6.0%` / `-2.0%` | **진입**: 거래량 200% 폭발 & 당일 시가 및 전일종가 상회 & VWAP 지지 & 고점 대비 3.5% 이내 돌파 & RSI ≤ 78.<br>**청산**: VWAP 및 당일 시가 동시 하향 이탈 시 칼손절(Key Level Cut), 또는 +6.0% / -2.0%. |
 
 ---
 

@@ -430,7 +430,7 @@ export default function SettingsPanel({
       {/* 2-1. Virtual Budget Configuration */}
       <div className="board-card" style={{ borderColor: 'rgba(16, 185, 129, 0.4)', marginBottom: '24px' }}>
         <div className="card-title-row">
-          <div className="card-title">🧪 가상 매매 총 운용 예산 설정 (10대 봇 아레나)</div>
+          <div className="card-title">🧪 가상 매매 총 운용 예산 설정 ({bots?.length || 11}대 퀀트 봇 아레나)</div>
           <span className="badge-mode virtual">가상 아레나</span>
         </div>
         <div className="form-group">
