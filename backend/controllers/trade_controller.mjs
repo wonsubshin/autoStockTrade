@@ -21,11 +21,16 @@ export class TradeController {
     return sendJson(res, 200, { positions });
   }
 
-  static getStats(req, res, urlObj) {
+  static async getStats(req, res, urlObj) {
     const mode = urlObj.searchParams.get('mode') || 'REAL';
     const period = urlObj.searchParams.get('period') || 'daily';
-    const stats = TradeService.getStats({ mode: 'REAL', period });
+    const stats = await TradeService.getStats({ mode: 'REAL', period });
     return sendJson(res, 200, stats);
+  }
+
+  static async getMonthlyAssets(req, res) {
+    const data = await TradeService.getMonthlyAssets();
+    return sendJson(res, 200, data);
   }
 
   static getLeaderboard(req, res) {

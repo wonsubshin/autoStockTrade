@@ -5,6 +5,7 @@ import { virtualEngine, BotService } from './bot_service.mjs';
 import { PythonExecutorBridge } from '../common/python_executor_bridge.mjs';
 import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
 import { NotificationService } from '../common/notification_service.mjs';
+import { AssetSnapshotService } from './asset_snapshot_service.mjs';
 
 export const pythonBridge = new PythonExecutorBridge(PROJECT_ROOT);
 
@@ -459,9 +460,18 @@ export class TradeService {
     throw new Error('side는 BUY 또는 SELL이어야 합니다.');
   }
 
-  static getStats({ mode = 'REAL', period = 'daily' }) {
+  static async getStats({ mode = 'REAL', period = 'daily' }) {
     const db = getDb();
     const baseDate = '2026-10-01';
+
+    // 최신 이번 달 1일 시점 및 현재 시점 평가자산 스냅샷 동기화
+    let monthlyAssets = null;
+    try {
+      monthlyAssets = await AssetSnapshotService.recordOrUpdateCurrentSnapshot();
+    } catch (e) {
+      console.warn('[TradeService] 월별 자산 스냅샷 갱신 경고:', e.message);
+      monthlyAssets = AssetSnapshotService.getMonthlyAssetAnalysis(db);
+    }
 
     const toKstDateString = (dateInput = new Date()) => {
       const d = dateInput instanceof Date ? dateInput : new Date(dateInput);
@@ -598,7 +608,12 @@ export class TradeService {
       winRate: totalTrades > 0 ? parseFloat(((winCount / totalTrades) * 100).toFixed(1)) : 0,
       timeline,
       stockRanking,
+      monthlyAssets,
     };
+  }
+
+  static async getMonthlyAssets() {
+    return await AssetSnapshotService.recordOrUpdateCurrentSnapshot();
   }
 
   static getLeaderboard() {

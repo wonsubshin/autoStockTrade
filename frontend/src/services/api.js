@@ -110,6 +110,7 @@ export const api = {
     }),
   getStats: (mode = 'REAL', period = 'daily') =>
     request(`/api/stats?mode=REAL&period=${period}`),
+  getMonthlyAssets: () => request('/api/stats/monthly-assets'),
 
   // Market & Account
   getCandidates: () => request('/api/stocks/candidates'),

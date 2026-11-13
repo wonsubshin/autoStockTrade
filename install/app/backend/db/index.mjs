@@ -559,6 +559,21 @@ CREATE TABLE IF NOT EXISTS market_regime_filter (
   us_blacklist_tickers_json TEXT DEFAULT '[]',
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
+
+CREATE TABLE IF NOT EXISTS monthly_asset_snapshots (
+  id INTEGER PRIMARY KEY AUTOINCREMENT,
+  year_month TEXT NOT NULL UNIQUE,
+  month_start_date TEXT NOT NULL,
+  month_start_asset REAL NOT NULL,
+  current_asset REAL NOT NULL,
+  cash_krw REAL DEFAULT 0,
+  stock_eval_krw REAL DEFAULT 0,
+  change_krw REAL DEFAULT 0,
+  change_pct REAL DEFAULT 0,
+  snapshot_date TEXT NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
 `;
 
 export const PG_SCHEMA_SQL = `
@@ -744,6 +759,21 @@ CREATE TABLE IF NOT EXISTS market_regime_filter (
   us_risk_alert INTEGER DEFAULT 0,
   us_reason TEXT DEFAULT '미국 초기 정상 상태',
   us_blacklist_tickers_json TEXT DEFAULT '[]',
+  updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
+);
+
+CREATE TABLE IF NOT EXISTS monthly_asset_snapshots (
+  id SERIAL PRIMARY KEY,
+  year_month VARCHAR(7) NOT NULL UNIQUE,
+  month_start_date VARCHAR(10) NOT NULL,
+  month_start_asset NUMERIC NOT NULL,
+  current_asset NUMERIC NOT NULL,
+  cash_krw NUMERIC DEFAULT 0,
+  stock_eval_krw NUMERIC DEFAULT 0,
+  change_krw NUMERIC DEFAULT 0,
+  change_pct NUMERIC DEFAULT 0,
+  snapshot_date VARCHAR(10) NOT NULL,
+  created_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP,
   updated_at TIMESTAMP DEFAULT CURRENT_TIMESTAMP
 );
 `;

@@ -1,5 +1,6 @@
 import React, { useState, useMemo, useRef, useCallback } from 'react';
 import AllTradesHistoryTable from './AllTradesHistoryTable';
+import MonthlyAssetSection from './MonthlyAssetSection';
 
 function getTodayKstString() {
   return new Intl.DateTimeFormat('en-CA', {
@@ -274,6 +275,9 @@ export default function StatsPanel({
           </span>
         </div>
       </div>
+
+      {/* 0. 실전 보유 평가자산 월별 현황 & 증감 분석 섹션 (이번 달 1일 vs 현재 자산 및 월별 증감 그래프) */}
+      <MonthlyAssetSection monthlyAssets={statsData?.monthlyAssets} />
 
       {/* Overall Cumulative Metrics Cards */}
       <div className="metrics-grid">

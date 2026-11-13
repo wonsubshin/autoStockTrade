@@ -1,6 +1,6 @@
 {
   "name": "auto-stock-trader",
-  "version": "0.0.7",
+  "version": "0.0.8",
   "description": "KIS Open API Korean Stock Multi-Strategy Auto & Paper Trading System",
   "type": "module",
   "main": "backend/node_server.mjs",
@@ -22,4 +22,3 @@
     "pg": "^8.13.1"
   }
 }
-

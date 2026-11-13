@@ -283,16 +283,26 @@ export class BotService {
       const assignedSum = [...ratioMap.values()].reduce((a, b) => a + b, 0);
       const zeroIds = selectedBotIds.filter((id) => !(ratioMap.get(id) > 0));
       if (zeroIds.length > 0) {
-        // 비율 정보가 없는 봇은 남은 비율을 균등 분배 (최초 선택 시 33.3 / 33.3 / 33.4)
+        // 비율 정보가 없는 봇은 남은 비율을 균등 분배 (남은 비율이 없으면 전체 균등 재배분)
         const remain = Math.max(0, 100 - assignedSum);
-        let acc = 0;
-        zeroIds.forEach((id, idx) => {
-          const r = idx === zeroIds.length - 1
-            ? Number((remain - acc).toFixed(1))
-            : Number((remain / zeroIds.length).toFixed(1));
-          acc += r;
-          ratioMap.set(id, r);
-        });
+        if (remain <= 0) {
+          const count = selectedBotIds.length;
+          let acc = 0;
+          selectedBotIds.forEach((id, idx) => {
+            const r = idx === count - 1 ? Number((100 - acc).toFixed(1)) : Number((100 / count).toFixed(1));
+            acc += r;
+            ratioMap.set(id, r);
+          });
+        } else {
+          let acc = 0;
+          zeroIds.forEach((id, idx) => {
+            const r = idx === zeroIds.length - 1
+              ? Number((remain - acc).toFixed(1))
+              : Number((remain / zeroIds.length).toFixed(1));
+            acc += r;
+            ratioMap.set(id, r);
+          });
+        }
       }
       const totalRatio = [...ratioMap.values()].reduce((a, b) => a + b, 0);
       if (Math.abs(totalRatio - 100) > 0.5) {

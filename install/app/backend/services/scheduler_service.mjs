@@ -5,6 +5,7 @@ import { TradeService, pythonBridge } from './trade_service.mjs';
 import { evaluatePureQuantAlgorithm } from '../common/quant_algorithms.mjs';
 import { AiService, llmDecisionService } from './ai_service.mjs';
 import { NotificationService } from '../common/notification_service.mjs';
+import { AssetSnapshotService } from './asset_snapshot_service.mjs';
 
 export class SchedulerService {
   constructor() {
@@ -522,6 +523,13 @@ export class SchedulerService {
 
       if (activeRealBots.length > 0) {
         await this.runRealTradingCycle(db, activeRealBots, candidateQuotes, marketStatus, regimeInfo, latestHybridDecisions);
+      }
+
+      // 월별 자산 평가 스냅샷 자동 갱신 (5분 주기)
+      const nowTs = Date.now();
+      if (!this.lastAssetSnapshotMs || nowTs - this.lastAssetSnapshotMs > 5 * 60 * 1000) {
+        this.lastAssetSnapshotMs = nowTs;
+        AssetSnapshotService.recordOrUpdateCurrentSnapshot().catch(() => {});
       }
     } catch (err) {
       console.error('[SchedulerService] Error in runCycle:', err);

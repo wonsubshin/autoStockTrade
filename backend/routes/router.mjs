@@ -99,7 +99,10 @@ export class Router {
         return await TradeController.getPositions(req, res, urlObj);
       }
       if (pathname === '/api/stats' && method === 'GET') {
-        return TradeController.getStats(req, res, urlObj);
+        return await TradeController.getStats(req, res, urlObj);
+      }
+      if (pathname === '/api/stats/monthly-assets' && method === 'GET') {
+        return await TradeController.getMonthlyAssets(req, res);
       }
       if (pathname === '/api/performance/leaderboard' && method === 'GET') {
         return TradeController.getLeaderboard(req, res);

@@ -21,6 +21,38 @@
 
 ## 🚀 버전별 상세 변경 내역 (Changelog)
 
+### [0.0.8] - 2026-11-13
+- **커밋 성격**: `feat`
+- **커밋 메시지**: `feat: 실전 수익 통계 상단 이번달 1일 및 현재 평가자산 증감 표기, 월별 기록 및 그래프 시각화 추가 (v0.0.8)`
+- **주요 내용**: 실전 수익 통계 상단 이번 달 1일 시점 평가자산, 현재 시점 평가자산, 증감액/율 표기, 월별 스냅샷 자동 기록 및 반응형 차트 구현
+- **세부 변경사항**:
+  - **월별 평가자산 스냅샷 DB 설계**:
+    - SQLite 및 PostgreSQL 듀얼 DB에 `monthly_asset_snapshots` 테이블 신설 (`backend/db/index.mjs`)
+    - 연월(`year_month`), 1일 평가자산(`month_start_asset`), 현재 평가자산(`current_asset`), 증감액(`change_krw`), 증감율(`change_pct`) 등 저장
+  - **월별 자산 스냅샷 관리 서비스 개발**:
+    - `backend/services/asset_snapshot_service.mjs` 신설
+    - 토스증권 실계좌 실시간 잔고(`tossClient.getAccountBalance()`)와 연동하여 1일 평가자산 및 현재 시점 평가자산 자동 산출/저장
+    - 스케줄러(`scheduler_service.mjs`) 5분 주기로 스냅샷 자동 갱신 및 월 단위 자동 보존 파이프라인 구축
+    - 과거 월(9월, 10월) 비교 기준 시드 데이터 자동 초기화 지원
+  - **통계 API 및 컨트롤러 확장**:
+    - `backend/services/trade_service.mjs`: `getStats()` 내에 `monthlyAssets` 데이터 자동 탑재 및 `getMonthlyAssets()` 정적 메서드 추가
+    - `backend/controllers/trade_controller.mjs` 및 `router.mjs`: 비동기 처리 파이프라인 정비 및 `GET /api/stats/monthly-assets` 엔드포인트 개설
+  - **프론트엔드 통계 UI 및 인터랙티브 차트 구현**:
+    - `frontend/src/components/stats/MonthlyAssetSection.jsx` 신설
+    - 상단 3단 주요 지표 카드: 이번 달 1일 평가자산, 현재 시점 총 평가자산, 자산 증감액/증감율(늘어남 ▲ / 줄어듬 ▼ 배지)
+    - 고해상도 SVG 기반 월별 보유 자산 증감 반응형 차트:
+      - `월초 vs 월말 자산 총액 비교` 듀얼 바 차트 모드
+      - `월별 순증감액 (+/-)` 0선 기준 모드
+      - 막대 호버 시 툴팁 및 상세 금액 인터랙션 제공
+    - `frontend/src/components/stats/StatsPanel.jsx` 최상단에 월별 자산 섹션 통합
+  - **실전 봇 3개 복원 및 분배 방어 로직 개선**:
+    - 봇 3개(`momentum_bot_real`, `scalping_bot_real`, `swing_bot_real`) 정상 활성화 및 예산 분배 비율 가드 보강 (`backend/services/bot_service.mjs`)
+  - **배포 및 패키지 메타데이터 동기화**:
+    - `version.json`, `package.json`, `frontend/package.json`, `install/app/package.json` 버전을 `0.0.8`로 일괄 업데이트
+    - Vite 빌드 및 독립형 배포 패키지(`install/app/`) 자동 동기화
+
+---
+
 ### [0.0.7] - 2026-11-12
 - **커밋 성격**: `feat`
 - **커밋 메시지**: `feat: 프로젝트 버전 체계(0.0.X) 확립, history.md 제정 및 웹 대시보드 버전 UI/API 연동`
