@@ -136,7 +136,7 @@ export default function App() {
     has_gemini_key: false,
   });
   const [purchasePriority, setPurchasePriority] = useState(['KR_UNIT', 'US_UNIT', 'US_FRACTIONAL']);
-  const [gatePasscode, setGatePasscode] = useState('coin');
+  const [gatePasscode, setGatePasscode] = useState('sws@2129');
   const [tunnelUrl, setTunnelUrl] = useState(null);
 
   // Active Trade Mode calculation

@@ -21,6 +21,26 @@
 
 ## 🚀 버전별 상세 변경 내역 (Changelog)
 
+### [0.0.10] - 2026-11-13
+- **커밋 성격**: `fix`
+- **커밋 메시지**: `fix: 실전 매매 체결 병목 방어 및 스케줄러 동시성 락 강화, 게이트 인증 및 문서 정합성 일원화 (v0.0.10)`
+- **주요 내용**: 전체 소스 코드 및 문서 정밀 전수 검사, 스케줄러 7초 주기 동시성 뮤텍스 락 보강, 게이트 기본 입장 코드(`sws@2129`) 일원화, `README.md` 원격 저장소 URL 및 라이선스 마크다운 링크 정정, 배포 번들 동기화
+- **세부 변경사항**:
+  - **스케줄러 동시성 락(Mutex) 보강 (`backend/services/scheduler_service.mjs`)**:
+    - `runCycle()` 진입 시 `isRunningCycle`과 `isTickRunning`을 동시 검증 및 세팅하여 타이머 겹침 및 경쟁 상태(Race Condition)를 원천 차단
+    - `finally` 블록에서 두 플래그를 모두 안전하게 해제하여 무중단 연속성 보장
+  - **게이트 인증 기본 패스코드 일원화**:
+    - `.env.example`, `env.mjs`, `setup_wizard`, `README.md`, `start_services.sh`, `SettingsPanel.jsx`, `GateModal.jsx` 전반의 게이트 패스코드 기본 표기를 `sws@2129`로 일치
+    - 기존 `coin` 코드 또한 하위 호환성을 위해 백엔드 검증(`HealthController.verifyGateCode`)에서 계속 유효하도록 유지
+  - **공식 문서 마크다운 및 원격 저장소 URL 정정 (`README.md`)**:
+    - `README.md` 내 원격 저장소 안내 주소를 최신 공식 주소(`https://github.com/asura207/autoStockTrade.git`)로 갱신
+    - 라이선스 섹션 마크다운 링크를 GitHub 공식 LICENSE URL로 완벽 연결
+  - **패키지 메타데이터 및 배포 번들 동기화**:
+    - `version.json`, `package.json`, `frontend/package.json`, `install/app/package.json` 버전을 `0.0.10`으로 통일
+    - Vite 빌드 및 독립형 배포 패키지(`install/app/`) 자동 동기화
+
+---
+
 ### [0.0.9] - 2026-11-13
 - **커밋 성격**: `feat`
 - **커밋 메시지**: `feat: 11번째 신규 퀀트 봇('잭 켈로그 VWAP 핵심레벨 돌파') 추가 및 전체 시스템 확장 (v0.0.9)`

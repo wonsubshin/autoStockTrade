@@ -452,13 +452,14 @@ export class SchedulerService {
   }
 
   async runCycle() {
-    if (this.isRunningCycle) return;
+    if (this.isRunningCycle || this.isTickRunning) return;
     this.isRunningCycle = true;
+    this.isTickRunning = true;
     try {
       const db = getDb();
       if (!db) return;
 
-      // 1. 가상 경쟁 모드는 10개 봇 전체 상시 가동 강제 유지
+      // 1. 가상 경쟁 모드는 11개 봇 전체 상시 가동 강제 유지
       db.prepare(`UPDATE bots SET is_virtual_running = 1, is_running = 1 WHERE is_virtual_running != 1 OR is_running != 1`).run();
 
       const allBots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
@@ -535,6 +536,7 @@ export class SchedulerService {
       console.error('[SchedulerService] Error in runCycle:', err);
     } finally {
       this.isRunningCycle = false;
+      this.isTickRunning = false;
     }
   }
 

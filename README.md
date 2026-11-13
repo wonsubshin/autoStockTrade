@@ -262,7 +262,7 @@ sudo ./scripts/setup_postgresql.sh
 ## 5. 형상 관리 (Git) 및 보안 규칙
 
 - 키움증권 및 토스증권 API Key, Secret, 계좌번호 및 Gemini API 키 등 모든 민감 정보는 `.env` 및 `config/broker_config.json`에만 저장되며 Git 추적에서 철저히 제외됩니다.
-- 원격 저장소: `https://github.com/wonsubshin/autoStockTrade.git`
+- 원격 저장소: `https://github.com/asura207/autoStockTrade.git`
 - 로컬 마법사 실행 마커(`.setup_completed`) 및 임시 덤프 파일(`full_source*.md`)은 `.gitignore`에 등록되어 안전하게 보호됩니다.
 
 ---
@@ -270,7 +270,7 @@ sudo ./scripts/setup_postgresql.sh
 ## ⚖️ 6. 라이선스 및 법적 면책 조항 (Disclaimer)
 
 ### 라이선스 (License)
-본 프로젝트는 **[Apache License 2.0](LICENSE)**에 따라 배포됩니다.
+본 프로젝트는 **[Apache License 2.0](https://github.com/asura207/autoStockTrade/blob/main/LICENSE)**에 따라 배포됩니다.
 
 ```text
 Copyright 2026 AutoStockTrader Authors.

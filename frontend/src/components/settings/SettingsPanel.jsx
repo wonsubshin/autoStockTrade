@@ -11,7 +11,7 @@ export default function SettingsPanel({
   brokerConfig,
   purchasePriority,
   setPurchasePriority,
-  gatePasscode = 'coin',
+  gatePasscode = 'sws@2129',
   tunnelUrl,
   onSavePasscode,
   onSavePriority,
@@ -23,7 +23,7 @@ export default function SettingsPanel({
   onGoToArena,
 }) {
   const [showNewKeyInputs, setShowNewKeyInputs] = useState(false);
-  const [newPasscode, setNewPasscode] = useState(gatePasscode || 'coin');
+  const [newPasscode, setNewPasscode] = useState(gatePasscode || 'sws@2129');
 
   React.useEffect(() => {
     if (gatePasscode) {
@@ -584,7 +584,7 @@ export default function SettingsPanel({
           </span>
         </div>
         <p style={{ fontSize: '13px', color: '#94a3b8', marginBottom: '18px', lineHeight: 1.5 }}>
-          웹 브라우저 접속 시 인증에 사용되는 보안 입장 코드(Passcode)를 설정합니다. 기본값은 <code>coin</code>이며, 언제든지 원하는 코드로 안전하게 변경하실 수 있습니다.
+          웹 브라우저 접속 시 인증에 사용되는 보안 입장 코드(Passcode)를 설정합니다. 기본값은 <code>sws@2129</code>이며, 언제든지 원하는 코드로 안전하게 변경하실 수 있습니다.
         </p>
 
         <div style={{ display: 'flex', gap: '16px', alignItems: 'flex-end', flexWrap: 'wrap', maxWidth: '640px' }}>
@@ -598,7 +598,7 @@ export default function SettingsPanel({
               style={{ width: '100%', padding: '10px 14px', fontSize: '14px', fontFamily: 'monospace' }}
               value={newPasscode}
               onChange={(e) => setNewPasscode(e.target.value)}
-              placeholder="변경할 입장 코드 (기본: coin)"
+              placeholder="변경할 입장 코드 (기본: sws@2129)"
             />
           </div>
           <button
@@ -613,14 +613,14 @@ export default function SettingsPanel({
             type="button"
             className="btn-action"
             style={{ padding: '10px 14px', fontSize: '12px' }}
-            onClick={() => setNewPasscode('coin')}
+            onClick={() => setNewPasscode('sws@2129')}
           >
-            기본값(coin)으로 재설정
+            기본값(sws@2129)으로 재설정
           </button>
         </div>
 
         <div style={{ marginTop: '14px', fontSize: '12.5px', color: '#94a3b8' }}>
-          💡 현재 등록된 입장 코드: <strong style={{ color: '#38bdf8', fontFamily: 'monospace', fontSize: '13.5px' }}>{gatePasscode || 'coin'}</strong>
+          💡 현재 등록된 입장 코드: <strong style={{ color: '#38bdf8', fontFamily: 'monospace', fontSize: '13.5px' }}>{gatePasscode || 'sws@2129'}</strong>
         </div>
       </div>
 
@@ -826,7 +826,7 @@ export default function SettingsPanel({
                 </span>
               )}
               <span style={{ fontSize: '12px', color: '#94a3b8', marginLeft: 'auto' }}>
-                게이트 암호: <strong>{gatePasscode || 'coin'}</strong>
+                게이트 암호: <strong>{gatePasscode || 'sws@2129'}</strong>
               </span>
             </div>
           </div>
