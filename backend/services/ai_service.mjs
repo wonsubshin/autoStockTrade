@@ -2,7 +2,8 @@ import fs from 'node:fs';
 import path from 'node:path';
 import { getDb } from '../db/index.mjs';
 import { BROKER_CONFIG_PATH, PROJECT_ROOT } from '../config/env.mjs';
-import { LLMDecisionService } from '../common/llm_decision_service.mjs';
+import { LLMDecisionService, STOCK_KEYWORDS, normalizeMarketRegime } from '../common/llm_decision_service.mjs';
+import { getBotStrategyFamily } from '../common/quant_algorithms.mjs';
 import { kiwoomClient, tossClient, TOP_KR_STOCKS, ALL_CANDIDATE_STOCKS } from './market_service.mjs';
 import { pythonBridge, TradeService } from './trade_service.mjs';
 import { virtualEngine } from './bot_service.mjs';
@@ -1553,3 +1554,373 @@ ${fact.newsSummaryText}
     return await this.generateAiMarketAnalysisStream(req, res);
   }
 }
+
+export { normalizeMarketRegime };
+
+function safeParseJsonArray(raw) {
+  if (Array.isArray(raw)) return raw;
+  if (!raw || typeof raw !== 'string') return [];
+  try {
+    const parsed = JSON.parse(raw);
+    return Array.isArray(parsed) ? parsed : [];
+  } catch (_) {
+    return [];
+  }
+}
+
+function readRegimeSnapshot(db, modelTier, decisionRow) {
+  if (!decisionRow) return null;
+  const fallbackConf = Number(decisionRow.confidence ?? 70);
+  const base = {
+    modelTier,
+    regime: normalizeMarketRegime(decisionRow.market_regime || 'NEUTRAL_BOX'),
+    confidence: Number.isFinite(fallbackConf) ? fallbackConf : 70,
+    allowedFamilies: safeParseJsonArray(decisionRow.allowed_families_json),
+    regimeMultiplier: Number.isFinite(Number(decisionRow.regime_multiplier)) ? Number(decisionRow.regime_multiplier) : null,
+    hotSectors: safeParseJsonArray(decisionRow.hot_sectors_json),
+    avoidTickers: safeParseJsonArray(decisionRow.avoid_tickers_json).map((t) => String(t).toUpperCase().trim()),
+  };
+
+  try {
+    const key = modelTier === 'PRO_60M' ? 'ai_regime_snapshot_pro' : 'ai_regime_snapshot_flash';
+    const snapRow = db.prepare('SELECT value FROM system_settings WHERE key = ?').get(key);
+    if (snapRow?.value) {
+      const snap = JSON.parse(snapRow.value);
+      if (snap && Number(snap.lastDecisionId) === Number(decisionRow.id)) {
+        return {
+          ...base,
+          regime: snap.marketRegime ? normalizeMarketRegime(snap.marketRegime) : base.regime,
+          confidence: Number.isFinite(Number(snap.regimeConfidence)) ? Number(snap.regimeConfidence) : base.confidence,
+          hotSectors: Array.isArray(snap.hotSectors) && snap.hotSectors.length > 0 ? snap.hotSectors : base.hotSectors,
+          avoidTickers: Array.isArray(snap.avoidTickers) && snap.avoidTickers.length > 0
+            ? snap.avoidTickers.map((t) => String(t).toUpperCase().trim())
+            : base.avoidTickers,
+        };
+      }
+    }
+  } catch (_) {}
+
+  return base;
+}
+
+/**
+ * 최근 N분(기본 30분) RSS 뉴스에서 종목 또는 핫 섹터 호재 촉매 / 악재 감지
+ */
+export function evaluateStockNewsCatalyst(db, stock = {}, hotSectors = [], options = {}) {
+  const lookbackMinutes = Number(options.lookbackMinutes ?? 30);
+  const nowMs = Number(options.nowMs ?? Date.now());
+  const cutoffMs = nowMs - lookbackMinutes * 60 * 1000;
+
+  const symbol = String(stock.code || stock.symbol || '').toUpperCase().trim();
+  const stockName = String(stock.name || '').trim();
+  const stockSector = String(stock.sector || '').trim();
+
+  const stockTerms = Array.from(new Set([
+    symbol,
+    stockName,
+    ...(STOCK_KEYWORDS[symbol] || []),
+  ].map((s) => String(s || '').trim()).filter((s) => s.length >= 2)));
+
+  const sectorTerms = Array.from(new Set([
+    ...(stockSector ? [stockSector] : []),
+    ...(Array.isArray(hotSectors) ? hotSectors : []),
+  ].map((s) => String(s || '').trim()).filter((s) => s.length >= 2)));
+
+  let rows = [];
+  try {
+    rows = db.prepare(`
+      SELECT id, title, summary, sentiment, keywords, published_at, created_at
+      FROM stock_news
+      ORDER BY id DESC
+      LIMIT 40
+    `).all() || [];
+  } catch (_) {
+    return {
+      hasPositiveCatalyst: false,
+      hasNegativeNews: false,
+      catalystBonus: 0,
+      positiveTitle: '',
+      negativeTitle: '',
+    };
+  }
+
+  let positiveHits = 0;
+  let negativeHits = 0;
+  let positiveTitle = '';
+  let negativeTitle = '';
+
+  for (const row of rows) {
+    const pubMs = Date.parse(row.published_at || '');
+    const createdMs = Date.parse(row.created_at || '');
+    const bestMs = Number.isFinite(pubMs) && pubMs <= nowMs ? pubMs : (Number.isFinite(createdMs) ? createdMs : NaN);
+    if (Number.isFinite(bestMs) && bestMs < cutoffMs) {
+      continue;
+    }
+
+    const haystack = `${row.title || ''} ${row.summary || ''} ${row.keywords || ''}`.toLowerCase();
+    const matchedStock = stockTerms.some((term) => haystack.includes(term.toLowerCase()));
+    const matchedSector = sectorTerms.some((term) => haystack.includes(term.toLowerCase()));
+
+    if (!matchedStock && !matchedSector) continue;
+
+    const sentiment = String(row.sentiment || 'NEUTRAL').toUpperCase();
+    if (sentiment === 'BEARISH' && matchedStock) {
+      negativeHits++;
+      if (!negativeTitle) negativeTitle = String(row.title || '');
+    } else if (sentiment === 'BULLISH' && (matchedStock || matchedSector)) {
+      positiveHits++;
+      if (!positiveTitle) positiveTitle = String(row.title || '');
+    }
+  }
+
+  const hasNegativeNews = negativeHits > 0 && negativeHits >= positiveHits;
+  const hasPositiveCatalyst = !hasNegativeNews && positiveHits > 0;
+  const catalystBonus = hasPositiveCatalyst ? Math.min(0.15, 0.1 + (positiveHits - 1) * 0.05) : 0;
+
+  return {
+    hasPositiveCatalyst,
+    hasNegativeNews,
+    catalystBonus,
+    positiveHits,
+    negativeHits,
+    positiveTitle,
+    negativeTitle,
+  };
+}
+
+/**
+ * 최근 1시간 Pro 심층 분석과 30분 Flash 단기 뉴스 분석을 결합하여
+ * 현재 시점의 신규 진입 허용 여부 및 비중 가중치를 반환 (신규 매수 전용 게이트키퍼)
+ */
+export function evaluateRegimeGateForNewEntry(bot, stock, quantSignal = {}, options = {}) {
+  const db = options.db || getDb();
+  const family = getBotStrategyFamily(bot);
+  const strategyType = String(bot?.strategy_type || '').toUpperCase();
+  const symbol = String(stock?.code || stock?.symbol || '').toUpperCase().trim();
+  const score = Number(quantSignal?.score ?? 80);
+
+  // 0) LLM 서킷 브레이커 OPEN 상태 방어 -> 순수 퀀트 알고리즘 50% 예산 안전 Fallback
+  const circuitOpen = options.circuitOpen === true
+    || String(options.circuitBreakerState || '').toUpperCase() === 'OPEN'
+    || (typeof llmDecisionService?.isCircuitOpen === 'function' && llmDecisionService.isCircuitOpen());
+
+  if (circuitOpen) {
+    return {
+      allowNewBuy: true,
+      regime: 'FALLBACK_PURE_QUANT',
+      regimeMultiplier: 0.5,
+      family,
+      hasNewsCatalyst: false,
+      catalystLabel: '',
+      reason: `[Fallback] LLM 서킷 브레이커 OPEN -> 순수 퀀트 50% 예산 안전 진입 (${family})`,
+    };
+  }
+
+  // 1) 최근 30분 Flash 및 1시간 Pro 분석 레코드 조회
+  const latestFlashRow = db.prepare(`
+    SELECT * FROM ai_trade_decisions
+    WHERE model_tier = 'FLASH_30M' OR (model_tier IS NULL AND UPPER(COALESCE(model_type, 'FLASH')) = 'FLASH')
+    ORDER BY id DESC LIMIT 1
+  `).get() || null;
+
+  const latestProRow = db.prepare(`
+    SELECT * FROM ai_trade_decisions
+    WHERE model_tier = 'PRO_60M' OR (model_tier IS NULL AND UPPER(COALESCE(model_type, '')) = 'PRO')
+    ORDER BY id DESC LIMIT 1
+  `).get() || null;
+
+  if (!latestFlashRow && !latestProRow) {
+    return {
+      allowNewBuy: true,
+      regime: 'FALLBACK_PURE_QUANT',
+      regimeMultiplier: 0.5,
+      family,
+      hasNewsCatalyst: false,
+      catalystLabel: '',
+      reason: `[Fallback] LLM 분석 이력 없음 -> 순수 퀀트 50% 예산 안전 진입 (${family})`,
+    };
+  }
+
+  const flashSnap = readRegimeSnapshot(db, 'FLASH_30M', latestFlashRow);
+  const proSnap = readRegimeSnapshot(db, 'PRO_60M', latestProRow);
+
+  const hotSectors = Array.from(new Set([
+    ...(proSnap?.hotSectors || []),
+    ...(flashSnap?.hotSectors || []),
+  ]));
+  const avoidTickers = Array.from(new Set([
+    ...(proSnap?.avoidTickers || []),
+    ...(flashSnap?.avoidTickers || []),
+  ]));
+
+  // 2) 히스테리시스(Hysteresis) 병합 규칙: Pro Anchor 기준 + Flash 75% 신뢰도 게이트
+  let effectiveRegime = proSnap?.regime || flashSnap?.regime || 'NEUTRAL_BOX';
+  let hysteresisDamping = 1.0;
+  let hysteresisNote = '';
+
+  const flashConf = Number(flashSnap?.confidence ?? 70);
+  const proConf = Number(proSnap?.confidence ?? 75);
+
+  if (proSnap && flashSnap && flashSnap.regime !== proSnap.regime) {
+    if (flashConf >= 75) {
+      effectiveRegime = flashSnap.regime;
+      hysteresisNote = `Pro(${proSnap.regime})->Flash(${flashSnap.regime}, 신뢰도 ${flashConf}% >= 75%) 레짐 전환 승인`;
+    } else {
+      effectiveRegime = 'NEUTRAL_BOX';
+      hysteresisDamping = 0.7;
+      hysteresisNote = `Hysteresis 완충: Pro(${proSnap.regime}) ↔ Flash(${flashSnap.regime}, ${flashConf}% < 75%) -> NEUTRAL_BOX(x0.7)`;
+    }
+  } else if (!proSnap && flashSnap) {
+    if (flashConf < 70 && flashSnap.regime !== 'NEUTRAL_BOX') {
+      effectiveRegime = 'NEUTRAL_BOX';
+      hysteresisDamping = 0.7;
+      hysteresisNote = `Hysteresis 완충: Flash 단독 저신뢰(${flashConf}% < 70%) -> NEUTRAL_BOX(x0.7)`;
+    } else {
+      effectiveRegime = flashSnap.regime;
+    }
+  }
+
+  // 3) LLM 회피 종목(avoid_tickers) 차단
+  if (symbol && avoidTickers.includes(symbol)) {
+    return {
+      allowNewBuy: false,
+      regime: effectiveRegime,
+      regimeMultiplier: 0,
+      family,
+      hasNewsCatalyst: false,
+      catalystLabel: '',
+      reason: `[RegimeBlock] LLM 회피 지정 종목(${symbol}) -> 신규 매수 차단`,
+    };
+  }
+
+  // 4) 최근 30분 RSS 뉴스 종목/섹터 촉매 및 악재 검증
+  const newsCatalyst = evaluateStockNewsCatalyst(db, stock, hotSectors, {
+    nowMs: options.nowMs,
+    lookbackMinutes: options.lookbackMinutes,
+  });
+
+  if (family === 'BREAKOUT' && newsCatalyst.hasNegativeNews) {
+    return {
+      allowNewBuy: false,
+      regime: effectiveRegime,
+      regimeMultiplier: 0,
+      family,
+      hasNewsCatalyst: false,
+      catalystLabel: newsCatalyst.negativeTitle,
+      reason: `[NewsBlock] 최근 30분 종목 악재 뉴스 감지("${newsCatalyst.negativeTitle}") -> BREAKOUT 돌파 추격 진입 즉시 취소`,
+    };
+  }
+
+  const effectiveConf = flashSnap ? flashConf : proConf;
+  const catalystSuffix = newsCatalyst.hasPositiveCatalyst
+    ? ` + 📰 뉴스촉매("${newsCatalyst.positiveTitle}")`
+    : '';
+  const hystSuffix = hysteresisNote ? ` (${hysteresisNote})` : '';
+
+  // 5) 레짐별 전략군 소프트 라우팅 규칙
+  if (effectiveRegime === 'BULLISH_MOMENTUM') {
+    if (family === 'BREAKOUT' || family === 'TREND') {
+      let mult = effectiveConf >= 80 ? 1.15 : 1.0;
+      if (family === 'BREAKOUT' && newsCatalyst.hasPositiveCatalyst) {
+        mult = Math.min(1.2, Number((mult + newsCatalyst.catalystBonus).toFixed(2)));
+      }
+      return {
+        allowNewBuy: true,
+        regime: effectiveRegime,
+        regimeMultiplier: mult,
+        family,
+        hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+        catalystLabel: newsCatalyst.positiveTitle,
+        reason: `[RegimeAllow] ${effectiveRegime}: ${family} 강세장 진입 허용 (x${mult})${catalystSuffix}${hystSuffix}`,
+      };
+    }
+
+    // REVERSION: 강세장에서 떨어지는 칼날 방지를 위해 50% 비중 축소 진입
+    return {
+      allowNewBuy: true,
+      regime: effectiveRegime,
+      regimeMultiplier: 0.5,
+      family,
+      hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+      catalystLabel: newsCatalyst.positiveTitle,
+      reason: `[RegimeReduced] ${effectiveRegime}: REVERSION 역추세 과열/칼날 방지 보수적 50% 진입 (x0.5)${hystSuffix}`,
+    };
+  }
+
+  if (effectiveRegime === 'BEARISH_DEFENSE') {
+    if (family === 'REVERSION' && score >= 92) {
+      return {
+        allowNewBuy: true,
+        regime: effectiveRegime,
+        regimeMultiplier: 0.3,
+        family,
+        hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+        catalystLabel: newsCatalyst.positiveTitle,
+        reason: `[RegimeSnipe] BEARISH_DEFENSE 급락장 극단 과매도(${score}점 >= 92점) REVERSION 30% 소액 스나이핑 허용${hystSuffix}`,
+      };
+    }
+    return {
+      allowNewBuy: false,
+      regime: effectiveRegime,
+      regimeMultiplier: 0,
+      family,
+      hasNewsCatalyst: false,
+      catalystLabel: '',
+      reason: `[RegimeBlock] BEARISH_DEFENSE 급락·악재 방어장 -> ${family}(${score}점) 신규 매수 차단(HOLD), 현금 보호${hystSuffix}`,
+    };
+  }
+
+  // NEUTRAL_BOX (횡보·순환매 박스권)
+  if (family === 'BREAKOUT') {
+    if (score >= 92 || (score >= 86 && newsCatalyst.hasPositiveCatalyst)) {
+      const mult = Number((0.6 * hysteresisDamping).toFixed(2));
+      return {
+        allowNewBuy: true,
+        regime: effectiveRegime,
+        regimeMultiplier: mult,
+        family,
+        hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+        catalystLabel: newsCatalyst.positiveTitle,
+        reason: `[RegimeRestricted] NEUTRAL_BOX 횡보장 고득점 돌파(${score}점)${catalystSuffix} -> 제한적 진입 (x${mult})${hystSuffix}`,
+      };
+    }
+    return {
+      allowNewBuy: false,
+      regime: effectiveRegime,
+      regimeMultiplier: 0,
+      family,
+      hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+      catalystLabel: newsCatalyst.positiveTitle,
+      reason: `[RegimeBlock] NEUTRAL_BOX 횡보장 가짜 돌파(Fakeout) 방지 -> BREAKOUT(${score}점) 차단${hystSuffix}`,
+    };
+  }
+
+  if (family === 'REVERSION') {
+    const mult = Number((1.0 * hysteresisDamping).toFixed(2));
+    return {
+      allowNewBuy: true,
+      regime: effectiveRegime,
+      regimeMultiplier: mult,
+      family,
+      hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+      catalystLabel: newsCatalyst.positiveTitle,
+      reason: `[RegimeAllow] NEUTRAL_BOX 박스권 REVERSION 최적 진입 (x${mult})${hystSuffix}`,
+    };
+  }
+
+  // TREND in NEUTRAL_BOX: MA_PULLBACK 눌림목 우선 허용(1.0), 일반 추세봇 소폭 축소(0.8)
+  const baseTrendMult = strategyType === 'MA_PULLBACK' ? 1.0 : 0.8;
+  const trendMult = Number((baseTrendMult * hysteresisDamping).toFixed(2));
+  return {
+    allowNewBuy: true,
+    regime: effectiveRegime,
+    regimeMultiplier: trendMult,
+    family,
+    hasNewsCatalyst: newsCatalyst.hasPositiveCatalyst,
+    catalystLabel: newsCatalyst.positiveTitle,
+    reason: `[RegimeAllow] NEUTRAL_BOX ${strategyType || 'TREND'} 진입 허용 (x${trendMult})${hystSuffix}`,
+  };
+}
+
+AiService.evaluateStockNewsCatalyst = evaluateStockNewsCatalyst;
+AiService.evaluateRegimeGateForNewEntry = evaluateRegimeGateForNewEntry;

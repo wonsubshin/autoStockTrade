@@ -18,6 +18,53 @@ export const GEMINI_PRO_MODELS = [
   'gemini-1.5-pro',
 ];
 
+export const STOCK_KEYWORDS = {
+  AAPL: ['애플', '아이폰', 'Apple', 'AAPL', '팀쿡', 'iOS', '온디바이스', 'Mag 7'],
+  NVDA: ['엔비디아', 'Nvidia', 'NVDA', '젠슨황', '블랙웰', 'AI 반도체', 'GPU', 'AI'],
+  TSLA: ['테슬라', 'Tesla', 'TSLA', '일론머스크', '전기차', 'FSD', '사이버트럭', '기가'],
+  MSFT: ['마이크로소프트', 'Microsoft', 'MSFT', '애저', 'Azure', '코파일럿', '클라우드'],
+  QQQ: ['QQQ', '나스닥', 'Nasdaq', '빅테크', 'S&P', '증시', '뉴욕증시', '미국증시', 'Futures'],
+  SBUX: ['스타벅스', 'Starbucks', 'SBUX', '커피'],
+  '005930': ['삼성전자', '삼성', '005930', 'HBM', '메모리', '반도체'],
+  '000660': ['SK하이닉스', '하이닉스', '000660', 'HBM3E', 'HBM', '메모리'],
+  '068270': ['셀트리온', '068270', '짐펜트라', '바이오', '시밀러'],
+  '005380': ['현대차', '005380', '현대자동차', '하이브리드', '완성차'],
+};
+
+export function normalizeMarketRegime(raw) {
+  const s = String(raw || '').toUpperCase().trim();
+  if (s.includes('BULL')) return 'BULLISH_MOMENTUM';
+  if (s.includes('BEAR') || s.includes('DEFENSE') || s.includes('RISK_OFF') || s.includes('HALT')) {
+    return 'BEARISH_DEFENSE';
+  }
+  if (s.includes('FALLBACK')) return 'FALLBACK_PURE_QUANT';
+  return 'NEUTRAL_BOX';
+}
+
+export function getDefaultAllowedFamiliesForRegime(regime) {
+  switch (normalizeMarketRegime(regime)) {
+    case 'BULLISH_MOMENTUM':
+      return ['BREAKOUT', 'TREND', 'REVERSION'];
+    case 'BEARISH_DEFENSE':
+      return ['REVERSION'];
+    case 'NEUTRAL_BOX':
+    default:
+      return ['REVERSION', 'TREND'];
+  }
+}
+
+export function getDefaultMultiplierForRegime(regime) {
+  switch (normalizeMarketRegime(regime)) {
+    case 'BULLISH_MOMENTUM':
+      return 1.0;
+    case 'BEARISH_DEFENSE':
+      return 0.35;
+    case 'NEUTRAL_BOX':
+    default:
+      return 0.85;
+  }
+}
+
 /**
  * [서킷 브레이커 (Circuit Breaker) 상태 관리 클래스]
  * - CLOSED: 정상 상태, API 호출 허용
@@ -468,7 +515,14 @@ export class LLMDecisionService {
 2) krMarketOverview: 🇰🇷 한국 주식 시장(KRX) 구두 시황 해설
 3) usMarketOverview: 🇺🇸 미국 주식 시장(NYSE/NASDAQ) 구두 시황 해설
 4) verbalOverview: 3개 파트([🇰🇷 한국 시장], [🇺🇸 미국 시장], [🤖 실전 봇 진단])로 구분된 상세 브리핑
-5) decisions: 각 종목에 대한 매매 판단(BUY, HOLD, SELL), 신뢰도(0~100), 감성점수(-10.0 ~ +10.0), 근거 뉴스 및 구체적 사유
+5) market_regime / confidence / allowed_families / regime_multiplier / hot_sectors / avoid_tickers: Soft Regime Routing용 구조화 시장 국면 메타데이터
+   - market_regime: 'BULLISH_MOMENTUM' (강세·거래량 폭발), 'NEUTRAL_BOX' (횡보·박스권), 'BEARISH_DEFENSE' (급락·거시 악재) 중 택1
+   - confidence: 현재 시장 레짐 판단 확신도 (0~100 정수)
+   - allowed_families: 현재 레짐에서 진입 허용할 전략군 배열 (예: ["BREAKOUT", "TREND", "REVERSION"])
+   - regime_multiplier: 신규 진입 예산 배율 (0.0 ~ 1.2)
+   - hot_sectors: 최근 호재/수급 집중 섹터 배열 (예: ["반도체", "AI"])
+   - avoid_tickers: 악재 또는 리스크로 신규 진입 회피할 종목 코드 배열 (예: ["TSLA"])
+6) decisions: 각 종목에 대한 매매 판단(BUY, HOLD, SELL), 신뢰도(0~100), 감성점수(-10.0 ~ +10.0), 근거 뉴스 및 구체적 사유
 를 JSON 객체로 작성해주세요.
 
 [분석 핵심 중점사항]
@@ -500,7 +554,13 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
   "marketBriefing": "${isPro ? '[1시간 Pro 심층 퀀트 분석]' : '[30분 Flash 실시간 종합 판단]'} ...",
   "krMarketOverview": "🇰🇷 [한국 시장] ...",
   "usMarketOverview": "🇺🇸 [미국 시장] ...",
-  "verbalOverview": "### 🇰🇷 [한국 시장 종합 진단]\n...\n\n### 🇺🇸 [미국 시장 종합 진단]\n...\n\n### 🤖 [실전 퀀트 봇 & 알고리즘 매매 진단]\n...",
+  "verbalOverview": "### 🇰🇷 [한국 시장 종합 진단]\n...\n\n### 🇺🇸 [미국 시장 종합 진단]\n...\n\n### 🤖 [실전 봇 진단]\n...",
+  "market_regime": "BULLISH_MOMENTUM | NEUTRAL_BOX | BEARISH_DEFENSE",
+  "confidence": 82,
+  "allowed_families": ["BREAKOUT", "TREND"],
+  "regime_multiplier": 1.0,
+  "hot_sectors": ["반도체", "AI"],
+  "avoid_tickers": [],
   "decisions": [
     {
       "symbol": "AAPL",
@@ -533,7 +593,8 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
         : (Array.isArray(parsed?.decisions) ? parsed.decisions : []);
 
       if (decisionsList.length > 0) {
-        this.saveDecisionsToDb(decisionsList, modelType);
+        const regimeMeta = this.buildRegimeMetaFromParsed(parsed, decisionsList, filterRow, modelType);
+        this.saveDecisionsToDb(decisionsList, modelType, regimeMeta);
         const defaultSummaries = this.buildDefaultAnalysisSummaries(decisionsList, botsSummaryText, { ...context, modelType });
         const marketBriefing = parsed?.marketBriefing || defaultSummaries.marketBriefing;
         const krMarketOverview = parsed?.krMarketOverview || defaultSummaries.krMarketOverview;
@@ -771,20 +832,6 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
     const usReason = filterRow?.us_reason || '미국 증시 우상향 추세';
     const usIsHalted = usAction === 'HALT_NEW_BUYS' || Number(filterRow?.us_risk_alert || 0) === 1;
 
-    // 종목별 키워드 매칭 테이블
-    const STOCK_KEYWORDS = {
-      AAPL: ['애플', '아이폰', 'Apple', 'AAPL', '팀쿡', 'iOS', '온디바이스', 'Mag 7'],
-      NVDA: ['엔비디아', 'Nvidia', 'NVDA', '젠슨황', '블랙웰', 'AI 반도체', 'GPU', 'AI'],
-      TSLA: ['테슬라', 'Tesla', 'TSLA', '일론머스크', '전기차', 'FSD', '사이버트럭', '기가'],
-      MSFT: ['마이크로소프트', 'Microsoft', 'MSFT', '애저', 'Azure', '코파일럿', '클라우드'],
-      QQQ: ['QQQ', '나스닥', 'Nasdaq', '빅테크', 'S&P', '증시', '뉴욕증시', '미국증시', 'Futures'],
-      SBUX: ['스타벅스', 'Starbucks', 'SBUX', '커피'],
-      '005930': ['삼성전자', '삼성', '005930', 'HBM', '메모리', '반도체'],
-      '000660': ['SK하이닉스', '하이닉스', '000660', 'HBM3E', 'HBM', '메모리'],
-      '068270': ['셀트리온', '068270', '짐펜트라', '바이오', '시밀러'],
-      '005380': ['현대차', '005380', '현대자동차', '하이브리드', '완성차'],
-    };
-
     const results = candidates.map((c) => {
       const isKr = c.market === 'KR';
       const isUs = c.market === 'US';
@@ -870,7 +917,8 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
     });
 
     const usedModelType = String(context.modelType || 'FLASH').toUpperCase();
-    this.saveDecisionsToDb(results, usedModelType);
+    const regimeMeta = this.buildFallbackRegimeMeta(results, recentNews, filterRow, usedModelType);
+    this.saveDecisionsToDb(results, usedModelType, regimeMeta);
     const defaultSummaries = this.buildDefaultAnalysisSummaries(results, botsSummaryText, context);
     this.saveLatestAnalysisToDb({
       marketBriefing: defaultSummaries.marketBriefing,
@@ -884,21 +932,155 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
     return results;
   }
 
-  saveDecisionsToDb(decisions, modelType = 'FLASH') {
+  buildRegimeMetaFromParsed(parsed = {}, decisionsList = [], filterRow = null, modelType = 'FLASH') {
+    const cleanModelType = String(modelType || 'FLASH').toUpperCase() === 'PRO' ? 'PRO' : 'FLASH';
+    const modelTier = cleanModelType === 'PRO' ? 'PRO_60M' : 'FLASH_30M';
+
+    const buyCount = decisionsList.filter((d) => String(d.action).toUpperCase() === 'BUY').length;
+    const sellCount = decisionsList.filter((d) => String(d.action).toUpperCase() === 'SELL').length;
+    const avgSentiment = decisionsList.length > 0
+      ? decisionsList.reduce((acc, d) => acc + Number(d.sentimentScore ?? d.sentiment_score ?? 0), 0) / decisionsList.length
+      : 0;
+    const avgDecisionConf = decisionsList.length > 0
+      ? Math.round(decisionsList.reduce((acc, d) => acc + Number(d.confidence ?? 70), 0) / decisionsList.length)
+      : 70;
+
+    const krHalted = filterRow?.kr_recommended_action === 'HALT_NEW_BUYS' || Number(filterRow?.kr_risk_alert || 0) === 1;
+    const usHalted = filterRow?.us_recommended_action === 'HALT_NEW_BUYS' || Number(filterRow?.us_risk_alert || 0) === 1;
+
+    let inferredRegime = 'NEUTRAL_BOX';
+    if (krHalted && usHalted) {
+      inferredRegime = 'BEARISH_DEFENSE';
+    } else if (sellCount > buyCount || avgSentiment <= -1.5) {
+      inferredRegime = 'BEARISH_DEFENSE';
+    } else if (buyCount >= Math.max(1, Math.ceil(decisionsList.length * 0.5)) && avgSentiment >= 2.5) {
+      inferredRegime = 'BULLISH_MOMENTUM';
+    }
+
+    const marketRegime = parsed?.market_regime
+      ? normalizeMarketRegime(parsed.market_regime)
+      : inferredRegime;
+
+    const regimeConfidence = Number.isFinite(Number(parsed?.confidence))
+      ? Math.max(0, Math.min(100, Math.round(Number(parsed.confidence))))
+      : avgDecisionConf;
+
+    const rawFamilies = Array.isArray(parsed?.allowed_families)
+      ? parsed.allowed_families.map((f) => String(f || '').toUpperCase().trim()).filter((f) => ['BREAKOUT', 'TREND', 'REVERSION'].includes(f))
+      : [];
+    const allowedFamilies = rawFamilies.length > 0 ? rawFamilies : getDefaultAllowedFamiliesForRegime(marketRegime);
+
+    const parsedMult = Number(parsed?.regime_multiplier);
+    const regimeMultiplier = Number.isFinite(parsedMult)
+      ? Math.max(0.0, Math.min(1.2, parsedMult))
+      : getDefaultMultiplierForRegime(marketRegime);
+
+    const hotSectors = Array.isArray(parsed?.hot_sectors)
+      ? parsed.hot_sectors.map((s) => String(s || '').trim()).filter(Boolean)
+      : [];
+
+    const avoidTickersFromParsed = Array.isArray(parsed?.avoid_tickers)
+      ? parsed.avoid_tickers.map((t) => String(t || '').toUpperCase().trim()).filter(Boolean)
+      : [];
+    const sellTickers = decisionsList
+      .filter((d) => String(d.action || '').toUpperCase() === 'SELL')
+      .map((d) => String(d.symbol || '').toUpperCase().trim())
+      .filter(Boolean);
+    const avoidTickers = Array.from(new Set([...avoidTickersFromParsed, ...sellTickers]));
+
+    return {
+      modelTier,
+      marketRegime,
+      regimeConfidence,
+      allowedFamilies,
+      regimeMultiplier,
+      hotSectors,
+      avoidTickers,
+    };
+  }
+
+  buildFallbackRegimeMeta(results = [], recentNews = [], filterRow = null, modelType = 'FLASH') {
+    const cleanModelType = String(modelType || 'FLASH').toUpperCase() === 'PRO' ? 'PRO' : 'FLASH';
+    const modelTier = cleanModelType === 'PRO' ? 'PRO_60M' : 'FLASH_30M';
+
+    const krHalted = filterRow?.kr_recommended_action === 'HALT_NEW_BUYS' || Number(filterRow?.kr_risk_alert || 0) === 1;
+    const usHalted = filterRow?.us_recommended_action === 'HALT_NEW_BUYS' || Number(filterRow?.us_risk_alert || 0) === 1;
+
+    const buyCount = results.filter((r) => r.action === 'BUY').length;
+    const sellCount = results.filter((r) => r.action === 'SELL').length;
+    const avgSentiment = results.length > 0
+      ? results.reduce((acc, r) => acc + Number(r.sentimentScore || 0), 0) / results.length
+      : 0;
+    const avgConf = results.length > 0
+      ? Math.round(results.reduce((acc, r) => acc + Number(r.confidence || 70), 0) / results.length)
+      : 70;
+
+    let marketRegime = 'NEUTRAL_BOX';
+    if (krHalted && usHalted) {
+      marketRegime = 'BEARISH_DEFENSE';
+    } else if (krHalted || usHalted || sellCount > buyCount || avgSentiment <= -1.0) {
+      marketRegime = (sellCount >= Math.max(2, buyCount) || (krHalted && usHalted)) ? 'BEARISH_DEFENSE' : 'NEUTRAL_BOX';
+    } else if (buyCount >= Math.max(1, Math.ceil(results.length * 0.6)) && avgSentiment >= 4.0) {
+      marketRegime = 'BULLISH_MOMENTUM';
+    }
+
+    const sectorHints = new Set();
+    for (const n of recentNews || []) {
+      const text = `${n.title || ''} ${n.summary || ''} ${n.keywords || ''}`;
+      if (/반도체|HBM|메모리|GPU/i.test(text)) sectorHints.add('반도체');
+      if (/AI|인공지능|클라우드/i.test(text)) sectorHints.add('AI');
+      if (/전기차|배터리|자동차/i.test(text)) sectorHints.add('모빌리티');
+      if (/바이오|신약|헬스케어/i.test(text)) sectorHints.add('바이오');
+    }
+
+    const avoidTickers = results
+      .filter((r) => r.action === 'SELL')
+      .map((r) => String(r.symbol || '').toUpperCase().trim())
+      .filter(Boolean);
+
+    return {
+      modelTier,
+      marketRegime,
+      regimeConfidence: avgConf,
+      allowedFamilies: getDefaultAllowedFamiliesForRegime(marketRegime),
+      regimeMultiplier: getDefaultMultiplierForRegime(marketRegime),
+      hotSectors: Array.from(sectorHints),
+      avoidTickers,
+    };
+  }
+
+  saveDecisionsToDb(decisions, modelType = 'FLASH', regimeMeta = {}) {
     const db = this.getDb();
     const nowIso = new Date().toISOString();
     const cleanModelType = String(modelType || 'FLASH').toUpperCase() === 'PRO' ? 'PRO' : 'FLASH';
+    const modelTier = regimeMeta?.modelTier || (cleanModelType === 'PRO' ? 'PRO_60M' : 'FLASH_30M');
+    const marketRegime = normalizeMarketRegime(regimeMeta?.marketRegime || 'NEUTRAL_BOX');
+    const allowedFamilies = Array.isArray(regimeMeta?.allowedFamilies) && regimeMeta.allowedFamilies.length > 0
+      ? regimeMeta.allowedFamilies
+      : getDefaultAllowedFamiliesForRegime(marketRegime);
+    const regimeMultiplier = Number.isFinite(Number(regimeMeta?.regimeMultiplier))
+      ? Math.max(0.0, Math.min(1.2, Number(regimeMeta.regimeMultiplier)))
+      : getDefaultMultiplierForRegime(marketRegime);
+    const hotSectors = Array.isArray(regimeMeta?.hotSectors) ? regimeMeta.hotSectors : [];
+    const avoidTickers = Array.isArray(regimeMeta?.avoidTickers) ? regimeMeta.avoidTickers : [];
 
+    const allowedFamiliesJson = JSON.stringify(allowedFamilies);
+    const hotSectorsJson = JSON.stringify(hotSectors);
+    const avoidTickersJson = JSON.stringify(avoidTickers);
+
+    let lastDecisionId = null;
     try {
       const stmt = db.prepare(`
         INSERT INTO ai_trade_decisions (
           symbol, stock_name, market, action, confidence, sentiment_score,
-          reasoning, related_news, suggested_order_type, executed_by, execution_status, model_type, created_at
-        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+          reasoning, related_news, suggested_order_type, executed_by, execution_status,
+          model_type, model_tier, market_regime, allowed_families_json, regime_multiplier,
+          hot_sectors_json, avoid_tickers_json, created_at
+        ) VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
       `);
 
       for (const d of decisions) {
-        stmt.run(
+        const res = stmt.run(
           d.symbol,
           d.name || d.stock_name,
           d.market,
@@ -911,9 +1093,49 @@ ${newsContext || '최근 뉴스가 아직 충분치 않습니다. 글로벌 테�
           'PYTHON_TOSS_EXECUTOR',
           d.action === 'BUY' ? 'READY_TO_EXECUTE' : 'SKIPPED_HOLD',
           cleanModelType,
+          modelTier,
+          marketRegime,
+          allowedFamiliesJson,
+          regimeMultiplier,
+          hotSectorsJson,
+          avoidTickersJson,
           nowIso
         );
+        if (res && res.lastInsertRowid) {
+          lastDecisionId = Number(res.lastInsertRowid);
+        }
       }
+
+      if (!lastDecisionId) {
+        const row = db.prepare(`SELECT MAX(id) AS maxId FROM ai_trade_decisions WHERE model_tier = ?`).get(modelTier);
+        if (row?.maxId) lastDecisionId = Number(row.maxId);
+      }
+
+      // 시장 레짐 신뢰도 및 메타 스냅샷 저장 (종목별 confidence와 분리된 시장 단위 신뢰도)
+      const regimeConfidence = Number.isFinite(Number(regimeMeta?.regimeConfidence))
+        ? Math.max(0, Math.min(100, Math.round(Number(regimeMeta.regimeConfidence))))
+        : (decisions.length > 0
+          ? Math.round(decisions.reduce((acc, d) => acc + Number(d.confidence ?? 70), 0) / decisions.length)
+          : 70);
+      const snapshotKey = cleanModelType === 'PRO' ? 'ai_regime_snapshot_pro' : 'ai_regime_snapshot_flash';
+      const snapshotVal = JSON.stringify({
+        lastDecisionId,
+        modelTier,
+        marketRegime,
+        regimeConfidence,
+        allowedFamilies,
+        regimeMultiplier,
+        hotSectors,
+        avoidTickers,
+        updatedAt: nowIso,
+      });
+      try {
+        db.prepare(`
+          INSERT INTO system_settings (key, value, updated_at)
+          VALUES (?, ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = excluded.value, updated_at = excluded.updated_at
+        `).run(snapshotKey, snapshotVal, nowIso);
+      } catch (_) {}
     } catch (e) {
       console.warn('[LLMDecisionService] 의사결정 DB 저장 오류:', e.message);
     }

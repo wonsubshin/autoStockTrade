@@ -21,6 +21,30 @@
 
 ## 🚀 버전별 상세 변경 내역 (Changelog)
 
+### [0.0.13] - 2026-11-14
+- **커밋 성격**: `feat`
+- **커밋 메시지**: `feat: 30분/1시간 소프트 레짐 라우팅·포지션 책임 청산 및 주간 전략군별 1위 봇 자동 로테이션 엔진 구축 (v0.0.13)`
+- **주요 내용**: 30분 Flash / 1시간 Pro 뉴스·시황 기반 **신규 진입 소프트 레짐 라우팅(Soft Regime Routing)**, 탈락/교체 봇 미청산 물량의 **끝까지 책임 청산(Position Stickiness)**, 11대 퀀트 봇의 **3대 전략군(`BREAKOUT` / `TREND` / `REVERSION`) UI 식별 배지**, 그리고 최근 7일 시가평가(MTM) 성과 기반 **주간 전략군별 1위 봇 자동 로테이션 및 원클릭 제어 시스템** 구축.
+- **세부 변경사항**:
+  - **DB 스키마 확장 및 시드 (`backend/db/index.mjs`)**:
+    - `ai_trade_decisions` 테이블에 `model_tier`, `market_regime`, `allowed_families_json`, `regime_multiplier`, `hot_sectors_json`, `avoid_tickers_json` 컬럼 마이그레이션 및 기존 행 백필 추가.
+    - `seedWeeklyRotationSettings`를 신설해 `weekly_auto_rotation_enabled`, `last_weekly_rotation_date`, `last_weekly_rotation_summary`, `virtual_fast_cycle_mode` 기본값 시드.
+  - **소프트 레짐 라우팅 & 뉴스 촉매 게이트 (`backend/common/quant_algorithms.mjs`, `backend/common/llm_decision_service.mjs`, `backend/services/ai_service.mjs`)**:
+    - `getBotStrategyFamily()`로 11대 봇을 `BREAKOUT`, `TREND`, `REVERSION` 3대 전략군으로 매핑하고, `calculateDynamicPositionSize()`가 `regimeMultiplier`를 반영하도록 확장.
+    - `LLMDecisionService` 프롬프트·파서·폴백 메타에 `market_regime`, `confidence`, `allowed_families`, `regime_multiplier`, `hot_sectors`, `avoid_tickers` 연동.
+    - `evaluateStockNewsCatalyst()` 및 `evaluateRegimeGateForNewEntry()`를 통해 Pro(60분) + Flash(30분) 히스테리시스, 서킷 브레이커 순수 퀀트 폴백, 최근 RSS 호재/악재 촉매 필터링 구현.
+  - **주간 전략군별 1위 로테이션 엔진 & Position Stickiness (`backend/services/bot_service.mjs`, `backend/services/scheduler_service.mjs`)**:
+    - `getAllBotsWithArenaMetrics()`: 최근 7일 가상 실현손익 + 실시간 오픈 포지션 시가평가(MTM) 기반 `weekly_return_pct`, `weekly_win_rate`, `weekly_trade_count`, `weekly_composite_score`, `is_family_weekly_top` 산출.
+    - `rotateWeeklyTopBotsByFamily()` 및 `syncActiveRealBotsAvailableKrw()`: 3대 전략군별 1위 3개 봇 선출, `-1.0%` 미만 축소·`+2.0%` 이상 우대 정규화(합계 `100%`), `is_real_running` 승계, 탈락 봇 미청산 포지션 원금 보호 및 청산 시 가용 현금 즉시 재편입.
+    - `runRealTradingTrackWithSoftRouting()` 및 `checkAndRunWeeklyAutoRotation()`: 매주 월요일 `08:30 KST` 자동 로테이션 및 실전 책임 청산 루프 연동.
+  - **REST API & 프론트엔드 대시보드 UI 고도화 (`backend/controllers/bot_controller.mjs`, `backend/routes/router.mjs`, `frontend/src/utils/strategyFamilies.jsx`, `frontend/src/services/api.js`, `frontend/src/App.jsx`, `frontend/src/components/lab/LabPanel.jsx`, `frontend/src/components/trading/BotCard.jsx`, `frontend/src/components/trading/TradesTable.jsx`, `frontend/src/components/settings/SettingsPanel.jsx`)**:
+    - `GET /api/bots/weekly-rotation-status`, `POST /api/bots/rotate-weekly-top`, `POST /api/bots/weekly-rotation-toggle` 엔드포인트 및 프론트엔드 API 연동.
+    - 전략군 공용 배지(`StrategyFamilyBadge`)를 가상 아레나·실전 봇 카드·체결 내역·환경설정 튜너에 일괄 적용하고, `LabPanel` 상단에 주간 1위 자동 선출 버튼·월요일 `08:30` 자동 교체 ON/OFF 토글·최근 7일/누적 순위 전환·`👑 주간 전략군 1위` 배지 추가.
+  - **패키지 메타데이터 및 배포 번들 동기화**:
+    - `version.json`, `package.json`, `frontend/package.json`, `install/app/package.json` 버전을 `0.0.13`으로 일괄 갱신 및 `/install` 배포 패키지 동기화.
+
+---
+
 ### [0.0.12] - 2026-11-13
 - **커밋 성격**: `feat`
 - **커밋 메시지**: `feat: 11대 퀀트 봇 알고리즘 파라미터 UI 실시간 튜닝 및 원클릭 초기화 시스템 구축 (v0.0.12)`

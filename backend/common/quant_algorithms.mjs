@@ -228,9 +228,39 @@ export function evaluatePureQuantAlgorithm(bot, stock) {
 }
 
 /**
+ * 11대 퀀트 봇의 전략 유형을 3대 전략군(Strategy Family)으로 분류
+ * - BREAKOUT: 돌파·모멘텀군
+ * - TREND: 추세·수급군
+ * - REVERSION: 평균회귀·역추세·스캘핑군
+ */
+export function getBotStrategyFamily(bot) {
+  const type = String(bot?.strategy_type || '').toUpperCase();
+  switch (type) {
+    case 'VOLATILITY_BREAKOUT':
+    case 'MACD_VOLUME':
+    case 'KELTNER_SQUEEZE':
+    case 'JACK_KELLOGG_VWAP':
+      return 'BREAKOUT';
+
+    case 'DUAL_MOMENTUM':
+    case 'SUPERTREND':
+    case 'ICHIMOKU_BREAKOUT':
+    case 'MA_PULLBACK':
+      return 'TREND';
+
+    case 'MEAN_REVERSION':
+    case 'ENVELOPE_REVERSAL':
+    case 'VWAP_STOCH_SCALP':
+    default:
+      return 'REVERSION';
+  }
+}
+
+/**
  * 11대 퀀트 봇 전략별 맞춤 기술적 청산(Exit) 및 트레일링 스탑 판정
  */
 export function evaluatePureQuantExit(bot, pos, quote, options = { fastCycleEnabled: false }) {
+  quote = quote || {};
   const curPrice = Number(quote.current_price || quote.price || quote.currentPrice || pos.avg_buy_price);
   const avgBuyPrice = Number(pos.avg_buy_price || curPrice);
   const highestPrice = Math.max(Number(pos.highest_price || avgBuyPrice), curPrice);
@@ -337,35 +367,48 @@ export function evaluatePureQuantExit(bot, pos, quote, options = { fastCycleEnab
 }
 
 /**
- * 시그널 신뢰도(score) 및 변동성(ATR%) 기반 동적 포지션 사이징
+ * 시그널 신뢰도(score) + 종목 변동성(ATR%) + LLM 레짐 가중치(regimeMultiplier) 결합 동적 포지션 사이징
  * 지원 시그니처:
- *  - calculateDynamicPositionSize(bot, availableKrw, score, stockOrAtrPct)
- *  - calculateDynamicPositionSize(bot, score, stockOrAtrPct, availableKrw)
+ *  - calculateDynamicPositionSize(bot, signalScore, stock, availableKrw, regimeMultiplier = 1.0)
+ *  - calculateDynamicPositionSize(bot, availableKrw, score, stockOrAtrPct, regimeMultiplier = 1.0)
+ *  - calculateDynamicPositionSize(bot, score, atrPct, availableKrw, regimeMultiplier = 1.0)
  */
-export function calculateDynamicPositionSize(bot, arg2, arg3, arg4) {
+export function calculateDynamicPositionSize(bot, arg2, arg3, arg4, regimeMultiplier = 1.0) {
   let availableKrw = 1000000;
   let score = 80;
   let atrPct = 2.0;
 
-  if (typeof arg2 === 'number' && arg2 > 50000) {
-    availableKrw = arg2;
-    score = typeof arg3 === 'number' ? arg3 : 80;
-    atrPct = typeof arg4 === 'object'
-      ? Number(arg4?.atr_pct ?? arg4?.atrPct ?? 2.0)
-      : (Number(arg4) || 2.0);
-  } else {
+  if (typeof arg3 === 'object' && arg3 !== null) {
+    // 신형 시그니처: (bot, signalScore, stock, availableKrw, regimeMultiplier)
     score = typeof arg2 === 'number' ? arg2 : 80;
-    atrPct = typeof arg3 === 'object'
-      ? Number(arg3?.atr_pct ?? arg3?.atrPct ?? 2.0)
-      : (Number(arg3) || 2.0);
+    atrPct = Number(arg3?.atr_pct ?? arg3?.atrPct ?? 2.0) || 2.0;
     availableKrw = typeof arg4 === 'number' ? arg4 : 1000000;
+  } else if (typeof arg2 === 'number' && typeof arg4 === 'number' && arg2 <= 100 && arg4 > 1000) {
+    // 구형 시그니처 A: (bot, score, atrPct, availableKrw)
+    score = arg2;
+    atrPct = Number(arg3) || 2.0;
+    availableKrw = arg4;
+  } else {
+    // 구형 시그니처 B: (bot, availableKrw, score, stockOrAtrPct)
+    availableKrw = typeof arg2 === 'number' ? arg2 : 1000000;
+    score = typeof arg3 === 'number' ? arg3 : 80;
+    atrPct = typeof arg4 === 'object' && arg4 !== null
+      ? (Number(arg4?.atr_pct ?? arg4?.atrPct ?? 2.0) || 2.0)
+      : (Number(arg4) || 2.0);
   }
+
+  const safeRegimeMult = Math.min(1.2, Math.max(0.0, Number(regimeMultiplier ?? 1.0)));
+  if (safeRegimeMult <= 0 || Number(availableKrw) <= 0) return 0;
 
   const scoreWeight = Math.min(1.25, Math.max(0.7, Number(score || 80) / 85));
   // 변동성이 너무 큰 종목(ATR > 4%)은 비중을 줄여 리스크 평준화
   const volatilityDamper = atrPct > 4.0 ? 0.7 : atrPct > 2.5 ? 0.85 : 1.0;
 
-  const baseFraction = 0.30; // 기본 1종목당 30% (최대 3종목 분산)
-  const finalFraction = Math.min(0.40, Math.max(0.15, baseFraction * scoreWeight * volatilityDamper));
+  const baseFraction = 0.30; // 기본 1종목당 가용 현금의 30% (최대 3종목 분산)
+  const minFraction = 0.12 * Math.min(1.0, safeRegimeMult);
+  const finalFraction = Math.min(
+    0.40,
+    Math.max(minFraction, baseFraction * scoreWeight * volatilityDamper * safeRegimeMult)
+  );
   return Math.floor(Number(availableKrw) * finalFraction);
 }

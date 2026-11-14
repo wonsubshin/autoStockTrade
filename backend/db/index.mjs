@@ -534,6 +534,12 @@ CREATE TABLE IF NOT EXISTS ai_trade_decisions (
   execution_status TEXT,
   order_no TEXT,
   model_type TEXT DEFAULT 'FLASH',
+  model_tier TEXT DEFAULT 'FLASH_30M',
+  market_regime TEXT DEFAULT 'NEUTRAL_BOX',
+  allowed_families_json TEXT DEFAULT '["BREAKOUT","TREND","REVERSION"]',
+  regime_multiplier REAL DEFAULT 1.0,
+  hot_sectors_json TEXT DEFAULT '[]',
+  avoid_tickers_json TEXT DEFAULT '[]',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
@@ -736,11 +742,23 @@ CREATE TABLE IF NOT EXISTS ai_trade_decisions (
   execution_status TEXT,
   order_no TEXT,
   model_type TEXT DEFAULT 'FLASH',
+  model_tier TEXT DEFAULT 'FLASH_30M',
+  market_regime TEXT DEFAULT 'NEUTRAL_BOX',
+  allowed_families_json TEXT DEFAULT '["BREAKOUT","TREND","REVERSION"]',
+  regime_multiplier REAL DEFAULT 1.0,
+  hot_sectors_json TEXT DEFAULT '[]',
+  avoid_tickers_json TEXT DEFAULT '[]',
   created_at TEXT NOT NULL
 );
 CREATE INDEX IF NOT EXISTS idx_ai_trade_decisions_id ON ai_trade_decisions (id DESC);
 ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS related_news TEXT;
 ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS model_type TEXT DEFAULT 'FLASH';
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS model_tier TEXT DEFAULT 'FLASH_30M';
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS market_regime TEXT DEFAULT 'NEUTRAL_BOX';
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS allowed_families_json TEXT DEFAULT '["BREAKOUT","TREND","REVERSION"]';
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS regime_multiplier REAL DEFAULT 1.0;
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS hot_sectors_json TEXT DEFAULT '[]';
+ALTER TABLE ai_trade_decisions ADD COLUMN IF NOT EXISTS avoid_tickers_json TEXT DEFAULT '[]';
 
 CREATE TABLE IF NOT EXISTS market_regime_filter (
   id INTEGER PRIMARY KEY CHECK (id = 1),
@@ -828,6 +846,25 @@ export function initDatabase() {
   }
 }
 
+const WEEKLY_ROTATION_DEFAULT_SETTINGS = [
+  { key: 'weekly_auto_rotation_enabled', value: 'true' },
+  { key: 'last_weekly_rotation_date', value: '' },
+  { key: 'last_weekly_rotation_summary', value: '{}' },
+  { key: 'virtual_fast_cycle_mode', value: 'false' },
+];
+
+export function seedWeeklyRotationSettings(database = dbInstance, nowIso = new Date().toISOString()) {
+  if (!database) return;
+  const stmt = database.prepare(`
+    INSERT INTO system_settings (key, value, updated_at)
+    VALUES (?, ?, ?)
+    ON CONFLICT (key) DO NOTHING
+  `);
+  for (const s of WEEKLY_ROTATION_DEFAULT_SETTINGS) {
+    stmt.run(s.key, s.value, nowIso);
+  }
+}
+
 export function seedInitialData() {
   const nowIso = new Date().toISOString();
   const todayKst = new Intl.DateTimeFormat('en-CA', {
@@ -840,7 +877,6 @@ export function seedInitialData() {
   const configuredPasscode = process.env.GATE_PASSCODE || 'sws@2129';
   const initSettings = [
     { key: 'gate_passcode', value: configuredPasscode },
-    { key: 'virtual_fast_cycle_mode', value: 'false' },
     { key: 'total_capital', value: '30000000' },
     { key: 'virtual_seed_money', value: '1000000' },
     { key: 'virtual_total_budget', value: '10000000' },
@@ -863,6 +899,7 @@ export function seedInitialData() {
   for (const s of initSettings) {
     stmtSetting.run(s.key, s.value, nowIso);
   }
+  seedWeeklyRotationSettings(dbInstance, nowIso);
 
   // GATE_PASSCODE 환경변수가 명시된 경우 기존 'coin' 기본값을 덮어써서 최신화
   if (process.env.GATE_PASSCODE) {
@@ -890,6 +927,28 @@ export function migrateAndSeedTenBots(database = dbInstance) {
   for (const sql of positionAlterColumns) {
     try { database.exec(sql); } catch (_) {}
   }
+
+  // Soft Regime Routing: ai_trade_decisions 레짐/전략군 메타 컬럼 안전 마이그레이션
+  const aiAlterColumns = [
+    `ALTER TABLE ai_trade_decisions ADD COLUMN model_tier TEXT DEFAULT 'FLASH_30M'`,
+    `ALTER TABLE ai_trade_decisions ADD COLUMN market_regime TEXT DEFAULT 'NEUTRAL_BOX'`,
+    `ALTER TABLE ai_trade_decisions ADD COLUMN allowed_families_json TEXT DEFAULT '["BREAKOUT","TREND","REVERSION"]'`,
+    `ALTER TABLE ai_trade_decisions ADD COLUMN regime_multiplier REAL DEFAULT 1.0`,
+    `ALTER TABLE ai_trade_decisions ADD COLUMN hot_sectors_json TEXT DEFAULT '[]'`,
+    `ALTER TABLE ai_trade_decisions ADD COLUMN avoid_tickers_json TEXT DEFAULT '[]'`
+  ];
+  for (const sql of aiAlterColumns) {
+    try { database.exec(sql); } catch (_) {}
+  }
+
+  // 기존 ai_trade_decisions 레코드 model_tier 백필
+  try {
+    database.exec(`
+      UPDATE ai_trade_decisions
+      SET model_tier = CASE WHEN UPPER(COALESCE(model_type, 'FLASH')) = 'PRO' THEN 'PRO_60M' ELSE 'FLASH_30M' END
+      WHERE model_tier IS NULL OR model_tier = ''
+    `);
+  } catch (_) {}
 
   // 기존 OPEN 포지션의 highest_price를 avg_buy_price로 초기화
   try {
@@ -1052,6 +1111,7 @@ export function migrateAndSeedTenBots(database = dbInstance) {
       b.stop_loss_pct, b.take_profit_pct, b.config_json
     );
   }
+  seedWeeklyRotationSettings(database);
 }
 
 export function closeDatabase() {

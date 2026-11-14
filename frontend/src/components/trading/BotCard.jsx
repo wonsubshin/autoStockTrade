@@ -1,4 +1,5 @@
 import React from 'react';
+import { StrategyFamilyBadge, getStrategyFamilyMeta } from '../../utils/strategyFamilies';
 
 function formatKstTimestamp(isoOrStr) {
   if (!isoOrStr) return '';
@@ -35,13 +36,16 @@ export default function BotCard({
         {bots.map((b) => {
           const isSelected = selectedBotId === b.bot_id;
           const isRealRunning = b.is_real_running === 1;
+          const familyMeta = getStrategyFamilyMeta(b);
           return (
             <button
               key={b.bot_id}
               className={`bot-tab-btn ${b.is_real_selected === 1 ? 'real-mode' : 'virtual-mode'} ${isSelected ? 'active' : ''}`}
               onClick={() => setSelectedBotId(b.bot_id)}
+              title={`${b.name} · ${familyMeta.label} (${familyMeta.code})`}
             >
               <span>{b.nickname || b.name}</span>
+              <StrategyFamilyBadge bot={b} compact />
               {b.is_real_selected === 1 ? (
                 <span className="badge-mode real">
                   💰 실전 {b.real_allocation_ratio || 0}%

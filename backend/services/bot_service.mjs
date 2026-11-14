@@ -1,6 +1,168 @@
 import { getDb, runTransaction } from '../db/index.mjs';
 import { kiwoomClient, tossClient } from './market_service.mjs';
 import { VirtualPaperTradingEngine } from '../common/virtual_engine.mjs';
+import { getBotStrategyFamily } from '../common/quant_algorithms.mjs';
+
+const STRATEGY_FAMILIES = ['BREAKOUT', 'TREND', 'REVERSION'];
+
+function formatKstDate(date = new Date()) {
+  return new Intl.DateTimeFormat('en-CA', {
+    timeZone: 'Asia/Seoul',
+    year: 'numeric',
+    month: '2-digit',
+    day: '2-digit',
+  }).format(date);
+}
+
+function execInTx(db, fn) {
+  if (typeof db.transaction === 'function') {
+    return db.transaction(fn)();
+  }
+  db.exec('BEGIN');
+  try {
+    const res = fn();
+    db.exec('COMMIT');
+    return res;
+  } catch (err) {
+    try { db.exec('ROLLBACK'); } catch (_) {}
+    throw err;
+  }
+}
+
+function buildQuotePriceMap(liveQuotes = []) {
+  const quoteMap = new Map();
+  if (!Array.isArray(liveQuotes)) return quoteMap;
+  for (const q of liveQuotes) {
+    if (!q) continue;
+    const code = q.stock_code || q.code || q.symbol;
+    const price = Number(q.current_price || q.currentPrice || q.price || 0);
+    if (code && Number.isFinite(price) && price > 0) {
+      quoteMap.set(code, price);
+    }
+  }
+  return quoteMap;
+}
+
+function resolveCurrentPrice(stockCode, fallbackPrice = 0, quoteMap = null) {
+  if (quoteMap && quoteMap.has(stockCode)) {
+    const p = Number(quoteMap.get(stockCode));
+    if (Number.isFinite(p) && p > 0) return p;
+  }
+  const cached = kiwoomClient.priceCache.get(stockCode)?.data || tossClient.priceCache.get(stockCode)?.data;
+  const cachedPrice = Number(cached?.currentPrice || 0);
+  if (Number.isFinite(cachedPrice) && cachedPrice > 0) return cachedPrice;
+  return Number(fallbackPrice || 0);
+}
+
+function computeOpenPositionMetrics(positions = [], quoteMap = null) {
+  let openEvalSum = 0;
+  let openUnrealizedSum = 0;
+  for (const pos of positions) {
+    const curPrice = resolveCurrentPrice(pos.stock_code, Number(pos.avg_buy_price || 0), quoteMap);
+    const qty = Number(pos.qty || 0);
+    const buyAmt = Number(pos.buy_amount || 0);
+    const buyFee = Number(pos.buy_fee || 0);
+    const evalAmt = Math.round(curPrice * qty);
+    openEvalSum += evalAmt;
+    openUnrealizedSum += (evalAmt - buyAmt - buyFee);
+  }
+  return { openEvalSum, openUnrealizedSum };
+}
+
+function computeRealBotCompoundAvailable(db, botId, allocatedCap) {
+  const openAmt = db.prepare(`
+    SELECT COALESCE(SUM(buy_amount), 0) as amt
+    FROM bot_positions
+    WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+      AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
+  `).get(botId)?.amt || 0;
+
+  const rProfitRow = db.prepare(`
+    SELECT COALESCE(SUM(profit_krw), 0) as profit
+    FROM trades
+    WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED'
+      AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)
+  `).get(botId);
+  const rProfit = Number(rProfitRow?.profit || 0);
+
+  return {
+    allocatedCap,
+    openAmt: Number(openAmt),
+    rProfit,
+    availKrw: Math.max(0, allocatedCap + rProfit - Number(openAmt)),
+  };
+}
+
+function reconcileDeselectedStickiness(db, nowIso, preferWeeklyMsg = false) {
+  const deselectedBots = db.prepare(`
+    SELECT bot_id, nickname, real_allocated_capital, real_available_krw, real_status_msg
+    FROM bots WHERE is_real_selected = 0
+  `).all();
+
+  let deselectedLockedBudget = 0;
+  const stickinessBots = [];
+
+  for (const dbBot of deselectedBots) {
+    const posStats = db.prepare(`
+      SELECT COUNT(*) AS cnt,
+             COALESCE(SUM(buy_amount), 0) AS total_amt,
+             COALESCE(SUM(CASE WHEN order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL THEN buy_amount ELSE 0 END), 0) AS budget_amt
+      FROM bot_positions
+      WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+    `).get(dbBot.bot_id);
+
+    const openCnt = Number(posStats?.cnt || 0);
+    const totalLockedAmt = Math.round(Number(posStats?.total_amt || 0));
+    const budgetLockedAmt = Math.round(Number(posStats?.budget_amt || 0));
+    deselectedLockedBudget += budgetLockedAmt;
+
+    if (openCnt > 0) {
+      stickinessBots.push({
+        bot_id: dbBot.bot_id,
+        nickname: dbBot.nickname,
+        open_positions: openCnt,
+        locked_capital: totalLockedAmt,
+      });
+      const keepWeeklyMsg = preferWeeklyMsg
+        ? '주간 로테이션 교체됨 (보유 포지션 책임 청산 감시 중)'
+        : (String(dbBot.real_status_msg || '').includes('주간 로테이션')
+            ? dbBot.real_status_msg
+            : '청산 대기 중 (보유 포지션 자동 관리)');
+      db.prepare(`
+        UPDATE bots
+        SET is_real_running = 0,
+            real_allocation_ratio = 0,
+            real_allocated_capital = ?,
+            real_available_krw = 0,
+            allocated_capital = ?,
+            allocation_ratio = 0,
+            real_status_msg = ?,
+            updated_at = ?
+        WHERE bot_id = ?
+      `).run(totalLockedAmt, totalLockedAmt, keepWeeklyMsg, nowIso, dbBot.bot_id);
+    } else if (
+      Number(dbBot.real_allocated_capital || 0) > 0 ||
+      Number(dbBot.real_available_krw || 0) > 0 ||
+      String(dbBot.real_status_msg || '').includes('청산 대기') ||
+      String(dbBot.real_status_msg || '').includes('주간 로테이션')
+    ) {
+      db.prepare(`
+        UPDATE bots
+        SET is_real_running = 0,
+            real_allocation_ratio = 0,
+            real_allocated_capital = 0,
+            real_available_krw = 0,
+            allocated_capital = 0,
+            allocation_ratio = 0,
+            real_status_msg = '가상 아레나 전용 (실전 미선택)',
+            updated_at = ?
+        WHERE bot_id = ?
+      `).run(nowIso, dbBot.bot_id);
+    }
+  }
+
+  return { deselectedLockedBudget, stickinessBots };
+}
 
 export const DEFAULT_BOT_PRESETS = {
   bot_01_volatility_breakout: {
@@ -214,24 +376,7 @@ export class BotService {
         for (const b of selectedBots) {
           const ratio = Number(b.real_allocation_ratio || 0);
           const allocatedCap = Math.floor(dynamicBudget * (ratio / 100));
-
-          const openAmt = db.prepare(`
-            SELECT COALESCE(SUM(buy_amount), 0) as amt
-            FROM bot_positions
-            WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
-              AND (order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL)
-          `).get(b.bot_id)?.amt || 0;
-
-          // 2.3 누적 실현손익 복리 반영
-          const rProfitRow = db.prepare(`
-            SELECT COALESCE(SUM(profit_krw), 0) as profit
-            FROM trades
-            WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'CLOSED'
-              AND (buy_order_no NOT LIKE 'VORD_%' OR buy_order_no IS NULL)
-          `).get(b.bot_id);
-          const rProfit = Number(rProfitRow?.profit || 0);
-
-          const availKrw = Math.max(0, allocatedCap + rProfit - Number(openAmt));
+          const { availKrw } = computeRealBotCompoundAvailable(db, b.bot_id, allocatedCap);
 
           db.prepare(`
             UPDATE bots
@@ -243,6 +388,9 @@ export class BotService {
           `).run(allocatedCap, availKrw, allocatedCap, nowIso, b.bot_id);
         }
       }
+
+      // Position Stickiness: 선택 해제되었지만 미청산 실전 포지션을 보유한 봇의 잔고/상태 보호 및 청산 완료 후 정리
+      reconcileDeselectedStickiness(db, nowIso, false);
     } catch (e) {
       console.warn('[BotService] 동적 실전 운영원금 동기화 오류:', e.message);
     }
@@ -258,19 +406,23 @@ export class BotService {
     return this.getAllBotsWithArenaMetrics();
   }
 
-  static getAllBotsWithArenaMetrics() {
-    const db = getDb();
+  static getAllBotsWithArenaMetrics(dbOverrideOrQuotes = null, maybeDb = null) {
+    const liveQuotes = Array.isArray(dbOverrideOrQuotes) ? dbOverrideOrQuotes : [];
+    const db = (!Array.isArray(dbOverrideOrQuotes) && dbOverrideOrQuotes)
+      ? dbOverrideOrQuotes
+      : (maybeDb || getDb());
     if (!db) return [];
 
+    const quoteMap = buildQuotePriceMap(liveQuotes);
+    const sevenDaysAgoIso = new Date(Date.now() - 7 * 24 * 60 * 60 * 1000).toISOString();
+
     const realBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
-    const virtBudgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'virtual_total_budget'").get();
     const realTotal = realBudgetRow ? parseInt(realBudgetRow.value, 10) : 10000000;
-    const virtTotal = virtBudgetRow ? parseInt(virtBudgetRow.value, 10) : 10000000;
 
     const rawBots = db.prepare('SELECT * FROM bots ORDER BY bot_id ASC').all();
 
-    return rawBots.map((bot) => {
-      // 1. 가상 매매 거래 통계 집계
+    const enrichedBots = rawBots.map((bot) => {
+      // 1. 누적 가상 매매 거래 통계 집계
       const vStats = db.prepare(`
         SELECT COUNT(*) as total_trades,
                SUM(CASE WHEN profit_krw > 0 THEN 1 ELSE 0 END) as wins,
@@ -286,25 +438,15 @@ export class BotService {
         WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
       `).get(bot.bot_id);
 
-      // 2.2 가상 평가자산(virtual_total_assets)의 실시간 시가 평가(Mark-to-Market) 반영
+      // 1-2. 실시간 시가 평가(Mark-to-Market) 반영
       const vOpenPositions = db.prepare(`
         SELECT stock_code, qty, avg_buy_price, buy_amount, buy_fee
         FROM bot_positions
         WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'OPEN'
       `).all(bot.bot_id);
 
-      let vOpenEvalSum = 0;
-      let vOpenUnrealizedSum = 0;
-      for (const pos of vOpenPositions) {
-        const quote = kiwoomClient.priceCache.get(pos.stock_code)?.data || tossClient.priceCache.get(pos.stock_code)?.data;
-        const curPrice = Number(quote?.currentPrice || pos.avg_buy_price || 0);
-        const qty = Number(pos.qty || 0);
-        const buyAmt = Number(pos.buy_amount || 0);
-        const buyFee = Number(pos.buy_fee || 0);
-        const evalAmt = Math.round(curPrice * qty);
-        vOpenEvalSum += evalAmt;
-        vOpenUnrealizedSum += (evalAmt - buyAmt - buyFee);
-      }
+      const { openEvalSum: vOpenEvalSum, openUnrealizedSum: vOpenUnrealizedSum } =
+        computeOpenPositionMetrics(vOpenPositions, quoteMap);
 
       const initCap = Number(bot.virtual_initial_capital || 1000000);
       const totalEval = Number(bot.virtual_krw || 0) + vOpenEvalSum;
@@ -313,6 +455,31 @@ export class BotService {
       const winTrades = Number(vStats?.wins || 0);
       const lossTrades = totalTrades - winTrades;
       const winRate = totalTrades > 0 ? (winTrades / totalTrades) * 100 : 0;
+
+      // 1-3. 최근 7일(Rolling 7-Day) 가상 매매 성과 + 미실현 MTM 결합 점수 산출
+      const wStats = db.prepare(`
+        SELECT COUNT(*) as weekly_trades,
+               SUM(CASE WHEN profit_krw > 0 THEN 1 ELSE 0 END) as weekly_wins,
+               COALESCE(SUM(profit_krw), 0) as weekly_realized_profit
+        FROM trades
+        WHERE bot_id = ? AND trade_mode = 'VIRTUAL' AND status = 'CLOSED'
+          AND COALESCE(sell_date, buy_date) >= ?
+      `).get(bot.bot_id, sevenDaysAgoIso);
+
+      const weeklyTradeCnt = Number(wStats?.weekly_trades || 0);
+      const weeklyWins = Number(wStats?.weekly_wins || 0);
+      const weeklyWinRate = weeklyTradeCnt > 0
+        ? Number(((weeklyWins / weeklyTradeCnt) * 100).toFixed(1))
+        : 50.0;
+      const weeklyRealized = Number(wStats?.weekly_realized_profit || 0);
+      const weeklyUnrealized = Math.round(vOpenUnrealizedSum);
+      const weeklyProfitKrw = Math.round(weeklyRealized + weeklyUnrealized);
+      const weeklyReturnPct = initCap > 0 ? Number(((weeklyProfitKrw / initCap) * 100).toFixed(2)) : 0;
+
+      const sampleConfidence = weeklyTradeCnt >= 3 ? 1.0 : (weeklyTradeCnt >= 1 ? 0.8 : 0.65);
+      const weeklyCompositeScore = Number(
+        ((weeklyReturnPct * 0.7 + ((weeklyWinRate - 50) / 10) * 0.3) * sampleConfidence).toFixed(4)
+      );
 
       // 2. 실전 매매 거래 통계 집계 (실제 집행된 실전 거래만 엄격 반영)
       const rStats = db.prepare(`
@@ -329,12 +496,12 @@ export class BotService {
         WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN' AND (order_no NOT LIKE 'VORD_%' OR order_no IS NULL)
       `).get(bot.bot_id);
 
-      const ratio = bot.allocation_ratio || (Number(bot.real_allocation_ratio) / 100) || 0.1;
       const realAllocated = Math.round(Number(bot.real_allocated_capital || Math.floor(realTotal * (Number(bot.real_allocation_ratio || 33.3) / 100))));
       const virtualAllocated = Math.round(Number(bot.virtual_initial_capital || 1000000));
 
       return {
         ...bot,
+        strategy_family: getBotStrategyFamily(bot),
         is_virtual_running: 1, // 상시 가상 거래 상태 보장
         virtual_initial_capital: initCap,
         virtual_total_assets: totalEval,
@@ -345,6 +512,12 @@ export class BotService {
         virtual_win_trades: winTrades,
         virtual_loss_trades: lossTrades,
         virtual_open_count: Number(vOpen.open_count || 0),
+        weekly_return_pct: weeklyReturnPct,
+        weekly_profit_krw: weeklyProfitKrw,
+        weekly_win_rate: weeklyWinRate,
+        weekly_trade_count: weeklyTradeCnt,
+        weekly_composite_score: weeklyCompositeScore,
+        is_family_weekly_top: false,
         real_profit_krw: Number(rStats.realized_profit),
         real_trade_count: Number(rStats.total_trades),
         real_open_count: Number(rOpen.open_count || 0),
@@ -354,6 +527,23 @@ export class BotService {
         allocated_capital: bot.is_real_selected === 1 ? realAllocated : virtualAllocated,
       };
     });
+
+    // 전략군별 주간 복합 점수 1위 봇 마킹
+    for (const family of STRATEGY_FAMILIES) {
+      const famBots = enrichedBots
+        .filter((b) => b.strategy_family === family)
+        .sort((a, b) => (
+          Number(b.weekly_composite_score || 0) - Number(a.weekly_composite_score || 0) ||
+          Number(b.weekly_return_pct || 0) - Number(a.weekly_return_pct || 0) ||
+          Number(b.virtual_return_pct || 0) - Number(a.virtual_return_pct || 0) ||
+          String(a.bot_id).localeCompare(String(b.bot_id))
+        ));
+      if (famBots.length > 0) {
+        famBots[0].is_family_weekly_top = true;
+      }
+    }
+
+    return enrichedBots;
   }
 
   static getBotById(botId) {
@@ -361,11 +551,10 @@ export class BotService {
     return db.prepare('SELECT * FROM bots WHERE bot_id = ?').get(botId);
   }
 
-  // 1~3개 실전 담당 봇 선택 확정
-  // - 유지된 봇: 기존 실전 거래정보/미매도 포지션/투자 비율을 그대로 보유
-  // - 교체된 봇: 해제되는 기존 봇의 실전 거래정보(거래내역 + 미매도 포지션)와 투자 비율을
-  //   신규 봇이 1:1로 승계하여 이어서 매매 (해제 봇 순서 ↔ 신규 봇 선택 순서로 매칭)
-  static async selectRealTradingBots(selectedBotIds) {
+  // 1~3개 실전 담당 봇 선택 확정 (Position Stickiness)
+  // - 기존 봇이 선택 해제되더라도 보유 중인 실전 미청산 포지션(pos.bot_id)은 절대 타 봇으로 이관하지 않음
+  // - 원 소유 봇의 고유 청산 조건 도달 시까지 끝까지 자동 관리(청산 대기 중) 및 투자 원금 보호
+  static async selectRealTradingBots(selectedBotIds, options = {}) {
     if (!Array.isArray(selectedBotIds) || selectedBotIds.length < 1 || selectedBotIds.length > 3) {
       throw new Error('실전 거래 담당 봇은 1개에서 최대 3개까지 선택해야 합니다.');
     }
@@ -373,14 +562,16 @@ export class BotService {
       throw new Error('실전 거래 담당 봇은 서로 다른 봇을 선택해야 합니다.');
     }
 
-    const db = getDb();
+    const db = options.db || getDb();
 
     // 토스 실시간 주문가능 예수금(원화 + 달러 환산)의 90%를 총 실전 운영원금으로 동적 산출
     let dynamicBudget = 0;
-    try {
-      const tossBal = await tossClient.getAccountBalance();
-      dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
-    } catch (e) {}
+    if (!options.skipTossSync) {
+      try {
+        const tossBal = await tossClient.getAccountBalance();
+        dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
+      } catch (e) {}
+    }
 
     const settingRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
     const realTotalBudget = dynamicBudget > 0 ? dynamicBudget : Number(settingRow?.value || 10000000);
@@ -402,64 +593,25 @@ export class BotService {
     const prevRatioMap = new Map(prevSelected.map((b) => [b.bot_id, Number(b.real_allocation_ratio || 0)]));
     const prevRunningMap = new Map(prevSelected.map((b) => [b.bot_id, Number(b.is_real_running || 0)]));
 
-    // 실전 선택 해제는 되었지만 아직 미매도 실전 포지션이 남아있는 봇(과거 교체로 고아가 된 포지션)도 승계 대상에 포함
-    const orphanIds = db.prepare(`
-      SELECT DISTINCT bot_id FROM bot_positions
-      WHERE trade_mode = 'REAL' AND status = 'OPEN'
-    `).all().map((r) => r.bot_id).filter((id) => id && !prevIds.includes(id) && !selectedBotIds.includes(id));
-
     const retainedIds = selectedBotIds.filter((id) => prevIds.includes(id));
     const addedIds = selectedBotIds.filter((id) => !prevIds.includes(id));
-    const removedIds = [...prevIds.filter((id) => !selectedBotIds.includes(id)), ...orphanIds];
-
-    // 1.2 승계 매핑: 해제되는 봇의 미청산 포지션이 고아 상태로 방치되지 않도록
-    // 신규 추가 봇(addedIds) 또는 남은 선택 봇(selectedBotIds)으로 100% 인계
-    const successionMap = []; // { from, to }
-    const targetSuccessors = addedIds.length > 0 ? addedIds : selectedBotIds;
-    if (targetSuccessors.length > 0 && removedIds.length > 0) {
-      removedIds.forEach((fromId, idx) => {
-        successionMap.push({ from: fromId, to: targetSuccessors[idx % targetSuccessors.length] });
-      });
-    }
+    const removedSelectedIds = prevIds.filter((id) => !selectedBotIds.includes(id));
 
     db.exec('BEGIN');
     try {
-      // 1) 거래정보 승계 (실전 거래내역 전체 + 미매도 실전 포지션)
+      // 1) Position Stickiness: 미청산 실전 포지션(bot_positions.bot_id)은 원 소유 봇에 그대로 귀속 유지
       const inheritance = [];
-      for (const { from, to } of successionMap) {
-        const posRes = db.prepare(`
-          UPDATE bot_positions
-          SET origin_bot_id = COALESCE(origin_bot_id, bot_id),
-              bot_id = ?
-          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
-        `).run(to, from);
 
-        const tradeRes = db.prepare(`
-          UPDATE trades
-          SET origin_bot_id = COALESCE(origin_bot_id, bot_id),
-              bot_id = ?
-          WHERE bot_id = ? AND trade_mode = 'REAL'
-        `).run(to, from);
-
-        inheritance.push({
-          from,
-          to,
-          open_positions: Number(posRes?.changes || 0),
-          trades: Number(tradeRes?.changes || 0),
-        });
-      }
-
-      // 2) 투자 비율 결정: 유지 봇은 기존 비율, 신규 봇은 승계 대상(첫 번째 해제 봇)의 비율 승계
+      // 2) 투자 비율 결정: 유지 봇은 기존 비율, 신규 봇은 해제된 봇의 목표 비율 순차 참고 후 100% 정규화
       const ratioMap = new Map();
       retainedIds.forEach((id) => ratioMap.set(id, prevRatioMap.get(id) || 0));
-      addedIds.forEach((id) => {
-        const src = successionMap.find((m) => m.to === id && prevRatioMap.has(m.from));
-        ratioMap.set(id, src ? prevRatioMap.get(src.from) || 0 : 0);
+      addedIds.forEach((id, idx) => {
+        const srcId = removedSelectedIds[idx];
+        ratioMap.set(id, srcId && prevRatioMap.has(srcId) ? prevRatioMap.get(srcId) || 0 : 0);
       });
       const assignedSum = [...ratioMap.values()].reduce((a, b) => a + b, 0);
       const zeroIds = selectedBotIds.filter((id) => !(ratioMap.get(id) > 0));
       if (zeroIds.length > 0) {
-        // 비율 정보가 없는 봇은 남은 비율을 균등 분배 (남은 비율이 없으면 전체 균등 재배분)
         const remain = Math.max(0, 100 - assignedSum);
         if (remain <= 0) {
           const count = selectedBotIds.length;
@@ -482,7 +634,6 @@ export class BotService {
       }
       const totalRatio = [...ratioMap.values()].reduce((a, b) => a + b, 0);
       if (Math.abs(totalRatio - 100) > 0.5) {
-        // 합계가 100%가 아니면 선택된 봇 개수에 맞춰 균등 배분으로 복구
         const count = selectedBotIds.length;
         let acc = 0;
         selectedBotIds.forEach((id, idx) => {
@@ -492,24 +643,70 @@ export class BotService {
         });
       }
 
-      // 3) 미선택 봇은 실전 담당 해제
+      // 3) 미선택 봇 처리: 신규 매수 중지(is_real_selected = 0, is_real_running = 0)
+      //    단, 미청산 포지션이 남은 봇은 상태 메시지와 점유 원금을 보존하여 끝까지 책임 청산
       const notInPlaceholders = selectedBotIds.map(() => '?').join(', ');
-      db.prepare(`
-        UPDATE bots
-        SET is_real_selected = 0,
-            is_real_running = 0,
-            real_allocation_ratio = 0,
-            real_allocated_capital = 0,
-            real_available_krw = 0,
-            real_status_msg = '가상 아레나 전용 (실전 미선택)',
-            updated_at = ?
-        WHERE bot_id NOT IN (${notInPlaceholders})
-      `).run(nowIso, ...selectedBotIds);
+      const deselectedAll = db.prepare(`
+        SELECT bot_id FROM bots WHERE bot_id NOT IN (${notInPlaceholders})
+      `).all(...selectedBotIds);
 
-      // 4) 선택 봇 실전 지정 (승계된 포지션 반영 후 가용 자금 재계산)
+      let deselectedLockedBudget = 0;
+      const stickinessBots = [];
+
+      for (const row of deselectedAll) {
+        const posStats = db.prepare(`
+          SELECT COUNT(*) AS cnt,
+                 COALESCE(SUM(buy_amount), 0) AS total_amt,
+                 COALESCE(SUM(CASE WHEN order_no NOT LIKE 'TOSS_SYNC_%' OR order_no IS NULL THEN buy_amount ELSE 0 END), 0) AS budget_amt
+          FROM bot_positions
+          WHERE bot_id = ? AND trade_mode = 'REAL' AND status = 'OPEN'
+        `).get(row.bot_id);
+
+        const openCnt = Number(posStats?.cnt || 0);
+        const totalLockedAmt = Math.round(Number(posStats?.total_amt || 0));
+        const budgetLockedAmt = Math.round(Number(posStats?.budget_amt || 0));
+        deselectedLockedBudget += budgetLockedAmt;
+
+        if (openCnt > 0) {
+          stickinessBots.push({ bot_id: row.bot_id, open_positions: openCnt, locked_capital: totalLockedAmt });
+          db.prepare(`
+            UPDATE bots
+            SET is_real_selected = 0,
+                is_real_running = 0,
+                real_allocation_ratio = 0,
+                real_allocated_capital = ?,
+                real_available_krw = 0,
+                allocated_capital = ?,
+                allocation_ratio = 0,
+                real_status_msg = '청산 대기 중 (보유 포지션 자동 관리)',
+                updated_at = ?
+            WHERE bot_id = ?
+          `).run(totalLockedAmt, totalLockedAmt, nowIso, row.bot_id);
+        } else {
+          db.prepare(`
+            UPDATE bots
+            SET is_real_selected = 0,
+                is_real_running = 0,
+                real_allocation_ratio = 0,
+                real_allocated_capital = 0,
+                real_available_krw = 0,
+                allocated_capital = 0,
+                allocation_ratio = 0,
+                real_status_msg = '가상 아레나 전용 (실전 미선택)',
+                updated_at = ?
+            WHERE bot_id = ?
+          `).run(nowIso, row.bot_id);
+        }
+      }
+
+      // 4) 선택 봇 실전 지정 (정적 총예산 사용 시 미선택 봇의 미청산 포지션 점유 원금을 보호한 잔여 예산 배분)
+      const distributableBudget = dynamicBudget > 0
+        ? realTotalBudget
+        : Math.max(0, realTotalBudget - deselectedLockedBudget);
+
       for (const botId of selectedBotIds) {
         const ratio = ratioMap.get(botId);
-        const allocated = Math.floor(realTotalBudget * (ratio / 100));
+        const allocated = Math.floor(distributableBudget * (ratio / 100));
 
         const openReal = db.prepare(`
           SELECT COALESCE(SUM(buy_amount), 0) as amt
@@ -529,19 +726,13 @@ export class BotService {
 
         const available = Math.max(0, allocated + rProfit - Number(openReal));
 
-        const inherited = inheritance.filter((i) => i.to === botId);
-        const inheritedPos = inherited.reduce((a, b) => a + b.open_positions, 0);
-
-        // 1.2 기존에 이미 실전 담당으로 가동 중이던(is_real_running = 1) 봇이 재선택된 경우 기존 가동 상태 그대로 유지
+        // 기존에 이미 실전 담당으로 가동 중이던(is_real_running = 1) 봇이 재선택된 경우 기존 가동 상태 그대로 유지
         const prevRun = prevRunningMap.get(botId);
         const targetRunning = prevRun !== undefined ? prevRun : 1;
 
-        let statusMsg = retainedIds.includes(botId)
+        const statusMsg = retainedIds.includes(botId)
           ? (targetRunning === 1 ? '실전 담당 유지 및 가동 중' : '실전 담당 유지 (일시 정지 상태)')
           : '실전 담당 지정 및 가동 중';
-        if (inherited.length > 0) {
-          statusMsg = `실전 담당 지정 및 가동 중 (${inherited.map((i) => i.from).join(', ')} 거래정보 승계 · 미매도 ${inheritedPos}건 인수)`;
-        }
 
         db.prepare(`
           UPDATE bots
@@ -561,14 +752,15 @@ export class BotService {
 
       db.exec('COMMIT');
 
-      if (inheritance.length > 0) {
-        console.log('[BotService] 실전 봇 교체 거래정보 승계:', JSON.stringify(inheritance));
+      if (stickinessBots.length > 0) {
+        console.log('[BotService] 🛡️ Position Stickiness 활성 (원 소유 봇 청산 대기 관리):', JSON.stringify(stickinessBots));
       }
 
       return {
-        bots: this.getAllBotsWithArenaMetrics(),
+        bots: this.getAllBotsWithArenaMetrics(db),
         inheritance,
         retained: retainedIds,
+        stickinessBots,
       };
     } catch (err) {
       db.exec('ROLLBACK');
@@ -577,7 +769,7 @@ export class BotService {
   }
 
   // 환경설정에서 선택된 1~3개 실전 봇의 동적 투자금 비율(%) 및 총 예산 저장
-  static async updateRealBudgetAllocations(realTotalBudget, allocations) {
+  static async updateRealBudgetAllocations(realTotalBudget, allocations, options = {}) {
     if (!Array.isArray(allocations) || allocations.length < 1 || allocations.length > 3) {
       throw new Error('실전 거래 담당 봇(1~3개)의 비율을 설정해야 합니다.');
     }
@@ -587,14 +779,16 @@ export class BotService {
       throw new Error(`선택된 실전 봇들의 투자 비율 합계는 100%여야 합니다. (현재: ${sum.toFixed(1)}%)`);
     }
 
-    const db = getDb();
+    const db = options.db || getDb();
 
     // 토스 실시간 주문가능 예수금(원화 + 달러 환산)의 90%를 총 실전 운영원금으로 동적 산출
     let dynamicBudget = 0;
-    try {
-      const tossBal = await tossClient.getAccountBalance();
-      dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
-    } catch (e) {}
+    if (!options.skipTossSync) {
+      try {
+        const tossBal = await tossClient.getAccountBalance();
+        dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
+      } catch (e) {}
+    }
 
     const targetBudget = dynamicBudget > 0 ? dynamicBudget : (Number(realTotalBudget) || 10000000);
     const nowIso = new Date().toISOString();
@@ -607,9 +801,28 @@ export class BotService {
         ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
       `).run(String(targetBudget), nowIso);
 
+      // 정적 총예산 사용 시 선택 해제되었으나 미청산 포지션을 보유 중인 봇의 점유 원금 보호
+      let deselectedLockedBudget = 0;
+      if (dynamicBudget <= 0) {
+        const lockRow = db.prepare(`
+          SELECT COALESCE(SUM(bp.buy_amount), 0) AS amt
+          FROM bot_positions bp
+          JOIN bots b ON b.bot_id = bp.bot_id
+          WHERE b.is_real_selected = 0
+            AND bp.trade_mode = 'REAL'
+            AND bp.status = 'OPEN'
+            AND (bp.order_no NOT LIKE 'TOSS_SYNC_%' OR bp.order_no IS NULL)
+        `).get();
+        deselectedLockedBudget = Math.round(Number(lockRow?.amt || 0));
+      }
+
+      const distributableBudget = dynamicBudget > 0
+        ? targetBudget
+        : Math.max(0, targetBudget - deselectedLockedBudget);
+
       for (const item of allocations) {
         const ratio = Number(item.ratio);
-        const allocated = Math.floor(targetBudget * (ratio / 100));
+        const allocated = Math.floor(distributableBudget * (ratio / 100));
 
         const openReal = db.prepare(`
           SELECT COALESCE(SUM(buy_amount), 0) as amt
@@ -642,7 +855,7 @@ export class BotService {
       }
 
       db.exec('COMMIT');
-      return this.getAllBotsWithArenaMetrics();
+      return this.getAllBotsWithArenaMetrics(db);
     } catch (err) {
       db.exec('ROLLBACK');
       throw err;
@@ -764,4 +977,314 @@ export class BotService {
   static resetStrategyConfig(targetBotId = 'ALL') {
     return resetBotStrategyConfig(targetBotId);
   }
+
+  /**
+   * 실전 담당 봇(is_real_selected = 1)들의 가용 현금(real_available_krw) 및 미선택 봇 청산 상태를 최신화.
+   * 탈락 봇의 미청산 포지션이 Phase B-1에서 청산될 때마다 호출되어 회수된 원금을 활성 실전 봇에 즉시 편입합니다.
+   */
+  static syncActiveRealBotsAvailableKrw(db = getDb(), tossBal = null) {
+    if (!db) return null;
+    const nowIso = new Date().toISOString();
+
+    if (tossBal && !tossBal.isMock && (tossBal.availableCash !== undefined || tossBal.availableUsd !== undefined)) {
+      const dynamicBudget = this.syncDynamicRealBudget(db, tossBal);
+      const selectedCount = db.prepare('SELECT COUNT(*) AS cnt FROM bots WHERE is_real_selected = 1').get()?.cnt || 0;
+      return { totalBudget: dynamicBudget, selectedCount: Number(selectedCount), deselectedLockedBudget: 0 };
+    }
+
+    const { deselectedLockedBudget, stickinessBots } = reconcileDeselectedStickiness(db, nowIso, false);
+    const budgetRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
+    const realTotalBudget = budgetRow ? Number(budgetRow.value) : 10000000;
+    const distributableBudget = Math.max(0, realTotalBudget - deselectedLockedBudget);
+
+    const selectedBots = db.prepare(`
+      SELECT bot_id, real_allocation_ratio FROM bots WHERE is_real_selected = 1 ORDER BY bot_id ASC
+    `).all();
+
+    for (const b of selectedBots) {
+      const ratio = Number(b.real_allocation_ratio || 0);
+      const allocatedCap = Math.floor(distributableBudget * (ratio / 100));
+      const { availKrw } = computeRealBotCompoundAvailable(db, b.bot_id, allocatedCap);
+
+      db.prepare(`
+        UPDATE bots
+        SET real_allocated_capital = ?,
+            real_available_krw = ?,
+            allocated_capital = ?,
+            allocation_ratio = ?,
+            updated_at = ?
+        WHERE bot_id = ?
+      `).run(allocatedCap, availKrw, allocatedCap, ratio / 100, nowIso, b.bot_id);
+    }
+
+    return {
+      totalBudget: distributableBudget,
+      selectedCount: selectedBots.length,
+      deselectedLockedBudget,
+      stickinessBots,
+    };
+  }
+
+  /**
+   * 3대 전략군(BREAKOUT / TREND / REVERSION)별 최근 7일 시가평가 복합점수 1위 봇을 선출하여 실전 담당 봇으로 무중단 로테이션.
+   * - 기존 실전 담당 봇 중 1개라도 가동 중(is_real_running=1)이면 신규 3대 봇 모두 is_real_running=1 자동 승계
+   * - 탈락 봇의 OPEN 실전 포지션은 강제 청산/이관하지 않고 원 소유 봇 책임 청산 상태 유지(Position Stickiness)
+   * - 주간 수익률 < -1.0% 군은 비중 축소(15.0), >= +2.0% 군은 비중 상향(40.0), 나머지 33.3 -> 100.0% 정확 정규화
+   */
+  static async rotateWeeklyTopBotsByFamily(liveQuotes = [], options = {}) {
+    const opts = (!Array.isArray(liveQuotes) && liveQuotes && typeof liveQuotes === 'object')
+      ? liveQuotes
+      : (options || {});
+    const quotes = Array.isArray(liveQuotes) ? liveQuotes : (opts.liveQuotes || []);
+    const db = opts.db || getDb();
+    if (!db) throw new Error('DB 인스턴스를 찾을 수 없습니다.');
+
+    const trigger = typeof options === 'string' ? options : (opts.trigger || 'MANUAL');
+    const nowDate = opts.nowDate instanceof Date ? opts.nowDate : new Date();
+    const nowIso = nowDate.toISOString();
+    const rotatedDateKst = formatKstDate(nowDate);
+
+    let resolvedTossBal = opts.tossBal || null;
+    if (!resolvedTossBal && !opts.skipTossSync) {
+      try {
+        const bal = await tossClient.getAccountBalance();
+        if (bal && !bal.isMock) {
+          resolvedTossBal = bal;
+        }
+      } catch (_) {}
+    }
+
+    // 1. 11대 봇 7일 시가 평가 성과 산출 및 전략군별 1위 선출
+    const evaluatedBots = this.getAllBotsWithArenaMetrics(quotes, db);
+    const winners = [];
+    for (const family of STRATEGY_FAMILIES) {
+      const candidates = evaluatedBots
+        .filter((b) => b.strategy_family === family)
+        .sort((a, b) => (
+          Number(b.weekly_composite_score || 0) - Number(a.weekly_composite_score || 0) ||
+          Number(b.weekly_return_pct || 0) - Number(a.weekly_return_pct || 0) ||
+          Number(b.virtual_return_pct || 0) - Number(a.virtual_return_pct || 0) ||
+          String(a.bot_id).localeCompare(String(b.bot_id))
+        ));
+      if (candidates.length > 0) {
+        winners.push(candidates[0]);
+      }
+    }
+
+    if (winners.length === 0) {
+      throw new Error('전략군별 주간 1위 후보 봇이 존재하지 않습니다.');
+    }
+
+    // 2. 성과 기반 가중치 산정 (부진 < -1.0%: 15.0, 우수 >= +2.0%: 40.0, 기본: 33.3) -> 정확히 100.0% 정규화
+    const weighted = winners.map((bot) => {
+      const wRet = Number(bot.weekly_return_pct || 0);
+      let rawWeight = 33.3;
+      if (wRet < -1.0) rawWeight = 15.0;
+      else if (wRet >= 2.0) rawWeight = 40.0;
+      return { bot, rawWeight, finalRatio: 0 };
+    });
+
+    const rawSum = weighted.reduce((sum, item) => sum + item.rawWeight, 0);
+    weighted.forEach((item) => {
+      item.finalRatio = rawSum > 0 ? Number(((item.rawWeight / rawSum) * 100).toFixed(1)) : 33.3;
+    });
+    const normSum = weighted.reduce((sum, item) => sum + item.finalRatio, 0);
+    const diff = Number((100.0 - normSum).toFixed(1));
+    if (weighted.length > 0 && Math.abs(diff) > 0) {
+      weighted[0].finalRatio = Number((weighted[0].finalRatio + diff).toFixed(1));
+    }
+
+    // 3. 기존 실전 가동 상태(is_real_running) 스냅샷 및 승계 판정
+    const prevSelectedRows = db.prepare(`
+      SELECT bot_id, name, nickname, is_real_running
+      FROM bots WHERE is_real_selected = 1 ORDER BY bot_id ASC
+    `).all();
+    const previousSelectedIds = prevSelectedRows.map((b) => b.bot_id);
+    const hadAnyRunningRealBot = prevSelectedRows.some((b) => Number(b.is_real_running) === 1);
+    const targetRunningFlag = opts.forceRunning !== undefined
+      ? (opts.forceRunning ? 1 : 0)
+      : (hadAnyRunningRealBot ? 1 : 0);
+
+    const winnerIds = weighted.map((item) => item.bot.bot_id);
+    const placeholders = winnerIds.map(() => '?').join(', ');
+
+    let rotationResult = null;
+    execInTx(db, () => {
+      // 3-1. 선택 해제 / 선택 확정 마킹 (bot_positions는 Position Stickiness 원칙으로 절대 수정하지 않음)
+      db.prepare(`UPDATE bots SET is_real_selected = 0, is_real_running = 0 WHERE bot_id NOT IN (${placeholders})`).run(...winnerIds);
+      db.prepare(`UPDATE bots SET is_real_selected = 1 WHERE bot_id IN (${placeholders})`).run(...winnerIds);
+
+      // 3-2. 탈락 봇 미청산 포지션 보호 상태 부여 & 청산 완료 봇 초기화
+      const { deselectedLockedBudget, stickinessBots } = reconcileDeselectedStickiness(db, nowIso, true);
+
+      // 3-3. 실전 배분 원금 산출 (실계좌 동적 예산 또는 정적 총예산 - 탈락 봇 점유 원금)
+      let dynamicBudget = 0;
+      if (resolvedTossBal && !resolvedTossBal.isMock) {
+        const availableCash = Number(resolvedTossBal.availableCash || 0);
+        const availableUsd = Number(resolvedTossBal.availableUsd || 0);
+        const usdRate = Number(resolvedTossBal.usdRate || 1345);
+        const availableUsdKrw = resolvedTossBal.availableUsdKrw !== undefined
+          ? Number(resolvedTossBal.availableUsdKrw)
+          : Math.floor(availableUsd * usdRate);
+        dynamicBudget = Math.floor((availableCash + availableUsdKrw) * 0.90);
+        db.prepare(`
+          INSERT INTO system_settings (key, value, updated_at)
+          VALUES ('real_total_budget', ?, ?)
+          ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+        `).run(String(dynamicBudget), nowIso);
+      }
+
+      const settingRow = db.prepare("SELECT value FROM system_settings WHERE key = 'real_total_budget'").get();
+      const realTotalBudget = dynamicBudget > 0 ? dynamicBudget : (settingRow ? Number(settingRow.value) : 10000000);
+      const distributableBudget = dynamicBudget > 0
+        ? realTotalBudget
+        : Math.max(0, realTotalBudget - deselectedLockedBudget);
+
+      // 3-4. 선출 3대 전략군 1위 봇 예산/복리 가용현금/가동 승계 반영
+      const summaryWinners = [];
+      for (const item of weighted) {
+        const { bot, finalRatio } = item;
+        const allocatedCap = Math.floor(distributableBudget * (finalRatio / 100));
+        const { rProfit, openAmt, availKrw } = computeRealBotCompoundAvailable(db, bot.bot_id, allocatedCap);
+        const statusMsg = targetRunningFlag === 1
+          ? `주간 ${bot.strategy_family} 1위 선출 (가동 승계, 비중 ${finalRatio}%)`
+          : `주간 ${bot.strategy_family} 1위 선출 (대기 중, 비중 ${finalRatio}%)`;
+
+        db.prepare(`
+          UPDATE bots
+          SET is_real_selected = 1,
+              is_real_running = ?,
+              trade_mode = 'REAL',
+              real_allocation_ratio = ?,
+              real_allocated_capital = ?,
+              real_available_krw = ?,
+              allocated_capital = ?,
+              allocation_ratio = ?,
+              real_status_msg = ?,
+              updated_at = ?
+          WHERE bot_id = ?
+        `).run(
+          targetRunningFlag,
+          finalRatio,
+          allocatedCap,
+          availKrw,
+          allocatedCap,
+          finalRatio / 100,
+          statusMsg,
+          nowIso,
+          bot.bot_id
+        );
+
+        summaryWinners.push({
+          bot_id: bot.bot_id,
+          name: bot.name,
+          nickname: bot.nickname,
+          strategy_family: bot.strategy_family,
+          weekly_return_pct: bot.weekly_return_pct,
+          weekly_profit_krw: bot.weekly_profit_krw,
+          weekly_win_rate: bot.weekly_win_rate,
+          weekly_trade_count: bot.weekly_trade_count,
+          weekly_composite_score: bot.weekly_composite_score,
+          ratio: finalRatio,
+          allocated_capital: allocatedCap,
+          available_krw: availKrw,
+          realized_profit_krw: rProfit,
+          open_amount_krw: openAmt,
+        });
+      }
+
+      const summaryObj = {
+        rotatedAt: nowIso,
+        rotatedDateKst,
+        trigger,
+        inheritedRunning: targetRunningFlag === 1,
+        totalBudget: distributableBudget,
+        deselectedLockedBudget,
+        stickinessCount: stickinessBots.length,
+        stickinessBots,
+        previousSelectedIds,
+        winners: summaryWinners,
+      };
+
+      const upsertSetting = db.prepare(`
+        INSERT INTO system_settings (key, value, updated_at)
+        VALUES (?, ?, ?)
+        ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+      `);
+      upsertSetting.run('last_weekly_rotation_date', rotatedDateKst, nowIso);
+      upsertSetting.run('last_weekly_rotation_summary', JSON.stringify(summaryObj), nowIso);
+
+      rotationResult = {
+        success: true,
+        ...summaryObj,
+      };
+    });
+
+    const refreshedBots = this.getAllBotsWithArenaMetrics(quotes, db);
+    return {
+      ...rotationResult,
+      bots: refreshedBots,
+    };
+  }
+
+  static getWeeklyRotationStatus(db = getDb()) {
+    if (!db) {
+      return {
+        enabled: true,
+        lastRotationDate: '',
+        lastSummary: null,
+        nextScheduledKst: '매주 월요일 08:30 KST',
+      };
+    }
+
+    const rows = db.prepare(`
+      SELECT key, value FROM system_settings
+      WHERE key IN ('weekly_auto_rotation_enabled', 'last_weekly_rotation_date', 'last_weekly_rotation_summary')
+    `).all();
+    const map = new Map(rows.map((r) => [r.key, r.value]));
+
+    let parsedSummary = null;
+    const rawSummary = map.get('last_weekly_rotation_summary');
+    if (rawSummary && rawSummary !== '{}') {
+      try {
+        const obj = JSON.parse(rawSummary);
+        if (obj && Object.keys(obj).length > 0) parsedSummary = obj;
+      } catch (_) {}
+    }
+
+    const enabledStr = map.get('weekly_auto_rotation_enabled');
+    return {
+      enabled: enabledStr === undefined ? true : enabledStr === 'true',
+      lastRotationDate: map.get('last_weekly_rotation_date') || '',
+      lastSummary: parsedSummary,
+      nextScheduledKst: '매주 월요일 08:30 KST',
+    };
+  }
+
+  static setWeeklyRotationEnabled(enabled, db = getDb()) {
+    if (!db) throw new Error('DB 인스턴스를 찾을 수 없습니다.');
+    const normalized = enabled === true || enabled === 'true' || enabled === 1 ? 'true' : 'false';
+    const nowIso = new Date().toISOString();
+    db.prepare(`
+      INSERT INTO system_settings (key, value, updated_at)
+      VALUES ('weekly_auto_rotation_enabled', ?, ?)
+      ON CONFLICT(key) DO UPDATE SET value = EXCLUDED.value, updated_at = EXCLUDED.updated_at
+    `).run(normalized, nowIso);
+    return this.getWeeklyRotationStatus(db);
+  }
 }
+
+export const getAllBotsWithArenaMetrics = (dbOverrideOrQuotes = null, maybeDb = null) =>
+  BotService.getAllBotsWithArenaMetrics(dbOverrideOrQuotes, maybeDb);
+
+export const syncActiveRealBotsAvailableKrw = (db = getDb(), tossBal = null) =>
+  BotService.syncActiveRealBotsAvailableKrw(db, tossBal);
+
+export const rotateWeeklyTopBotsByFamily = (liveQuotes = [], options = {}) =>
+  BotService.rotateWeeklyTopBotsByFamily(liveQuotes, options);
+
+export const getWeeklyRotationStatus = (db = getDb()) =>
+  BotService.getWeeklyRotationStatus(db);
+
+export const setWeeklyRotationEnabled = (enabled, db = getDb()) =>
+  BotService.setWeeklyRotationEnabled(enabled, db);

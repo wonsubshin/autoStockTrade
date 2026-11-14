@@ -1,4 +1,5 @@
 import React from 'react';
+import { getStrategyFamilyMeta, StrategyFamilyBadge } from '../../utils/strategyFamilies';
 
 export default function TradesTable({
   trades = [],
@@ -32,19 +33,22 @@ export default function TradesTable({
             )}
           </div>
           {selectedBot && (
-            <span
-              style={{
-                fontSize: '11px',
-                padding: '2px 8px',
-                borderRadius: '12px',
-                background: 'rgba(99, 102, 241, 0.15)',
-                color: '#a5b4fc',
-                border: '1px solid rgba(99, 102, 241, 0.3)',
-                fontWeight: 600,
-              }}
-            >
-              개별 봇 전용 내역
-            </span>
+            <>
+              <StrategyFamilyBadge bot={selectedBot} showCode />
+              <span
+                style={{
+                  fontSize: '11px',
+                  padding: '2px 8px',
+                  borderRadius: '12px',
+                  background: 'rgba(99, 102, 241, 0.15)',
+                  color: '#a5b4fc',
+                  border: '1px solid rgba(99, 102, 241, 0.3)',
+                  fontWeight: 600,
+                }}
+              >
+                개별 봇 전용 내역
+              </span>
+            </>
           )}
         </div>
 
@@ -65,11 +69,14 @@ export default function TradesTable({
                 value={selectedBot?.bot_id || ''}
                 onChange={(e) => onSelectBot(e.target.value)}
               >
-                {bots.map((b) => (
-                  <option key={b.bot_id} value={b.bot_id}>
-                    {b.nickname ? `[${b.nickname}] ${b.name}` : b.name}
-                  </option>
-                ))}
+                {bots.map((b) => {
+                  const fm = getStrategyFamilyMeta(b);
+                  return (
+                    <option key={b.bot_id} value={b.bot_id}>
+                      {`${fm.icon} [${fm.tinyLabel}] ${b.nickname ? `[${b.nickname}] ${b.name}` : b.name}`}
+                    </option>
+                  );
+                })}
               </select>
             </div>
           )}

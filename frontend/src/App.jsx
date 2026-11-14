@@ -16,6 +16,7 @@ import LabPanel from './components/lab/LabPanel';
 import StatsPanel from './components/stats/StatsPanel';
 import NewsPanel from './components/news/NewsPanel';
 import SettingsPanel from './components/settings/SettingsPanel';
+import { getStrategyFamilyMeta, summarizeFamilyCounts } from './utils/strategyFamilies';
 
 // 24시간 세션 유효기간 및 한국 시간(KST) 자정 날짜 변경 만료 검증
 const GATE_SESSION_TTL_MS = 24 * 60 * 60 * 1000;
@@ -63,6 +64,13 @@ export default function App() {
   const [arenaSelectedIds, setArenaSelectedIds] = useState([]);
   const arenaInitRef = useRef(false);
   const [isSelectingRealBots, setIsSelectingRealBots] = useState(false);
+  const [weeklyRotation, setWeeklyRotation] = useState({
+    enabled: true,
+    lastRotationDate: '',
+    lastSummary: null,
+    nextScheduledKst: '매주 월요일 08:30 KST',
+  });
+  const [isRotatingWeekly, setIsRotatingWeekly] = useState(false);
   const [tradingModeFilter, setTradingModeFilter] = useState('AUTO'); // 'AUTO', 'VIRTUAL', 'REAL', 'ALL'
   const [trades, setTrades] = useState([]);
   const [positions, setPositions] = useState([]);
@@ -245,6 +253,15 @@ export default function App() {
     } catch {}
   }, []);
 
+  const fetchWeeklyRotationStatus = useCallback(async () => {
+    try {
+      const data = await api.getWeeklyRotationStatus();
+      if (data && typeof data.enabled === 'boolean') {
+        setWeeklyRotation(data);
+      }
+    } catch {}
+  }, []);
+
   const fetchStats = useCallback(async (mode = 'REAL', period = statsPeriodTab) => {
     try {
       const data = await api.getStats('REAL', period);
@@ -275,6 +292,7 @@ export default function App() {
     fetchBots();
     fetchAiDecisions();
     fetchSettingsAndBalance();
+    fetchWeeklyRotationStatus();
 
     const healthInterval = setInterval(fetchHealth, 10000);
     return () => {
@@ -282,7 +300,7 @@ export default function App() {
       if (briefingStreamRef.current) briefingStreamRef.current.close();
       if (newsStreamRef.current) newsStreamRef.current.close();
     };
-  }, [isAuthenticated, fetchHealth, fetchBots, fetchAiDecisions, fetchSettingsAndBalance]);
+  }, [isAuthenticated, fetchHealth, fetchBots, fetchAiDecisions, fetchSettingsAndBalance, fetchWeeklyRotationStatus]);
 
   // 자정(00:00 KST) 날짜 변경 및 보안 세션 만료 감시 타이머 (날짜가 바뀌면 즉시 인증 화면으로 이동)
   useEffect(() => {
@@ -328,10 +346,12 @@ export default function App() {
     if (activeMenu === 'VIRTUAL_ARENA' || activeMenu === 'LAB') {
       fetchTradesAndPositions('VIRTUAL');
       fetchLeaderboard();
+      fetchWeeklyRotationStatus();
       const labInterval = setInterval(() => {
         fetchTradesAndPositions('VIRTUAL');
         fetchBots();
         fetchLeaderboard();
+        fetchWeeklyRotationStatus();
       }, 5000); // 11대 퀀트 봇 가상 아레나 5초 주기 자동 갱신
       return () => clearInterval(labInterval);
     }
@@ -495,33 +515,42 @@ export default function App() {
     if (isSelectingRealBots) return; // 더블클릭 중복 요청 방지
 
     const count = selectedBotIds.length;
+    const selectedBotObjs = selectedBotIds.map((id) => bots.find((x) => x.bot_id === id)).filter(Boolean);
     const selectedBotNames = selectedBotIds
       .map((id) => {
         const b = bots.find((x) => x.bot_id === id);
-        return b ? `${b.name} (${b.nickname})` : id;
+        if (!b) return id;
+        const fm = getStrategyFamilyMeta(b);
+        return `${fm.icon} [${fm.shortLabel} · ${fm.code}] ${b.name} (${b.nickname})`;
       })
       .join('\n• ');
 
-    // 교체 시 거래정보 승계 미리보기 (해제 봇 순서 ↔ 신규 봇 선택 순서 매칭, 백엔드 로직과 동일)
+    const famCounts = summarizeFamilyCounts(selectedBotObjs);
+    const familyBreakdownText = `\n\n[선택 조합 전략군 구성]\n• 🚀 돌파·모멘텀(BREAKOUT): ${famCounts.BREAKOUT}개\n• 📈 추세·수급(TREND): ${famCounts.TREND}개\n• 🎯 평균회귀·스캘핑(REVERSION): ${famCounts.REVERSION}개`;
+
+    // Position Stickiness 미리보기: 선택 해제되는 봇 중 미청산 포지션이 있으면 이관하지 않고 원 소유 봇이 끝까지 책임 청산
     const labelOf = (id) => {
       const b = bots.find((x) => x.bot_id === id);
-      return b ? (b.nickname || b.name) : id;
+      if (!b) return id;
+      const fm = getStrategyFamilyMeta(b);
+      return `${fm.icon}[${fm.tinyLabel}] ${b.nickname || b.name}`;
     };
     const prevRealIds = bots
       .filter((b) => Number(b.is_real_selected) === 1)
       .map((b) => b.bot_id)
       .sort();
-    const removedIds = prevRealIds.filter((id) => !selectedBotIds.includes(id));
-    const addedIds = selectedBotIds.filter((id) => !prevRealIds.includes(id));
-    const successionPreview =
-      prevRealIds.length > 0 && removedIds.length > 0 && addedIds.length > 0
-        ? `\n\n[거래정보 승계 예정]\n${removedIds
-            .map((id, idx) => {
-              const from = bots.find((x) => x.bot_id === id);
-              const openCnt = Number(from?.real_open_count || 0);
-              return `• ${labelOf(id)} → ${labelOf(addedIds[idx % addedIds.length])} (미매도 ${openCnt}건 인수)`;
-            })
-            .join('\n')}\n※ 유지되는 봇은 기존 거래정보를 그대로 보유합니다.`
+    const removedWithOpen = prevRealIds
+      .filter((id) => !selectedBotIds.includes(id))
+      .map((id) => bots.find((x) => x.bot_id === id))
+      .filter((b) => b && Number(b.real_open_count || 0) > 0);
+    const stickinessPreview =
+      removedWithOpen.length > 0
+        ? `\n\n[🛡️ 보유 포지션 끝까지 책임 청산 (Position Stickiness)]\n${removedWithOpen
+            .map(
+              (b) =>
+                `• ${labelOf(b.bot_id)} — 미청산 ${Number(b.real_open_count || 0)}건은 타 봇으로 이관하지 않고 원 소유 봇의 청산 수식으로 끝까지 자동 관리됩니다. (신규 매수만 중지)`
+            )
+            .join('\n')}`
         : '';
 
     setModalInfo({
@@ -529,7 +558,7 @@ export default function App() {
       confirmColor: 'success',
       confirmText: `✅ ${count}개 봇 실전 확정`,
       title: `🎯 실전 거래 담당 봇 (${count}개) 지정 확인`,
-      message: `선택하신 ${count}개의 퀀트 봇을 실전 매매 담당으로 확정하시겠습니까?\n\n• ${selectedBotNames}${successionPreview}\n\n'확인'을 누르면 확정 후 [환경설정] 화면으로 이동하여 투자금 배분 비율(%)을 설정하게 됩니다.`,
+      message: `선택하신 ${count}개의 퀀트 봇을 실전 매매 담당으로 확정하시겠습니까?\n\n• ${selectedBotNames}${familyBreakdownText}${stickinessPreview}\n\n'확인'을 누르면 확정 후 [환경설정] 화면으로 이동하여 투자금 배분 비율(%)을 설정하게 됩니다.`,
       onConfirm: async () => {
         setIsSelectingRealBots(true);
         try {
@@ -540,17 +569,17 @@ export default function App() {
           setArenaSelectedIds(selectedBotIds);
           arenaInitRef.current = true;
 
-          const inheritList = Array.isArray(res.inheritance) ? res.inheritance : [];
-          const inheritResult = inheritList.length > 0
-            ? `\n\n[거래정보 승계 완료]\n${inheritList
-                .map((i) => `• ${labelOf(i.from)} → ${labelOf(i.to)} (미매도 ${i.open_positions}건, 거래내역 ${i.trades}건)`)
+          const stickinessList = Array.isArray(res.stickinessBots) ? res.stickinessBots : [];
+          const stickinessResult = stickinessList.length > 0
+            ? `\n\n[🛡️ 기존 포지션 책임 청산 유지 중]\n${stickinessList
+                .map((s) => `• ${labelOf(s.bot_id)} — 미청산 ${s.open_positions}건 (원금 ${Math.round(Number(s.locked_capital || 0)).toLocaleString()}원 보호, 청산 대기 중)`)
                 .join('\n')}`
             : '';
 
           setActiveMenu('SETTINGS');
           setModalInfo({
             title: `실전 담당 봇 (${count}개) 확정 완료`,
-            message: `선택하신 ${count}개의 봇이 실전 거래 담당으로 지정되었습니다.${inheritResult}\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.`,
+            message: `선택하신 ${count}개의 봇이 실전 거래 담당으로 지정되었습니다.${stickinessResult}\n\n[환경설정] 화면으로 이동했습니다. 각 봇의 투자금 배분 비율(%)을 조정한 뒤 하단의 [확인] 버튼을 눌러주세요.`,
             type: 'success',
           });
           await fetchBots();
@@ -562,6 +591,74 @@ export default function App() {
         }
       },
     });
+  };
+
+  const handleRotateWeeklyTopBots = () => {
+    if (isRotatingWeekly) return;
+    setModalInfo({
+      type: 'confirm',
+      confirmColor: 'success',
+      confirmText: '🏆 주간 1위 3대 봇 선출 및 교체',
+      title: '🏆 전략군별 주간 1위 자동 로테이션 실행',
+      message:
+        '최근 7일 시가 평가(실현손익 + 보유 포지션 실시간 평가손익) 및 승률 복합 점수를 기준으로 3대 전략군별 1위 봇을 즉시 선출하여 실전 담당으로 교체합니다.\n\n' +
+        '• 대상: 🚀 BREAKOUT 1위 + 📈 TREND 1위 + 🎯 REVERSION 1위 (총 3대)\n' +
+        '• 비중 배분: 주간 -1% 미만 축소(15) · +2% 이상 상향(40) 후 100% 정규화\n' +
+        '• 가동 승계: 기존 실전 봇이 가동 중이면 선출된 3대 봇 모두 즉시 가동 승계\n' +
+        '• Position Stickiness: 탈락 봇의 미청산 포지션은 원 소유 봇 수식으로 끝까지 책임 청산 후 회수 현금을 자동 재편입합니다.\n\n' +
+        '지금 주간 전략군 로테이션을 실행하시겠습니까?',
+      onConfirm: async () => {
+        setIsRotatingWeekly(true);
+        try {
+          const res = await api.rotateWeeklyTop('MANUAL');
+          if (Array.isArray(res.bots) && res.bots.length > 0) {
+            setBots(res.bots);
+          }
+          if (Array.isArray(res.winners) && res.winners.length > 0) {
+            const winIds = res.winners.map((w) => w.bot_id);
+            setArenaSelectedIds(winIds);
+            arenaInitRef.current = true;
+          }
+          if (res.status) {
+            setWeeklyRotation(res.status);
+          }
+
+          const winnerLines = (res.winners || [])
+            .map((w) => `• [${w.strategy_family}] ${w.nickname || w.name} — 주간 ${Number(w.weekly_return_pct) >= 0 ? '+' : ''}${w.weekly_return_pct}% | 비중 ${w.ratio}% (가용 ${Math.round(Number(w.available_krw || 0)).toLocaleString()}원)`)
+            .join('\n');
+          const stickinessLines = Array.isArray(res.stickinessBots) && res.stickinessBots.length > 0
+            ? `\n\n[🛡️ 탈락 봇 책임 청산 감시 중 (${res.stickinessBots.length}개 봇)]\n` +
+              res.stickinessBots.map((s) => `• ${s.nickname || s.bot_id}: 미청산 ${s.open_positions}건 (${Math.round(Number(s.locked_capital || 0)).toLocaleString()}원)`).join('\n')
+            : '';
+
+          setModalInfo({
+            title: '🏆 전략군별 주간 1위 로테이션 완료',
+            message: `3대 전략군 주간 1위 봇 선출 및 무중단 교체가 완료되었습니다. (${res.inheritedRunning ? '기존 실전 가동 상태 자동 승계 ON' : '대기 상태 유지'})\n\n${winnerLines}${stickinessLines}`,
+            type: 'success',
+          });
+          await Promise.all([fetchBots(), fetchSettingsAndBalance(), fetchWeeklyRotationStatus()]);
+        } catch (err) {
+          setModalInfo({ title: '주간 로테이션 실패', message: err.message, type: 'error' });
+        } finally {
+          setIsRotatingWeekly(false);
+        }
+      },
+    });
+  };
+
+  const handleToggleWeeklyAuto = async () => {
+    try {
+      const nextEnabled = !weeklyRotation.enabled;
+      const res = await api.toggleWeeklyRotation(nextEnabled);
+      setWeeklyRotation({
+        enabled: !!res.enabled,
+        lastRotationDate: res.lastRotationDate || '',
+        lastSummary: res.lastSummary || null,
+        nextScheduledKst: res.nextScheduledKst || '매주 월요일 08:30 KST',
+      });
+    } catch (err) {
+      setModalInfo({ title: '자동 로테이션 설정 실패', message: err.message, type: 'error' });
+    }
   };
 
   const handleRealToggle = (botId, isRealRunning) => {
@@ -1342,6 +1439,10 @@ export default function App() {
             virtualPositions={positions.filter((p) => p.trade_mode === 'VIRTUAL')}
             virtualTrades={trades.filter((t) => t.trade_mode === 'VIRTUAL')}
             onSelectRealBots={handleSelectRealBots}
+            weeklyRotation={weeklyRotation}
+            isRotatingWeekly={isRotatingWeekly}
+            onRotateWeeklyTopBots={handleRotateWeeklyTopBots}
+            onToggleWeeklyAuto={handleToggleWeeklyAuto}
             onFastReplay={handleFastReplay}
             onResetVirtualAll={handleResetVirtualAll}
             isReplaying={isReplaying}

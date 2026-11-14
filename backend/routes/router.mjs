@@ -64,6 +64,15 @@ export class Router {
       if (pathname === '/api/bots' && method === 'GET') {
         return BotController.getBots(req, res);
       }
+      if (pathname === '/api/bots/weekly-rotation-status' && method === 'GET') {
+        return BotController.getWeeklyRotationStatus(req, res);
+      }
+      if (pathname === '/api/bots/rotate-weekly-top' && method === 'POST') {
+        return await BotController.postRotateWeeklyTop(req, res);
+      }
+      if (pathname === '/api/bots/weekly-rotation-toggle' && method === 'POST') {
+        return await BotController.postWeeklyRotationToggle(req, res);
+      }
       if (pathname === '/api/bots/select-real' && method === 'POST') {
         return await BotController.postSelectReal(req, res);
       }

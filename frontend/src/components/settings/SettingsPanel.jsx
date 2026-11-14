@@ -1,4 +1,5 @@
 import React, { useState } from 'react';
+import { StrategyFamilyBadge } from '../../utils/strategyFamilies';
 
 export default function SettingsPanel({
   appVersion,
@@ -358,6 +359,7 @@ export default function SettingsPanel({
                 <div style={{ display: 'flex', flexDirection: 'column', gap: '12px', marginBottom: '18px' }}>
                   {allocations.map((item) => {
                     const allocatedKrw = Math.floor(effectiveBudget * (item.ratio / 100));
+                    const fullBot = bots.find((b) => b.bot_id === item.bot_id) || item;
                     return (
                       <div
                         key={item.bot_id}
@@ -368,10 +370,11 @@ export default function SettingsPanel({
                           borderRadius: '8px',
                         }}
                       >
-                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px' }}>
-                          <div>
+                        <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '8px', flexWrap: 'wrap', gap: '8px' }}>
+                          <div style={{ display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
                             <strong style={{ fontSize: '14px', color: '#f8fafc' }}>{item.name}</strong>
-                            <span style={{ color: '#818cf8', marginLeft: '6px', fontSize: '12px' }}>({item.nickname})</span>
+                            <span style={{ color: '#818cf8', fontSize: '12px' }}>({item.nickname})</span>
+                            <StrategyFamilyBadge bot={fullBot} showCode />
                           </div>
                           <span className="badge-mode real" style={{ fontSize: '12px', padding: '3px 8px' }}>
                             실전 배정금: <strong>{allocatedKrw.toLocaleString()}원</strong> ({item.ratio}%)
@@ -1039,6 +1042,9 @@ export function BotStrategyTunerSection({ bots = [], onSaveBotConfig, onResetBot
               onClick={() => setActiveBotId(b.bot_id)}
               className={`btn-action ${isSelected ? 'primary' : 'secondary'}`}
               style={{
+                display: 'inline-flex',
+                alignItems: 'center',
+                gap: '6px',
                 border: isReal ? (isSelected ? '2px solid #f59e0b' : '1px solid #f59e0b') : undefined,
                 padding: '8px 12px',
                 fontSize: '13px',
@@ -1046,8 +1052,9 @@ export function BotStrategyTunerSection({ bots = [], onSaveBotConfig, onResetBot
                 backgroundColor: isSelected ? undefined : (isReal ? 'rgba(245, 158, 11, 0.08)' : undefined),
               }}
             >
-              {isReal && <span style={{ color: '#f59e0b', marginRight: '4px' }}>★</span>}
-              {b.nickname || b.name}
+              {isReal && <span style={{ color: '#f59e0b' }}>★</span>}
+              <span>{b.nickname || b.name}</span>
+              <StrategyFamilyBadge bot={b} compact />
             </button>
           );
         })}
@@ -1057,11 +1064,12 @@ export function BotStrategyTunerSection({ bots = [], onSaveBotConfig, onResetBot
       <div style={{ background: '#111827', padding: '18px', borderRadius: '10px', border: '1px solid rgba(255, 255, 255, 0.08)' }}>
         <div style={{ display: 'flex', justifyContent: 'space-between', alignItems: 'center', marginBottom: '14px', flexWrap: 'wrap', gap: '8px' }}>
           <div>
-            <h4 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px' }}>
+            <h4 style={{ margin: 0, fontSize: '16px', display: 'flex', alignItems: 'center', gap: '8px', flexWrap: 'wrap' }}>
               {currentBot.name}
               <small style={{ color: '#94a3b8', fontSize: '12px', fontWeight: 400 }}>
                 ({currentBot.nickname} · {currentBot.strategy_type})
               </small>
+              <StrategyFamilyBadge bot={currentBot} showCode />
               {Number(currentBot.is_real_selected) === 1 && (
                 <span className="badge-mode real" style={{ fontSize: '11px', padding: '2px 8px' }}>★ 실전 담당</span>
               )}

@@ -56,6 +56,17 @@ export const api = {
 
   // Bots
   getBots: () => request('/api/bots'),
+  getWeeklyRotationStatus: () => request('/api/bots/weekly-rotation-status'),
+  rotateWeeklyTop: (trigger = 'MANUAL') =>
+    request('/api/bots/rotate-weekly-top', {
+      method: 'POST',
+      body: JSON.stringify({ trigger }),
+    }),
+  toggleWeeklyRotation: (enabled) =>
+    request('/api/bots/weekly-rotation-toggle', {
+      method: 'POST',
+      body: JSON.stringify({ enabled }),
+    }),
   selectRealBots: (selectedBotIds) =>
     request('/api/bots/select-real', {
       method: 'POST',
